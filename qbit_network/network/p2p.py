@@ -1,5 +1,6 @@
 """P2P networking layer using asyncio TCP + newline-delimited JSON."""
 import asyncio
+import hashlib
 import ipaddress
 import json
 import logging
@@ -8,6 +9,8 @@ import time
 from ..config import (MAX_PEERS, PROTOCOL_VERSION, CHAIN_ID, MAX_BLOCK_DRIFT,
                       P2P_RATE_LIMIT, P2P_RATE_BURST, P2P_RATE_VIOLATIONS_MAX)
 from ..crypto.mldsa import MLDSA
+from ..crypto.mlkem import MLKEM, MLKEM_PK_SIZE, MLKEM_CT_SIZE
+from ..crypto.aes import aes_encrypt, aes_decrypt
 from .rate_limiter import RateLimiter
 
 logger = logging.getLogger("qbit_network.p2p")
@@ -16,6 +19,8 @@ MSG_HELLO = "hello"
 MSG_HELLO_AUTH = "hello_auth"
 MSG_AUTH_RESPONSE = "auth_response"
 MSG_AUTH_CONFIRM = "auth_confirm"
+MSG_SESSION_KEY = "session_key"
+MSG_ENCRYPTED = "encrypted"
 MSG_NEW_BLOCK = "new_block"
 MSG_NEW_TX = "new_tx"
 MSG_GET_BLOCKS = "get_blocks"
@@ -37,7 +42,8 @@ _AUTH_RATE_MAX = 5       # max auth attempts per IP
 _AUTH_RATE_WINDOW = 60   # seconds
 
 # Message types exempt from rate limiting (handshake/auth messages)
-_RATE_EXEMPT = {MSG_HELLO, MSG_HELLO_AUTH, MSG_AUTH_RESPONSE, MSG_AUTH_CONFIRM}
+_RATE_EXEMPT = {MSG_HELLO, MSG_HELLO_AUTH, MSG_AUTH_RESPONSE, MSG_AUTH_CONFIRM,
+                MSG_SESSION_KEY, MSG_ENCRYPTED}
 
 # Message types that require authentication (for protocol_version >= 2)
 _AUTH_REQUIRED_MSGS = frozenset({
@@ -75,12 +81,19 @@ def _build_auth_message(challenge: bytes, address: str) -> bytes:
     return _AUTH_DOMAIN + challenge + address.encode("utf-8")
 
 
+def _derive_session_key(shared_secret: bytes) -> bytes:
+    """Derive a 32-byte AES-256 key from ML-KEM shared secret via SHA3-256."""
+    return hashlib.sha3_256(shared_secret).digest()
+
+
 class Peer:
     __slots__ = ('host', 'port', 'reader', 'writer', 'node_id',
                  'connected', 'last_seen', 'height',
                  'authenticated', 'protocol_version',
                  'challenge', 'remote_pubkey', 'auth_deadline',
-                 'is_validator')
+                 'is_validator',
+                 'session_key', 'encrypted', 'encryption_pk',
+                 'is_initiator', 'remote_address')
 
     def __init__(self, host: str, port: int, reader=None, writer=None):
         self.host = host
@@ -97,6 +110,13 @@ class Peer:
         self.remote_pubkey: bytes = b''   # authenticated peer's ML-DSA pubkey
         self.auth_deadline: float = 0.0   # deadline for completing auth
         self.is_validator: bool = False   # True if peer is a registered validator
+        # Encrypted channel fields
+        self.session_key: bytes | None = None   # 32-byte AES-256 key
+        self.encrypted: bool = False            # whether transport is encrypted
+        self.encryption_pk: bytes | None = None # peer's ML-KEM public key
+        # Connection dedup fields
+        self.is_initiator: bool = False         # True if we initiated the connection
+        self.remote_address: str = ""           # peer's validator address (derived from pubkey)
 
     @property
     def addr(self) -> str:
@@ -112,6 +132,15 @@ class Peer:
         except Exception:
             self.connected = False
 
+    async def send_encrypted(self, msg_type: str, data: dict):
+        """Send a message, encrypting it if the channel is established."""
+        if self.encrypted and self.session_key:
+            inner = json.dumps({"type": msg_type, "data": data}).encode()
+            ct = aes_encrypt(self.session_key, inner)
+            await self.send(MSG_ENCRYPTED, {"data": ct.hex()})
+        else:
+            await self.send(msg_type, data)
+
     async def close(self):
         if self.writer and not self.writer.is_closing():
             self.writer.close()
@@ -123,13 +152,16 @@ class P2PNode:
 
     def __init__(self, host: str = "0.0.0.0", port: int = 9000, node_id: str = "",
                  signing_sk: bytes = b'', signing_pk: bytes = b'',
-                 validator_address: str = ""):
+                 validator_address: str = "",
+                 encryption_sk: bytes = b'', encryption_pk: bytes = b''):
         self.host = host
         self.port = port
         self.node_id = node_id
         self.signing_sk = signing_sk  # ML-DSA-65 sk for auth handshake
         self.signing_pk = signing_pk  # ML-DSA-65 pk for auth handshake
         self.validator_address = validator_address
+        self.encryption_sk = encryption_sk  # ML-KEM-768 sk for encrypted channel
+        self.encryption_pk = encryption_pk  # ML-KEM-768 pk for encrypted channel
         self.peers: dict[str, Peer] = {}
         self._handlers: dict[str, object] = {}
         self._server = None
@@ -142,6 +174,10 @@ class P2PNode:
     def _has_signing_keys(self) -> bool:
         """Return True if this node has ML-DSA keys for authentication."""
         return bool(self.signing_sk and self.signing_pk and self.validator_address)
+
+    def _has_encryption_keys(self) -> bool:
+        """Return True if this node has ML-KEM keys for encrypted channels."""
+        return bool(self.encryption_sk and self.encryption_pk)
 
     def on(self, msg_type: str, handler):
         self._handlers[msg_type] = handler
@@ -180,6 +216,7 @@ class P2PNode:
                 host, port, limit=_READER_LIMIT)
             peer = Peer(host, port, reader, writer)
             peer.connected = True
+            peer.is_initiator = True
             self.peers[addr] = peer
 
             if self._has_signing_keys():
@@ -188,7 +225,19 @@ class P2PNode:
                 peer.challenge = challenge
                 peer.auth_deadline = time.monotonic() + _AUTH_TIMEOUT
                 peer.protocol_version = PROTOCOL_VERSION
-                await peer.send(MSG_HELLO_AUTH, {
+
+                # Part 1: sign proof = Sign(sk, domain || challenge || our_address)
+                proof_msg = _build_auth_message(challenge, self.validator_address)
+                try:
+                    proof_sig = MLDSA.sign(self.signing_sk, proof_msg)
+                except RuntimeError:
+                    logger.error(f"Failed to sign auth proof for {addr}")
+                    peer.connected = False
+                    self.peers.pop(addr, None)
+                    writer.close()
+                    return
+
+                hello_data = {
                     "protocol_version": PROTOCOL_VERSION,
                     "node_id": self.node_id,
                     "port": self.port,
@@ -196,7 +245,13 @@ class P2PNode:
                     "challenge": challenge.hex(),
                     "timestamp": int(time.time()),
                     "signing_pk": self.signing_pk.hex(),
-                })
+                    "proof": proof_sig.hex(),
+                }
+                # Include encryption_pk if we have one
+                if self._has_encryption_keys():
+                    hello_data["encryption_pk"] = self.encryption_pk.hex()
+
+                await peer.send(MSG_HELLO_AUTH, hello_data)
                 logger.debug(f"Sent hello_auth to {addr}")
             else:
                 # v1 fallback: plain hello, no authentication
@@ -211,7 +266,7 @@ class P2PNode:
         tasks = []
         for addr, peer in list(self.peers.items()):
             if addr != exclude and peer.connected:
-                tasks.append(peer.send(msg_type, data))
+                tasks.append(peer.send_encrypted(msg_type, data))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -242,14 +297,31 @@ class P2PNode:
             return None
         return pk_bytes
 
+    def _resolve_encryption_pk(self, pk_hex: str) -> bytes | None:
+        """Validate and resolve a peer's ML-KEM public key from hex.
+
+        Returns the pubkey bytes if valid, None otherwise.
+        ML-KEM-768 public keys are 1184 bytes.
+        """
+        if not isinstance(pk_hex, str) or not pk_hex:
+            return None
+        try:
+            pk_bytes = bytes.fromhex(pk_hex)
+        except (ValueError, TypeError):
+            return None
+        if len(pk_bytes) != MLKEM_PK_SIZE:
+            return None
+        return pk_bytes
+
     async def _handle_hello_auth_inbound(self, peer: Peer, data: dict) -> bool:
         """Handle an inbound hello_auth message (we are the responder).
 
-        The initiator sent us their challenge and pubkey. We:
+        The initiator sent us their challenge, pubkey, and proof. We:
         1. Validate all fields (version, timestamp, chain_id, challenge, pubkey)
-        2. Sign their challenge with our key
-        3. Generate our own counter-challenge
-        4. Send auth_response back
+        2. Verify the initiator's proof signature BEFORE signing anything
+        3. Sign their challenge with our key
+        4. Generate our own counter-challenge
+        5. Send auth_response back
 
         Returns True if we sent a valid auth_response, False on error.
         """
@@ -291,6 +363,31 @@ class P2PNode:
             logger.debug(f"Peer {peer.addr} hello_auth: invalid signing_pk")
             return False
 
+        # --- Part 1: Verify-Before-Sign ---
+        # Verify the initiator's proof BEFORE we sign anything.
+        # The proof is: Sign(initiator_sk, domain || challenge || initiator_address)
+        proof_hex = data.get("proof", "")
+        if not isinstance(proof_hex, str) or not proof_hex:
+            logger.debug(f"Peer {peer.addr} hello_auth: missing proof field")
+            return False
+        try:
+            proof_bytes = bytes.fromhex(proof_hex)
+        except (ValueError, TypeError):
+            logger.debug(f"Peer {peer.addr} hello_auth: invalid proof hex")
+            return False
+
+        from ..core.wallet import Wallet
+        peer_address = Wallet.derive_address(peer_pk)
+        proof_msg = _build_auth_message(peer_challenge, peer_address)
+        if not MLDSA.verify(peer_pk, proof_msg, proof_bytes):
+            logger.warning(f"Peer {peer.addr} hello_auth: invalid proof signature")
+            return False
+
+        # Store peer's encryption_pk if provided (for encrypted channel)
+        peer_enc_pk = self._resolve_encryption_pk(data.get("encryption_pk", ""))
+        if peer_enc_pk is not None:
+            peer.encryption_pk = peer_enc_pk
+
         # --- Accept handshake ---
 
         node_id = data.get("node_id", "")
@@ -311,15 +408,21 @@ class P2PNode:
         peer.challenge = counter_challenge
         peer.auth_deadline = time.monotonic() + _AUTH_TIMEOUT
         peer.remote_pubkey = peer_pk
+        peer.remote_address = peer_address
 
-        await peer.send(MSG_AUTH_RESPONSE, {
+        response_data = {
             "protocol_version": PROTOCOL_VERSION,
             "node_id": self.node_id,
             "port": self.port,
             "challenge_sig": challenge_sig.hex(),
             "counter_challenge": counter_challenge.hex(),
             "signing_pk": self.signing_pk.hex(),
-        })
+        }
+        # Include encryption_pk if we have one
+        if self._has_encryption_keys():
+            response_data["encryption_pk"] = self.encryption_pk.hex()
+
+        await peer.send(MSG_AUTH_RESPONSE, response_data)
         logger.debug(f"Sent auth_response to {peer.addr}")
         return True
 
@@ -394,6 +497,7 @@ class P2PNode:
         # Mutual authentication complete (initiator side)
         peer.authenticated = True
         peer.remote_pubkey = responder_pk
+        peer.remote_address = responder_address
         peer.auth_deadline = 0.0
         peer.protocol_version = min(
             data.get("protocol_version", 1), PROTOCOL_VERSION)
@@ -405,8 +509,21 @@ class P2PNode:
         if isinstance(new_port, int) and 0 < new_port <= 65535:
             peer.port = new_port
 
+        # Store peer's encryption_pk if provided
+        peer_enc_pk = self._resolve_encryption_pk(data.get("encryption_pk", ""))
+        if peer_enc_pk is not None:
+            peer.encryption_pk = peer_enc_pk
+
         logger.info(f"Peer {peer.addr} authenticated (we initiated)")
         self._check_validator_status(peer)
+
+        # Connection dedup check
+        if self._dedup_connection(peer):
+            return False  # this connection was closed as duplicate
+
+        # Initiator initiates encrypted channel if both sides have encryption keys
+        await self._initiate_encrypted_channel(peer)
+
         return True
 
     async def _handle_auth_confirm(self, peer: Peer, data: dict) -> bool:
@@ -455,8 +572,14 @@ class P2PNode:
         # Mutual authentication complete (responder side)
         peer.authenticated = True
         peer.auth_deadline = 0.0
+        peer.remote_address = initiator_address
         logger.info(f"Peer {peer.addr} authenticated (they initiated)")
         self._check_validator_status(peer)
+
+        # Connection dedup check
+        if self._dedup_connection(peer):
+            return False  # this connection was closed as duplicate
+
         return True
 
     def _check_auth_gate(self, msg_type: str, peer: Peer) -> bool:
@@ -494,6 +617,173 @@ class P2PNode:
             peer.is_validator = False
             logger.warning(f"Authenticated peer {peer.addr} ({peer_address[:16]}...) "
                            f"is NOT a registered validator")
+
+    # ================================================================
+    # Connection deduplication
+    # ================================================================
+
+    def _dedup_connection(self, peer: Peer) -> bool:
+        """Check for duplicate connections to the same remote address.
+
+        After successful authentication, if another connection to the same
+        remote_address already exists, use a deterministic tie-breaker:
+        the node with the lexicographically smaller address keeps the
+        connection it initiated.
+
+        Returns True if THIS connection should be closed (duplicate).
+        """
+        if not peer.remote_address or not self.validator_address:
+            return False
+
+        # Find any other peer with the same remote_address
+        for other_key, other_peer in list(self.peers.items()):
+            if other_peer is peer:
+                continue
+            if not other_peer.authenticated:
+                continue
+            if other_peer.remote_address != peer.remote_address:
+                continue
+
+            # Duplicate found. Deterministic tie-breaker:
+            # The node with the smaller address keeps the connection IT initiated.
+            we_are_smaller = self.validator_address < peer.remote_address
+
+            if we_are_smaller:
+                # We keep the connection we initiated; close the one we didn't
+                if peer.is_initiator:
+                    # Keep this one (we initiated), close the other
+                    logger.info(f"Dedup: closing duplicate connection {other_key} "
+                                f"to {peer.remote_address[:16]}... "
+                                f"(keeping our outbound)")
+                    other_peer.connected = False
+                    self.peers.pop(other_key, None)
+                    asyncio.ensure_future(other_peer.close())
+                    return False
+                else:
+                    # Close this one (they initiated), keep the other
+                    logger.info(f"Dedup: closing this inbound connection to "
+                                f"{peer.remote_address[:16]}... "
+                                f"(keeping our outbound)")
+                    return True
+            else:
+                # They have the smaller address; they keep their initiated conn.
+                # We close the connection we initiated.
+                if peer.is_initiator:
+                    # Close this one (we initiated), keep their inbound
+                    logger.info(f"Dedup: closing our outbound connection to "
+                                f"{peer.remote_address[:16]}... "
+                                f"(peer has smaller address)")
+                    return True
+                else:
+                    # Keep this one (they initiated), close the other
+                    logger.info(f"Dedup: closing duplicate connection {other_key} "
+                                f"to {peer.remote_address[:16]}... "
+                                f"(peer has smaller address, keeping their outbound)")
+                    other_peer.connected = False
+                    self.peers.pop(other_key, None)
+                    asyncio.ensure_future(other_peer.close())
+                    return False
+
+        return False
+
+    # ================================================================
+    # Encrypted channel
+    # ================================================================
+
+    async def _initiate_encrypted_channel(self, peer: Peer):
+        """Initiator sends session_key message after auth completes.
+
+        Uses ML-KEM to encapsulate a shared secret with the responder's
+        encryption_pk, then derives an AES-256 session key.
+        """
+        if not self._has_encryption_keys():
+            return
+        if peer.encryption_pk is None:
+            return
+
+        try:
+            ct, shared_secret = MLKEM.encapsulate(peer.encryption_pk)
+        except (ValueError, RuntimeError) as e:
+            logger.warning(f"Failed to encapsulate session key for {peer.addr}: {e}")
+            return
+
+        session_key = _derive_session_key(shared_secret)
+        peer.session_key = session_key
+
+        await peer.send(MSG_SESSION_KEY, {
+            "ciphertext": ct.hex(),
+            "encryption_pk": self.encryption_pk.hex(),
+        })
+        # Mark encrypted only after sending (responder needs to process first)
+        peer.encrypted = True
+        logger.info(f"Encrypted channel established with {peer.addr} (initiator)")
+
+    async def _handle_session_key(self, peer: Peer, data: dict) -> bool:
+        """Handle session_key message (we are the responder).
+
+        Decapsulate the shared secret and derive the AES-256 session key.
+        """
+        if not self._has_encryption_keys():
+            logger.debug(f"Received session_key from {peer.addr} but no encryption keys")
+            return False
+
+        if not peer.authenticated:
+            logger.debug(f"Received session_key from unauthenticated peer {peer.addr}")
+            return False
+
+        ct_hex = data.get("ciphertext", "")
+        if not isinstance(ct_hex, str):
+            return False
+        try:
+            ct = bytes.fromhex(ct_hex)
+        except (ValueError, TypeError):
+            return False
+        if len(ct) != MLKEM_CT_SIZE:
+            logger.debug(f"session_key from {peer.addr}: invalid ciphertext length")
+            return False
+
+        # Store initiator's encryption_pk if provided
+        enc_pk = self._resolve_encryption_pk(data.get("encryption_pk", ""))
+        if enc_pk is not None:
+            peer.encryption_pk = enc_pk
+
+        try:
+            shared_secret = MLKEM.decapsulate(self.encryption_sk, ct)
+        except (ValueError, RuntimeError) as e:
+            logger.warning(f"Failed to decapsulate session key from {peer.addr}: {e}")
+            return False
+
+        session_key = _derive_session_key(shared_secret)
+        peer.session_key = session_key
+        peer.encrypted = True
+        logger.info(f"Encrypted channel established with {peer.addr} (responder)")
+        return True
+
+    def _decrypt_message(self, peer: Peer, data: dict):
+        """Decrypt an encrypted message and return (msg_type, inner_data) or None."""
+        if not peer.session_key:
+            logger.debug(f"Encrypted msg from {peer.addr} but no session key")
+            return None
+
+        ct_hex = data.get("data", "")
+        if not isinstance(ct_hex, str):
+            return None
+        try:
+            ct = bytes.fromhex(ct_hex)
+        except (ValueError, TypeError):
+            return None
+
+        try:
+            plaintext = aes_decrypt(peer.session_key, ct)
+        except Exception:
+            logger.warning(f"Failed to decrypt message from {peer.addr}")
+            return None
+
+        try:
+            inner = json.loads(plaintext.decode())
+            return inner.get("type", ""), inner.get("data", {})
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
 
     # ================================================================
     # Rate limiting
@@ -581,6 +871,7 @@ class P2PNode:
         temp_key = f"_inbound_{host}_{id(writer)}"
         peer = Peer(host, 0, reader, writer)
         peer.connected = True
+        peer.is_initiator = False
         self.peers[temp_key] = peer
         peer_key = temp_key  # tracks current key in self.peers
         try:
@@ -642,10 +933,23 @@ class P2PNode:
                         break
                     continue
 
+                # Handle encrypted messages: decrypt and re-dispatch
+                if mt == MSG_ENCRYPTED:
+                    inner = self._decrypt_message(peer, data)
+                    if inner is None:
+                        continue
+                    mt, data = inner
+
                 if mt == MSG_STATUS:
                     h = data.get("height", -1)
                     if isinstance(h, int) and -1 <= h <= 10_000_000:
                         peer.height = h
+
+                # Handle session_key inline (encrypted channel setup)
+                if mt == MSG_SESSION_KEY:
+                    await self._handle_session_key(peer, data)
+                    peer.last_seen = time.time()
+                    continue
 
                 # Handle auth_confirm inline (responder completing handshake)
                 if mt == MSG_AUTH_CONFIRM:
@@ -693,10 +997,23 @@ class P2PNode:
                         break
                     continue
 
+                # Handle encrypted messages: decrypt and re-dispatch
+                if mt == MSG_ENCRYPTED:
+                    inner = self._decrypt_message(peer, data)
+                    if inner is None:
+                        continue
+                    mt, data = inner
+
                 if mt == MSG_STATUS:
                     h = data.get("height", -1)
                     if isinstance(h, int) and -1 <= h <= 10_000_000:
                         peer.height = h
+
+                # Handle session_key inline (encrypted channel setup)
+                if mt == MSG_SESSION_KEY:
+                    await self._handle_session_key(peer, data)
+                    peer.last_seen = time.time()
+                    continue
 
                 # Handle auth_response inline (we sent hello_auth, peer responds)
                 if mt == MSG_AUTH_RESPONSE:

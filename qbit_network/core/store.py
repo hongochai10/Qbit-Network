@@ -64,10 +64,23 @@ CREATE TABLE IF NOT EXISTS unbonding (
     amount INTEGER NOT NULL,
     release_block INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS epochs (
+    epoch_number INTEGER PRIMARY KEY,
+    block_start INTEGER NOT NULL,
+    validators_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS slashing_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    validator TEXT NOT NULL,
+    evidence_tx_id TEXT NOT NULL,
+    amount_slashed INTEGER NOT NULL,
+    block_index INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_txs_sender ON txs(sender, nonce);
 CREATE INDEX IF NOT EXISTS idx_txs_recipient ON txs(recipient);
 CREATE INDEX IF NOT EXISTS idx_notarizations_first ON notarizations(doc_hash, is_first);
 CREATE INDEX IF NOT EXISTS idx_unbonding_release ON unbonding(release_block);
+CREATE INDEX IF NOT EXISTS idx_slashing_validator ON slashing_events(validator);
 """
 
 
@@ -336,6 +349,77 @@ class SQLiteStore:
             "FROM revoked_keys").fetchall()
         return [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
 
+    # ---- Epoch registry ----
+
+    def put_epoch(self, epoch_number: int, block_start: int,
+                  validators_json: str, commit: bool = True):
+        """Record an epoch snapshot."""
+        self._db.execute(
+            "INSERT OR REPLACE INTO epochs (epoch_number, block_start, validators_json) "
+            "VALUES (?, ?, ?)", (epoch_number, block_start, validators_json))
+        if commit:
+            self._db.commit()
+
+    def get_epoch(self, epoch_number: int) -> dict | None:
+        """Get epoch info, or None."""
+        row = self._db.execute(
+            "SELECT block_start, validators_json FROM epochs WHERE epoch_number=?",
+            (epoch_number,)).fetchone()
+        if row:
+            return {"block_start": row[0], "validators_json": row[1]}
+        return None
+
+    def delete_epochs_from(self, epoch_number: int, commit: bool = True):
+        """Delete epochs with epoch_number >= given value (for rollback)."""
+        self._db.execute(
+            "DELETE FROM epochs WHERE epoch_number >= ?", (epoch_number,))
+        if commit:
+            self._db.commit()
+
+    def get_all_epochs(self) -> list[tuple[int, int, str]]:
+        """Return all epochs as (epoch_number, block_start, validators_json)."""
+        rows = self._db.execute(
+            "SELECT epoch_number, block_start, validators_json FROM epochs "
+            "ORDER BY epoch_number").fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    # ---- Slashing events ----
+
+    def put_slashing_event(self, validator: str, evidence_tx_id: str,
+                           amount_slashed: int, block_index: int,
+                           commit: bool = True):
+        """Record a slashing event."""
+        self._db.execute(
+            "INSERT INTO slashing_events "
+            "(validator, evidence_tx_id, amount_slashed, block_index) "
+            "VALUES (?, ?, ?, ?)",
+            (validator, evidence_tx_id, amount_slashed, block_index))
+        if commit:
+            self._db.commit()
+
+    def get_slashing_events(self, validator: str = "") -> list[dict]:
+        """Get slashing events, optionally filtered by validator."""
+        if validator:
+            rows = self._db.execute(
+                "SELECT validator, evidence_tx_id, amount_slashed, block_index "
+                "FROM slashing_events WHERE validator=? ORDER BY block_index",
+                (validator,)).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT validator, evidence_tx_id, amount_slashed, block_index "
+                "FROM slashing_events ORDER BY block_index").fetchall()
+        return [{"validator": r[0], "evidence_tx_id": r[1],
+                 "amount_slashed": r[2], "block_index": r[3]} for r in rows]
+
+    def delete_slashing_events_from_block(self, from_block: int,
+                                          commit: bool = True):
+        """Remove slashing events at or after from_block (for rollback)."""
+        self._db.execute(
+            "DELETE FROM slashing_events WHERE block_index >= ?",
+            (from_block,))
+        if commit:
+            self._db.commit()
+
     def block_hash_exists(self, h: str) -> bool:
         return self._db.execute(
             "SELECT 1 FROM blocks WHERE hash=?", (h,)).fetchone() is not None
@@ -432,11 +516,40 @@ class SQLiteStore:
                         if vaddr and amt > 0:
                             key = (sender, vaddr)
                             stake_state[key] = max(0, stake_state.get(key, 0) - amt)
+                    elif tt == "EVIDENCE":
+                        from ..config import SLASH_PERCENTAGE
+                        vaddr = payload.get("validator_address", "")
+                        if vaddr:
+                            # Slash all stakers for this validator
+                            for key in list(stake_state.keys()):
+                                if key[1] == vaddr:
+                                    current = stake_state[key]
+                                    reduction = (current * SLASH_PERCENTAGE) // 100
+                                    if reduction <= 0 and current > 0:
+                                        reduction = 1
+                                    stake_state[key] = max(0, current - reduction)
             for (staker, validator), amount in stake_state.items():
                 if amount > 0:
                     c.execute(
                         "INSERT INTO stakes (staker, validator, amount) VALUES (?, ?, ?)",
                         (staker, validator, amount))
+
+            # Clean up epochs and slashing events from rolled-back blocks
+            from ..config import EPOCH_LENGTH
+            if from_index > 0:
+                first_epoch_to_remove = from_index // EPOCH_LENGTH
+                # Keep epochs that started before from_index
+                # An epoch N starts at block N*EPOCH_LENGTH
+                if from_index % EPOCH_LENGTH == 0:
+                    c.execute("DELETE FROM epochs WHERE epoch_number >= ?",
+                              (first_epoch_to_remove,))
+                else:
+                    c.execute("DELETE FROM epochs WHERE epoch_number > ?",
+                              (first_epoch_to_remove,))
+            else:
+                c.execute("DELETE FROM epochs")
+            c.execute("DELETE FROM slashing_events WHERE block_index >= ?",
+                       (from_index,))
 
             self._db.commit()
             row = self._db.execute("SELECT MAX(idx) FROM blocks").fetchone()

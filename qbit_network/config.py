@@ -42,7 +42,8 @@ RPC_RATE_BURST = 50       # max burst capacity
 MIN_STAKE = 1
 MAX_STAKE = 1_000_000
 UNBONDING_PERIOD = 100       # blocks until unstaked weight is released
-EPOCH_LENGTH = 100           # blocks per epoch (placeholder for Sprint 2)
+EPOCH_LENGTH = 100           # blocks per epoch
+SLASH_PERCENTAGE = 50        # percentage of total stake slashed for misbehaviour
 
 # Version
 VERSION = "0.4.0"

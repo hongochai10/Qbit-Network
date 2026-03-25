@@ -133,9 +133,12 @@ class RESTApi:
         r.add_get("/pool", self._pool_summary)
         r.add_get("/pool/count", self._pool_count)
         r.add_post("/verify", self._verify)  # public -- no auth needed
+        r.add_get("/epochs/current", self._current_epoch)
+        r.add_get("/slashing-events", self._slashing_events)
 
         # Protected endpoints
         r.add_post("/txs", self._submit_tx)
+        r.add_post("/evidence", self._submit_evidence)
         r.add_post("/wallets", self._create_wallet)
         r.add_get("/wallets", self._list_wallets)
         r.add_post("/notarize", self._notarize)
@@ -321,9 +324,36 @@ class RESTApi:
     async def _pool_count(self, request: web.Request) -> web.Response:
         return _ok({"count": len(self._node.blockchain.tx_pool)})
 
+    async def _current_epoch(self, request: web.Request) -> web.Response:
+        result = await self._node._rpc_get_epoch()
+        return _ok(result)
+
+    async def _slashing_events(self, request: web.Request) -> web.Response:
+        validator = request.query.get("validator", "")
+        result = await self._node._rpc_get_slashing_events(validator)
+        return _ok(result)
+
     # ------------------------------------------------------------------
     # Protected handlers
     # ------------------------------------------------------------------
+
+    async def _submit_evidence(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return _err(400, "invalid JSON body")
+        if not isinstance(body, dict):
+            return _err(400, "body must be JSON object")
+        try:
+            result = await self._node._rpc_submit_evidence(**body)
+            return _ok(result, status=201)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"POST /evidence: {e}")
+            return _err(500, "internal error", status=500)
 
     async def _submit_tx(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):

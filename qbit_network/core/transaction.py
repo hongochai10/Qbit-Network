@@ -1,4 +1,4 @@
-"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, STAKE, DELEGATE, UNSTAKE."""
+"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, STAKE, DELEGATE, UNSTAKE, EVIDENCE."""
 import json
 import re
 import time
@@ -17,6 +17,7 @@ class TxType(str, Enum):
     STAKE = "STAKE"
     DELEGATE = "DELEGATE"
     UNSTAKE = "UNSTAKE"
+    EVIDENCE = "EVIDENCE"
 
 
 _HEX_RE = re.compile(r'^[0-9a-fA-F]+$')
@@ -90,12 +91,20 @@ class Transaction:
         TxType.STAKE: {"amount", "validator_address"},
         TxType.DELEGATE: {"amount", "validator_address"},
         TxType.UNSTAKE: {"amount", "validator_address"},
+        TxType.EVIDENCE: {"evidence_type", "block_a_hash", "block_b_hash",
+                          "block_a_sig", "block_b_sig", "block_index",
+                          "validator_address"},
     }
+
+    # EVIDENCE payloads contain two ML-DSA-65 signatures (3309 bytes each = 6618 hex chars)
+    # which inherently exceed the standard payload size limit. Use a larger limit.
+    _EVIDENCE_MAX_PAYLOAD = 32768  # 32 KB
 
     def validate_payload(self) -> tuple[bool, str]:
         raw = json.dumps(self.payload, sort_keys=True, separators=(',', ':')).encode()
-        if len(raw) > MAX_TX_PAYLOAD_SIZE:
-            return False, f"payload too large: {len(raw)} > {MAX_TX_PAYLOAD_SIZE}"
+        max_size = self._EVIDENCE_MAX_PAYLOAD if self.tx_type == TxType.EVIDENCE else MAX_TX_PAYLOAD_SIZE
+        if len(raw) > max_size:
+            return False, f"payload too large: {len(raw)} > {max_size}"
 
         # Reject unknown payload keys to prevent dedup bypass
         allowed = self._ALLOWED_KEYS.get(self.tx_type)
@@ -179,6 +188,25 @@ class Transaction:
                 return False, f"amount must be integer >= {MIN_STAKE}"
             if amount > MAX_STAKE:
                 return False, f"amount must be <= {MAX_STAKE}"
+            vaddr = self.payload.get("validator_address", "")
+            if not isinstance(vaddr, str) or not vaddr:
+                return False, "validator_address must be non-empty string"
+
+        elif self.tx_type == TxType.EVIDENCE:
+            et = self.payload.get("evidence_type", "")
+            if et != "double_sign":
+                return False, f"evidence_type must be 'double_sign', got {et!r}"
+            for field in ("block_a_hash", "block_b_hash", "block_a_sig", "block_b_sig"):
+                val = self.payload.get(field, "")
+                if not isinstance(val, str) or not val or not _HEX_RE.match(val):
+                    return False, f"{field} must be non-empty hex string"
+            bah = self.payload.get("block_a_hash")
+            bbh = self.payload.get("block_b_hash")
+            if bah == bbh:
+                return False, "block_a_hash and block_b_hash must differ (not double-sign)"
+            bi = self.payload.get("block_index")
+            if not isinstance(bi, int) or bi < 0:
+                return False, "block_index must be non-negative integer"
             vaddr = self.payload.get("validator_address", "")
             if not isinstance(vaddr, str) or not vaddr:
                 return False, "validator_address must be non-empty string"
@@ -314,4 +342,22 @@ class Transaction:
         return cls(
             tx_type=TxType.UNSTAKE, sender=sender, nonce=nonce,
             payload={"amount": amount, "validator_address": validator_address},
+        )
+
+    @classmethod
+    def evidence(cls, sender: str, validator_address: str,
+                 block_index: int, block_a_hash: str, block_b_hash: str,
+                 block_a_sig: str, block_b_sig: str,
+                 nonce: int = 0) -> 'Transaction':
+        return cls(
+            tx_type=TxType.EVIDENCE, sender=sender, nonce=nonce,
+            payload={
+                "evidence_type": "double_sign",
+                "block_a_hash": block_a_hash,
+                "block_b_hash": block_b_hash,
+                "block_a_sig": block_a_sig,
+                "block_b_sig": block_b_sig,
+                "block_index": block_index,
+                "validator_address": validator_address,
+            },
         )

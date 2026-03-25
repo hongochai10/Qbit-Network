@@ -1,5 +1,6 @@
 """Tests for qbit_network.network.p2p — P2P node, peer management, auth logic."""
 import asyncio
+import os
 import time
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -7,9 +8,11 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from qbit_network.network.p2p import (
     P2PNode, Peer,
     MSG_HELLO, MSG_HELLO_AUTH, MSG_AUTH_RESPONSE, MSG_AUTH_CONFIRM,
+    MSG_SESSION_KEY, MSG_ENCRYPTED,
     MSG_NEW_BLOCK, MSG_NEW_TX, MSG_GET_BLOCKS, MSG_BLOCKS,
     MSG_STATUS, MSG_GET_PEERS, MSG_PEERS,
-    _is_safe_peer, _build_auth_message, _AUTH_DOMAIN, _CHALLENGE_LEN,
+    _is_safe_peer, _build_auth_message, _derive_session_key,
+    _AUTH_DOMAIN, _CHALLENGE_LEN,
     _AUTH_RATE_MAX, _AUTH_RATE_WINDOW, _RATE_EXEMPT,
 )
 from qbit_network.core.wallet import Wallet
@@ -823,7 +826,9 @@ class TestMutualAuthHandshake:
         peer_b_at_a.auth_deadline = time.monotonic() + 10
         peer_b_at_a.protocol_version = 2
 
-        # Step 2: B handles hello_auth from A
+        # Step 2: B handles hello_auth from A (with proof)
+        proof_msg = _build_auth_message(challenge_a, wa.address)
+        proof_sig = MLDSA.sign(wa.signing_sk, proof_msg)
         hello_auth_data = {
             "protocol_version": 2,
             "node_id": "node_a",
@@ -832,6 +837,7 @@ class TestMutualAuthHandshake:
             "challenge": challenge_a.hex(),
             "timestamp": int(time.time()),
             "signing_pk": wa.signing_pk.hex(),
+            "proof": proof_sig.hex(),
         }
         result = await node_b._handle_hello_auth_inbound(peer_a_at_b, hello_auth_data)
         assert result is True, "hello_auth_inbound should succeed"
@@ -989,3 +995,845 @@ class TestP2PNodeStop:
         await asyncio.sleep(0)
         # Task is either cancelled or done (cancel request was sent)
         assert node._cleanup_task.cancelled() or node._cleanup_task.done()
+
+
+# =========================================================================
+# Part 1: Auth Verify-Before-Sign — proof field tests
+# =========================================================================
+
+class TestAuthProofField:
+    """Tests for the proof field in hello_auth (verify-before-sign fix)."""
+
+    def _make_node(self, wallet):
+        return P2PNode(signing_sk=wallet.signing_sk, signing_pk=wallet.signing_pk,
+                       validator_address=wallet.address)
+
+    def _make_peer_with_writer(self, host="1.2.3.4", port=9000):
+        writes = []
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        writer.write = lambda data: writes.append(data)
+        async def _drain():
+            pass
+        writer.drain = _drain
+        peer = Peer(host, port, writer=writer)
+        return peer, writes
+
+    def _valid_hello_auth_data(self, initiator_wallet, challenge):
+        from qbit_network.config import CHAIN_ID
+        from qbit_network.crypto.mldsa import MLDSA
+        proof_msg = _build_auth_message(challenge, initiator_wallet.address)
+        proof_sig = MLDSA.sign(initiator_wallet.signing_sk, proof_msg)
+        return {
+            "protocol_version": 2,
+            "node_id": "test_node",
+            "port": 9000,
+            "chain_id": CHAIN_ID,
+            "challenge": challenge.hex(),
+            "timestamp": int(time.time()),
+            "signing_pk": initiator_wallet.signing_pk.hex(),
+            "proof": proof_sig.hex(),
+        }
+
+    @pytest.mark.asyncio
+    async def test_missing_proof_field_rejected(self):
+        """hello_auth without proof field must be rejected."""
+        import os
+        from qbit_network.config import CHAIN_ID
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        node = self._make_node(wb)
+        peer, _ = self._make_peer_with_writer()
+        challenge = os.urandom(32)
+        data = {
+            "protocol_version": 2,
+            "node_id": "a",
+            "port": 9000,
+            "chain_id": CHAIN_ID,
+            "challenge": challenge.hex(),
+            "timestamp": int(time.time()),
+            "signing_pk": wa.signing_pk.hex(),
+            # no proof field
+        }
+        result = await node._handle_hello_auth_inbound(peer, data)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_empty_proof_field_rejected(self):
+        """hello_auth with empty proof string must be rejected."""
+        import os
+        from qbit_network.config import CHAIN_ID
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        node = self._make_node(wb)
+        peer, _ = self._make_peer_with_writer()
+        challenge = os.urandom(32)
+        data = {
+            "protocol_version": 2,
+            "node_id": "a",
+            "port": 9000,
+            "chain_id": CHAIN_ID,
+            "challenge": challenge.hex(),
+            "timestamp": int(time.time()),
+            "signing_pk": wa.signing_pk.hex(),
+            "proof": "",
+        }
+        result = await node._handle_hello_auth_inbound(peer, data)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_invalid_proof_hex_rejected(self):
+        """hello_auth with non-hex proof must be rejected."""
+        import os
+        from qbit_network.config import CHAIN_ID
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        node = self._make_node(wb)
+        peer, _ = self._make_peer_with_writer()
+        challenge = os.urandom(32)
+        data = {
+            "protocol_version": 2,
+            "node_id": "a",
+            "port": 9000,
+            "chain_id": CHAIN_ID,
+            "challenge": challenge.hex(),
+            "timestamp": int(time.time()),
+            "signing_pk": wa.signing_pk.hex(),
+            "proof": "not_valid_hex!!!",
+        }
+        result = await node._handle_hello_auth_inbound(peer, data)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_wrong_key_proof_rejected(self):
+        """Proof signed by a different key than signing_pk must be rejected."""
+        import os
+        from qbit_network.config import CHAIN_ID
+        from qbit_network.crypto.mldsa import MLDSA
+        wa = Wallet.generate()
+        wrong_wallet = Wallet.generate()
+        wb = Wallet.generate()
+        node = self._make_node(wb)
+        peer, _ = self._make_peer_with_writer()
+        challenge = os.urandom(32)
+        # Sign proof with wrong_wallet but claim wa's pubkey
+        proof_msg = _build_auth_message(challenge, wa.address)
+        bad_proof = MLDSA.sign(wrong_wallet.signing_sk, proof_msg)
+        data = {
+            "protocol_version": 2,
+            "node_id": "a",
+            "port": 9000,
+            "chain_id": CHAIN_ID,
+            "challenge": challenge.hex(),
+            "timestamp": int(time.time()),
+            "signing_pk": wa.signing_pk.hex(),
+            "proof": bad_proof.hex(),
+        }
+        result = await node._handle_hello_auth_inbound(peer, data)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_proof_for_wrong_challenge_rejected(self):
+        """Proof signed over a different challenge must be rejected."""
+        import os
+        from qbit_network.config import CHAIN_ID
+        from qbit_network.crypto.mldsa import MLDSA
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        node = self._make_node(wb)
+        peer, _ = self._make_peer_with_writer()
+        challenge = os.urandom(32)
+        other_challenge = os.urandom(32)
+        # Sign proof over different challenge
+        proof_msg = _build_auth_message(other_challenge, wa.address)
+        bad_proof = MLDSA.sign(wa.signing_sk, proof_msg)
+        data = {
+            "protocol_version": 2,
+            "node_id": "a",
+            "port": 9000,
+            "chain_id": CHAIN_ID,
+            "challenge": challenge.hex(),
+            "timestamp": int(time.time()),
+            "signing_pk": wa.signing_pk.hex(),
+            "proof": bad_proof.hex(),
+        }
+        result = await node._handle_hello_auth_inbound(peer, data)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_valid_proof_accepted(self):
+        """hello_auth with valid proof field must be accepted."""
+        import os
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        node = self._make_node(wb)
+        peer, writes = self._make_peer_with_writer()
+        challenge = os.urandom(32)
+        data = self._valid_hello_auth_data(wa, challenge)
+        result = await node._handle_hello_auth_inbound(peer, data)
+        assert result is True
+        # Should have written auth_response
+        assert len(writes) >= 1
+
+    @pytest.mark.asyncio
+    async def test_proof_non_string_type_rejected(self):
+        """proof field that is not a string must be rejected."""
+        import os
+        from qbit_network.config import CHAIN_ID
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        node = self._make_node(wb)
+        peer, _ = self._make_peer_with_writer()
+        challenge = os.urandom(32)
+        data = {
+            "protocol_version": 2,
+            "node_id": "a",
+            "port": 9000,
+            "chain_id": CHAIN_ID,
+            "challenge": challenge.hex(),
+            "timestamp": int(time.time()),
+            "signing_pk": wa.signing_pk.hex(),
+            "proof": 12345,  # not a string
+        }
+        result = await node._handle_hello_auth_inbound(peer, data)
+        assert result is False
+
+
+# =========================================================================
+# Part 2: Encrypted channel tests
+# =========================================================================
+
+class TestEncryptedChannel:
+    """Tests for P2P encrypted channel using ML-KEM + AES-256-GCM."""
+
+    def _make_capturing_peer(self, host="1.2.3.4", port=9000, connected=True):
+        writes = []
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        writer.write = lambda data: writes.append(data)
+        async def _drain():
+            pass
+        writer.drain = _drain
+        peer = Peer(host, port, writer=writer)
+        peer.connected = connected
+        return peer, writes
+
+    def test_peer_initial_encryption_state(self):
+        """New peers start with no encryption."""
+        p = Peer("1.2.3.4", 9000)
+        assert p.session_key is None
+        assert p.encrypted is False
+        assert p.encryption_pk is None
+
+    def test_derive_session_key_deterministic(self):
+        """Same shared secret produces same session key."""
+        ss = os.urandom(32)
+        k1 = _derive_session_key(ss)
+        k2 = _derive_session_key(ss)
+        assert k1 == k2
+        assert len(k1) == 32
+
+    def test_derive_session_key_different_inputs(self):
+        """Different shared secrets produce different keys."""
+        k1 = _derive_session_key(b"\x01" * 32)
+        k2 = _derive_session_key(b"\x02" * 32)
+        assert k1 != k2
+
+    @pytest.mark.asyncio
+    async def test_send_encrypted_with_session_key(self):
+        """send_encrypted wraps message in AES-GCM when encrypted."""
+        from qbit_network.crypto.aes import aes_decrypt
+        peer, writes = self._make_capturing_peer()
+        peer.session_key = os.urandom(32)
+        peer.encrypted = True
+
+        await peer.send_encrypted("new_block", {"index": 1})
+        assert len(writes) == 1
+        import json as _json
+        outer = _json.loads(writes[0].decode().strip())
+        assert outer["type"] == MSG_ENCRYPTED
+        # Decrypt the inner message
+        ct = bytes.fromhex(outer["data"]["data"])
+        plaintext = aes_decrypt(peer.session_key, ct)
+        inner = _json.loads(plaintext.decode())
+        assert inner["type"] == "new_block"
+        assert inner["data"]["index"] == 1
+
+    @pytest.mark.asyncio
+    async def test_send_encrypted_fallback_without_key(self):
+        """send_encrypted sends plaintext when no session key."""
+        peer, writes = self._make_capturing_peer()
+        peer.session_key = None
+        peer.encrypted = False
+
+        await peer.send_encrypted("new_block", {"index": 1})
+        assert len(writes) == 1
+        import json as _json
+        msg = _json.loads(writes[0].decode().strip())
+        assert msg["type"] == "new_block"
+
+    def test_decrypt_message_valid(self):
+        """_decrypt_message correctly decrypts valid encrypted message."""
+        from qbit_network.crypto.aes import aes_encrypt
+        import json as _json
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        key = os.urandom(32)
+        peer.session_key = key
+
+        inner_msg = _json.dumps({"type": "new_tx", "data": {"tx_id": "abc"}}).encode()
+        ct = aes_encrypt(key, inner_msg)
+        result = node._decrypt_message(peer, {"data": ct.hex()})
+        assert result is not None
+        mt, data = result
+        assert mt == "new_tx"
+        assert data["tx_id"] == "abc"
+
+    def test_decrypt_message_no_session_key(self):
+        """_decrypt_message returns None when no session key."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.session_key = None
+        result = node._decrypt_message(peer, {"data": "aabb"})
+        assert result is None
+
+    def test_decrypt_message_invalid_ciphertext(self):
+        """_decrypt_message returns None on decryption failure."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.session_key = os.urandom(32)
+        result = node._decrypt_message(peer, {"data": "00" * 50})
+        assert result is None
+
+    def test_decrypt_message_invalid_hex(self):
+        """_decrypt_message returns None on invalid hex."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.session_key = os.urandom(32)
+        result = node._decrypt_message(peer, {"data": "not_hex!!!"})
+        assert result is None
+
+    def test_decrypt_message_non_string_data(self):
+        """_decrypt_message handles non-string data field."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.session_key = os.urandom(32)
+        result = node._decrypt_message(peer, {"data": 12345})
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_handle_session_key_valid(self):
+        """Responder successfully handles session_key message."""
+        from qbit_network.crypto.mlkem import MLKEM
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address,
+                       encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer = Peer("1.2.3.4", 9000)
+        peer.authenticated = True
+
+        # Encapsulate a shared secret using responder's enc pk
+        ct, shared_secret = MLKEM.encapsulate(w.encryption_pk)
+        expected_key = _derive_session_key(shared_secret)
+
+        result = await node._handle_session_key(peer, {
+            "ciphertext": ct.hex(),
+            "encryption_pk": w.encryption_pk.hex(),
+        })
+        assert result is True
+        assert peer.encrypted is True
+        assert peer.session_key == expected_key
+
+    @pytest.mark.asyncio
+    async def test_handle_session_key_no_encryption_keys(self):
+        """session_key rejected when node has no encryption keys."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        # no encryption keys
+        peer = Peer("1.2.3.4", 9000)
+        peer.authenticated = True
+        result = await node._handle_session_key(peer, {"ciphertext": "aa" * 1088})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_handle_session_key_unauthenticated_peer(self):
+        """session_key rejected from unauthenticated peer."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address,
+                       encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer = Peer("1.2.3.4", 9000)
+        peer.authenticated = False
+        result = await node._handle_session_key(peer, {"ciphertext": "aa" * 1088})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_handle_session_key_invalid_ct_length(self):
+        """session_key rejected with wrong ciphertext length."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address,
+                       encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer = Peer("1.2.3.4", 9000)
+        peer.authenticated = True
+        result = await node._handle_session_key(peer, {"ciphertext": "aa" * 10})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_encrypted_message_roundtrip(self):
+        """Full roundtrip: encrypt at sender, decrypt at receiver."""
+        from qbit_network.crypto.aes import aes_encrypt
+        import json as _json
+        node = P2PNode()
+        key = os.urandom(32)
+
+        # Sender side
+        peer_send, writes = self._make_capturing_peer()
+        peer_send.session_key = key
+        peer_send.encrypted = True
+        await peer_send.send_encrypted("new_block", {"index": 42})
+
+        # Receiver side
+        peer_recv = Peer("2.2.2.2", 9001)
+        peer_recv.session_key = key
+        outer = _json.loads(writes[0].decode().strip())
+        result = node._decrypt_message(peer_recv, outer["data"])
+        assert result is not None
+        mt, data = result
+        assert mt == "new_block"
+        assert data["index"] == 42
+
+    @pytest.mark.asyncio
+    async def test_initiate_encrypted_channel_both_have_keys(self):
+        """Initiator sends session_key when both sides have encryption keys."""
+        w = Wallet.generate()
+        w2 = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address,
+                       encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer, writes = self._make_capturing_peer()
+        peer.encryption_pk = w2.encryption_pk
+        peer.authenticated = True
+
+        await node._initiate_encrypted_channel(peer)
+        assert peer.encrypted is True
+        assert peer.session_key is not None
+        assert len(peer.session_key) == 32
+        # Should have sent session_key message
+        import json as _json
+        msg = _json.loads(writes[0].decode().strip())
+        assert msg["type"] == MSG_SESSION_KEY
+
+    @pytest.mark.asyncio
+    async def test_initiate_encrypted_channel_no_peer_enc_pk(self):
+        """No session_key sent when peer has no encryption_pk (v1 fallback)."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address,
+                       encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer, writes = self._make_capturing_peer()
+        peer.encryption_pk = None
+        peer.authenticated = True
+
+        await node._initiate_encrypted_channel(peer)
+        assert peer.encrypted is False
+        assert len(writes) == 0
+
+    @pytest.mark.asyncio
+    async def test_initiate_encrypted_channel_no_own_enc_keys(self):
+        """No session_key sent when we have no encryption keys."""
+        w = Wallet.generate()
+        w2 = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        # no encryption_sk/pk
+        peer, writes = self._make_capturing_peer()
+        peer.encryption_pk = w2.encryption_pk
+        peer.authenticated = True
+
+        await node._initiate_encrypted_channel(peer)
+        assert peer.encrypted is False
+        assert len(writes) == 0
+
+    def test_resolve_encryption_pk_valid(self):
+        """Valid ML-KEM-768 public key resolves correctly."""
+        w = Wallet.generate()
+        node = P2PNode()
+        result = node._resolve_encryption_pk(w.encryption_pk.hex())
+        assert result == w.encryption_pk
+
+    def test_resolve_encryption_pk_wrong_length(self):
+        node = P2PNode()
+        assert node._resolve_encryption_pk("aa" * 10) is None
+
+    def test_resolve_encryption_pk_empty(self):
+        node = P2PNode()
+        assert node._resolve_encryption_pk("") is None
+
+    def test_resolve_encryption_pk_non_string(self):
+        node = P2PNode()
+        assert node._resolve_encryption_pk(12345) is None
+
+    def test_resolve_encryption_pk_invalid_hex(self):
+        node = P2PNode()
+        assert node._resolve_encryption_pk("zzzz") is None
+
+    def test_has_encryption_keys(self):
+        w = Wallet.generate()
+        node = P2PNode(encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        assert node._has_encryption_keys() is True
+
+    def test_has_no_encryption_keys(self):
+        node = P2PNode()
+        assert node._has_encryption_keys() is False
+
+    @pytest.mark.asyncio
+    async def test_broadcast_uses_encrypted_send(self):
+        """broadcast() uses send_encrypted which wraps when encrypted."""
+        from qbit_network.crypto.aes import aes_decrypt
+        import json as _json
+        node = P2PNode()
+        peer, writes = self._make_capturing_peer()
+        key = os.urandom(32)
+        peer.session_key = key
+        peer.encrypted = True
+        node.peers["1.2.3.4:9000"] = peer
+
+        await node.broadcast(MSG_NEW_TX, {"tx_id": "test123"})
+        assert len(writes) == 1
+        outer = _json.loads(writes[0].decode().strip())
+        assert outer["type"] == MSG_ENCRYPTED
+        ct = bytes.fromhex(outer["data"]["data"])
+        plaintext = aes_decrypt(key, ct)
+        inner = _json.loads(plaintext.decode())
+        assert inner["type"] == MSG_NEW_TX
+        assert inner["data"]["tx_id"] == "test123"
+
+
+# =========================================================================
+# Part 3: Connection dedup tests
+# =========================================================================
+
+class TestConnectionDedup:
+    """Tests for connection deduplication logic."""
+
+    def test_peer_initial_dedup_fields(self):
+        """New peers have correct initial dedup field values."""
+        p = Peer("1.2.3.4", 9000)
+        assert p.is_initiator is False
+        assert p.remote_address == ""
+
+    def test_no_dedup_when_no_remote_address(self):
+        """Dedup is skipped when remote_address is not set."""
+        w = Wallet.generate()
+        node = P2PNode(validator_address=w.address)
+        peer = Peer("1.2.3.4", 9000)
+        peer.remote_address = ""
+        result = node._dedup_connection(peer)
+        assert result is False
+
+    def test_no_dedup_when_no_validator_address(self):
+        """Dedup is skipped when our validator_address is not set."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.remote_address = "qv1someaddress"
+        result = node._dedup_connection(peer)
+        assert result is False
+
+    def test_no_dedup_when_no_duplicate(self):
+        """Dedup returns False when there is no duplicate connection."""
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        node = P2PNode(validator_address=wa.address)
+
+        peer = Peer("1.2.3.4", 9000)
+        peer.remote_address = wb.address
+        peer.authenticated = True
+        peer.is_initiator = True
+        node.peers["1.2.3.4:9000"] = peer
+
+        result = node._dedup_connection(peer)
+        assert result is False
+
+    def test_dedup_we_are_smaller_keep_our_outbound(self):
+        """When we have smaller address, keep the connection we initiated."""
+        # Create wallets and ensure ordering
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        # Ensure wa.address < wb.address for deterministic test
+        if wa.address > wb.address:
+            wa, wb = wb, wa
+
+        node = P2PNode(validator_address=wa.address)
+
+        # Existing connection (they initiated — inbound)
+        existing = Peer("1.2.3.4", 9000)
+        existing.remote_address = wb.address
+        existing.authenticated = True
+        existing.is_initiator = False
+        existing.connected = True
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        existing.writer = writer
+        node.peers["1.2.3.4:9000"] = existing
+
+        # New connection (we initiated — outbound)
+        new_peer = Peer("1.2.3.4", 9001)
+        new_peer.remote_address = wb.address
+        new_peer.authenticated = True
+        new_peer.is_initiator = True
+        node.peers["1.2.3.4:9001"] = new_peer
+
+        result = node._dedup_connection(new_peer)
+        # We are smaller, we keep our outbound (new_peer), close existing
+        assert result is False
+        assert "1.2.3.4:9000" not in node.peers
+
+    def test_dedup_we_are_smaller_close_their_outbound(self):
+        """When we have smaller address, close the connection they initiated."""
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        if wa.address > wb.address:
+            wa, wb = wb, wa
+
+        node = P2PNode(validator_address=wa.address)
+
+        # Existing connection (we initiated — outbound)
+        existing = Peer("1.2.3.4", 9000)
+        existing.remote_address = wb.address
+        existing.authenticated = True
+        existing.is_initiator = True
+        existing.connected = True
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        existing.writer = writer
+        node.peers["1.2.3.4:9000"] = existing
+
+        # New connection (they initiated — inbound)
+        new_peer = Peer("1.2.3.4", 9001)
+        new_peer.remote_address = wb.address
+        new_peer.authenticated = True
+        new_peer.is_initiator = False
+        node.peers["1.2.3.4:9001"] = new_peer
+
+        result = node._dedup_connection(new_peer)
+        # We are smaller, close the inbound (new_peer), keep our outbound
+        assert result is True
+
+    def test_dedup_they_are_smaller_close_our_outbound(self):
+        """When they have smaller address, close the connection we initiated."""
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        if wa.address > wb.address:
+            wa, wb = wb, wa
+        # wb has larger address, use it as our address
+        node = P2PNode(validator_address=wb.address)
+
+        # Existing connection (they initiated — inbound)
+        existing = Peer("1.2.3.4", 9000)
+        existing.remote_address = wa.address
+        existing.authenticated = True
+        existing.is_initiator = False
+        existing.connected = True
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        existing.writer = writer
+        node.peers["1.2.3.4:9000"] = existing
+
+        # New connection (we initiated — outbound)
+        new_peer = Peer("1.2.3.4", 9001)
+        new_peer.remote_address = wa.address
+        new_peer.authenticated = True
+        new_peer.is_initiator = True
+        node.peers["1.2.3.4:9001"] = new_peer
+
+        result = node._dedup_connection(new_peer)
+        # They are smaller, close our outbound (new_peer), keep their inbound
+        assert result is True
+
+    def test_dedup_they_are_smaller_keep_their_outbound(self):
+        """When they have smaller address, keep the connection they initiated."""
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        if wa.address > wb.address:
+            wa, wb = wb, wa
+        node = P2PNode(validator_address=wb.address)
+
+        # Existing connection (we initiated — outbound)
+        existing = Peer("1.2.3.4", 9000)
+        existing.remote_address = wa.address
+        existing.authenticated = True
+        existing.is_initiator = True
+        existing.connected = True
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        existing.writer = writer
+        node.peers["1.2.3.4:9000"] = existing
+
+        # New connection (they initiated — inbound)
+        new_peer = Peer("1.2.3.4", 9001)
+        new_peer.remote_address = wa.address
+        new_peer.authenticated = True
+        new_peer.is_initiator = False
+        node.peers["1.2.3.4:9001"] = new_peer
+
+        result = node._dedup_connection(new_peer)
+        # They are smaller, keep their outbound (new_peer), close our outbound
+        assert result is False
+        assert "1.2.3.4:9000" not in node.peers
+
+    def test_dedup_skips_unauthenticated_peers(self):
+        """Dedup does not consider unauthenticated peers as duplicates."""
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        node = P2PNode(validator_address=wa.address)
+
+        # Existing connection (not authenticated)
+        existing = Peer("1.2.3.4", 9000)
+        existing.remote_address = wb.address
+        existing.authenticated = False  # not authenticated
+        existing.is_initiator = True
+        existing.connected = True
+        node.peers["1.2.3.4:9000"] = existing
+
+        # New connection
+        new_peer = Peer("1.2.3.4", 9001)
+        new_peer.remote_address = wb.address
+        new_peer.authenticated = True
+        new_peer.is_initiator = True
+        node.peers["1.2.3.4:9001"] = new_peer
+
+        result = node._dedup_connection(new_peer)
+        # Unauthenticated peer is not a duplicate
+        assert result is False
+
+    def test_dedup_different_remote_addresses(self):
+        """Peers with different remote_addresses are not duplicates."""
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+        wc = Wallet.generate()
+        node = P2PNode(validator_address=wa.address)
+
+        p1 = Peer("1.2.3.4", 9000)
+        p1.remote_address = wb.address
+        p1.authenticated = True
+        p1.is_initiator = True
+        node.peers["1.2.3.4:9000"] = p1
+
+        p2 = Peer("1.2.3.4", 9001)
+        p2.remote_address = wc.address  # different address
+        p2.authenticated = True
+        p2.is_initiator = True
+        node.peers["1.2.3.4:9001"] = p2
+
+        result = node._dedup_connection(p2)
+        assert result is False
+
+
+# =========================================================================
+# Full mutual auth handshake with encryption (unit-level, no real TCP)
+# =========================================================================
+
+class TestMutualAuthWithEncryption:
+
+    @pytest.mark.asyncio
+    async def test_full_handshake_with_encrypted_channel(self):
+        """Full mutual auth + encrypted channel establishment."""
+        import os
+        import json as _json
+        from qbit_network.config import CHAIN_ID
+        from qbit_network.crypto.mldsa import MLDSA
+        from qbit_network.crypto.mlkem import MLKEM
+
+        wa = Wallet.generate()
+        wb = Wallet.generate()
+
+        node_a = P2PNode(signing_sk=wa.signing_sk, signing_pk=wa.signing_pk,
+                         validator_address=wa.address,
+                         encryption_sk=wa.encryption_sk, encryption_pk=wa.encryption_pk)
+        node_b = P2PNode(signing_sk=wb.signing_sk, signing_pk=wb.signing_pk,
+                         validator_address=wb.address,
+                         encryption_sk=wb.encryption_sk, encryption_pk=wb.encryption_pk)
+
+        a_writes = []
+        b_writes = []
+
+        def make_writer(capture_list):
+            w = MagicMock()
+            w.is_closing.return_value = False
+            async def _drain():
+                pass
+            w.drain = _drain
+            def _write(data):
+                capture_list.append(data)
+            w.write = _write
+            return w
+
+        peer_b_at_a = Peer("2.2.2.2", 9001)
+        peer_b_at_a.writer = make_writer(a_writes)
+        peer_b_at_a.is_initiator = True
+
+        peer_a_at_b = Peer("1.1.1.1", 9000)
+        peer_a_at_b.writer = make_writer(b_writes)
+        peer_a_at_b.is_initiator = False
+
+        # Step 1: A initiates (with proof + encryption_pk)
+        challenge_a = os.urandom(_CHALLENGE_LEN)
+        peer_b_at_a.challenge = challenge_a
+        peer_b_at_a.auth_deadline = time.monotonic() + 10
+        peer_b_at_a.protocol_version = 2
+
+        proof_msg = _build_auth_message(challenge_a, wa.address)
+        proof_sig = MLDSA.sign(wa.signing_sk, proof_msg)
+
+        hello_auth_data = {
+            "protocol_version": 2,
+            "node_id": "node_a",
+            "port": 9000,
+            "chain_id": CHAIN_ID,
+            "challenge": challenge_a.hex(),
+            "timestamp": int(time.time()),
+            "signing_pk": wa.signing_pk.hex(),
+            "proof": proof_sig.hex(),
+            "encryption_pk": wa.encryption_pk.hex(),
+        }
+
+        # Step 2: B handles hello_auth
+        result = await node_b._handle_hello_auth_inbound(peer_a_at_b, hello_auth_data)
+        assert result is True
+
+        auth_response_msg = _json.loads(b_writes[0].decode().strip())
+        assert auth_response_msg["type"] == "auth_response"
+        auth_response_data = auth_response_msg["data"]
+        assert "encryption_pk" in auth_response_data
+
+        # Step 3: A handles auth_response
+        result = await node_a._handle_auth_response(peer_b_at_a, auth_response_data)
+        assert result is True
+        assert peer_b_at_a.authenticated is True
+
+        # A should have sent auth_confirm + session_key
+        assert len(a_writes) >= 2
+        auth_confirm_msg = _json.loads(a_writes[0].decode().strip())
+        assert auth_confirm_msg["type"] == "auth_confirm"
+
+        session_key_msg = _json.loads(a_writes[1].decode().strip())
+        assert session_key_msg["type"] == "session_key"
+        assert peer_b_at_a.encrypted is True
+
+        # Step 4: B handles auth_confirm
+        auth_confirm_data = auth_confirm_msg["data"]
+        result = await node_b._handle_auth_confirm(peer_a_at_b, auth_confirm_data)
+        assert result is True
+        assert peer_a_at_b.authenticated is True
+
+        # Step 5: B handles session_key
+        session_key_data = session_key_msg["data"]
+        result = await node_b._handle_session_key(peer_a_at_b, session_key_data)
+        assert result is True
+        assert peer_a_at_b.encrypted is True
+
+        # Both sides should have the same session key
+        assert peer_b_at_a.session_key == peer_a_at_b.session_key
+        assert len(peer_b_at_a.session_key) == 32

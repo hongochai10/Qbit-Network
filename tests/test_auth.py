@@ -337,16 +337,22 @@ class TestHelloAuthFieldValidation:
     @pytest.mark.asyncio
     async def test_valid_hello_auth_accepted(self):
         """A well-formed hello_auth from a valid peer is accepted."""
+        from qbit_network.crypto.mldsa import MLDSA
         server, _ = _make_p2p_node()
         remote = Wallet.generate()
         peer = _make_peer()
+        challenge = os.urandom(32)
+        # Build proof: Sign(remote_sk, domain || challenge || remote_address)
+        proof_msg = _build_auth_message(challenge, remote.address)
+        proof_sig = MLDSA.sign(remote.signing_sk, proof_msg)
         data = {
             "protocol_version": 2,
             "timestamp": time.time(),
             "chain_id": CHAIN_ID,
-            "challenge": os.urandom(32).hex(),
+            "challenge": challenge.hex(),
             "signing_pk": remote.signing_pk.hex(),
             "node_id": "test-node",
+            "proof": proof_sig.hex(),
         }
         result = await server._handle_hello_auth_inbound(peer, data)
         assert result is True

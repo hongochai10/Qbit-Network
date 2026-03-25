@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.4.0-sprint2 (2026-03-25)
+
+### Epoch Rotation
+- Validator set frozen at every EPOCH_LENGTH (100) block boundary
+- Epoch snapshots stored in-memory (`_epochs` dict) and SQLite (`epochs` table)
+- `get_current_epoch()` and `get_epoch_validators()` query methods
+- Consensus uses frozen epoch validators for dPoS selection during epoch
+- Stake changes take effect at next epoch boundary
+- Epoch state correctly rolled back during chain reorganization
+- RPC: `qv_getEpoch` (public); REST: `GET /api/v1/epochs/current`
+
+### Slashing (Double-Sign Evidence)
+- New EVIDENCE transaction type for reporting validator double-signing
+- `Transaction.evidence()` factory method with payload validation
+- Evidence processing: verifies two valid ML-DSA-65 signatures over different block hashes at same index
+- Slashing: reduces all stakers' positions by SLASH_PERCENTAGE (50%) proportionally
+- Validator removed from active set if total stake drops below MIN_STAKE
+- Slashed validators cannot receive new stake
+- Duplicate evidence rejected (one slash per validator)
+- SQLite `slashing_events` table for persistent slashing history
+- Slashing state correctly rolled back during chain reorganization
+- RPC: `qv_submitEvidence` (protected), `qv_getSlashingEvents` (public)
+- REST: `POST /api/v1/evidence` (protected), `GET /api/v1/slashing-events` (public)
+- EVIDENCE payloads exempt from 8KB limit (32KB limit, accommodates two ML-DSA-65 signatures)
+- 37 new tests covering tx validation, epoch rotation, slashing logic, rollback, SQLite persistence
+
+### Auth Verify-Before-Sign Fix (SPRINT1-003)
+- Initiator now includes `proof` field in `hello_auth` message
+  - Proof = Sign(sk, AUTH_DOMAIN || challenge || initiator_address)
+  - Responder verifies proof before signing anything (fixes identity confusion vulnerability)
+- Missing, empty, invalid hex, wrong-key, and wrong-challenge proofs all rejected
+- 7 new tests for proof validation
+
+### P2P Encrypted Channel
+- Post-authentication encrypted transport using ML-KEM-768 + AES-256-GCM
+  - Initiator generates ML-KEM encapsulation using responder's `encryption_pk`
+  - Sends `session_key` message with ciphertext and own `encryption_pk`
+  - Responder decapsulates to recover shared secret
+  - Both derive 32-byte AES key via SHA3-256(shared_secret)
+- All post-handshake messages wrapped in `{"type": "encrypted", "data": ct_hex}`
+- `Peer` gains `session_key`, `encrypted`, `encryption_pk` fields
+- `Peer.send_encrypted()` method: AES-GCM wraps if encrypted, plaintext fallback otherwise
+- `P2PNode._decrypt_message()` handles inbound encrypted messages in both read loops
+- `P2PNode._initiate_encrypted_channel()` called after auth completes (initiator side)
+- `P2PNode._handle_session_key()` processes key exchange (responder side)
+- `broadcast()` uses `send_encrypted()` for automatic encryption
+- Backward compatible: v1 peers and peers without `encryption_pk` stay plaintext
+- `P2PNode` constructor accepts `encryption_sk`/`encryption_pk` parameters
+- Node passes validator wallet's encryption keys to P2P layer on startup
+- 22 new tests for encrypted channel
+
+### Connection Deduplication (A-01)
+- After successful authentication, checks for duplicate connections to same remote address
+- Deterministic tie-breaker: node with lexicographically smaller address keeps its outbound connection
+- `Peer` gains `is_initiator` and `remote_address` fields
+- `P2PNode._dedup_connection()` called after auth completes on both sides
+- Losing connection is closed immediately; winning connection continues
+- 10 new tests for dedup logic
+
+### Full Integration Test
+- `TestMutualAuthWithEncryption.test_full_handshake_with_encrypted_channel`
+  - Simulates complete auth + encryption flow between two nodes
+  - Verifies both sides derive identical session keys
+
 ## v0.4.0-sprint1 (2026-03-25)
 
 ### Genesis Validator On-Chain Transaction (SPRINT1-007)

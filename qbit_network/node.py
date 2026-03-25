@@ -250,6 +250,8 @@ class FullNode:
         m("qv_getTxsByRecipient", self._rpc_txs_by_recipient)
         m("qv_getStake", self._rpc_get_stake)
         m("qv_getValidatorStakes", self._rpc_get_validator_stakes)
+        m("qv_getEpoch", self._rpc_get_epoch)
+        m("qv_getSlashingEvents", self._rpc_get_slashing_events)
 
         # Protected (require auth token)
         m("qv_notarize", self._rpc_notarize)
@@ -261,6 +263,7 @@ class FullNode:
         m("qv_stake", self._rpc_stake)
         m("qv_delegate", self._rpc_delegate)
         m("qv_unstake", self._rpc_unstake)
+        m("qv_submitEvidence", self._rpc_submit_evidence)
         m("qv_getSharedWithMe", self._rpc_shared_with_me)
         m("qv_getSharedSecret", self._rpc_get_shared_secret)
         m("qv_decapsulateShared", self._rpc_decapsulate_shared)
@@ -621,6 +624,58 @@ class FullNode:
             "encryption_pk": w.encryption_pk.hex(),
         }
 
+    # ---- Epoch & Slashing RPC ----
+
+    async def _rpc_get_epoch(self):
+        """Get current epoch info (public)."""
+        epoch = self.blockchain.get_current_epoch()
+        validators = self.blockchain.get_epoch_validators(epoch)
+        return {
+            "epoch": epoch,
+            "validators": [{"address": addr, "stake": stake} for addr, stake in validators],
+        }
+
+    async def _rpc_get_slashing_events(self, validator=""):
+        """Get slashing events, optionally filtered by validator (public)."""
+        if not isinstance(validator, str):
+            raise ValueError("validator must be string")
+        return self.blockchain.get_slashing_events(validator)
+
+    async def _rpc_submit_evidence(self, wallet_address="", validator_address="",
+                                   block_index=0, block_a_hash="", block_b_hash="",
+                                   block_a_sig="", block_b_sig=""):
+        """Submit double-sign evidence (protected)."""
+        if not isinstance(wallet_address, str) or not wallet_address:
+            raise ValueError("wallet_address required")
+        if not isinstance(validator_address, str) or not validator_address:
+            raise ValueError("validator_address required")
+        if not isinstance(block_index, int) or block_index < 0:
+            raise ValueError("block_index must be non-negative integer")
+        for name, val in [("block_a_hash", block_a_hash), ("block_b_hash", block_b_hash),
+                          ("block_a_sig", block_a_sig), ("block_b_sig", block_b_sig)]:
+            if not isinstance(val, str) or not val:
+                raise ValueError(f"{name} must be non-empty string")
+
+        w = self._get_wallet(wallet_address)
+        async with self._lock_for(w.address):
+            tx = Transaction.evidence(
+                sender=w.address,
+                validator_address=validator_address,
+                block_index=block_index,
+                block_a_hash=block_a_hash,
+                block_b_hash=block_b_hash,
+                block_a_sig=block_a_sig,
+                block_b_sig=block_b_sig,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        from .network.p2p import MSG_NEW_TX
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        return {"tx_id": result, "validator_address": validator_address}
+
     # ================================================================
     # Helpers
     # ================================================================
@@ -696,6 +751,9 @@ class FullNode:
             self.p2p.signing_sk = validator_wallet.signing_sk
             self.p2p.signing_pk = validator_wallet.signing_pk
             self.p2p.validator_address = validator_wallet.address
+            # Enable P2P encrypted channel with encryption keys
+            self.p2p.encryption_sk = validator_wallet.encryption_sk
+            self.p2p.encryption_pk = validator_wallet.encryption_pk
 
         # Load chain (validators are now known → block signatures are verified)
         loaded = self.blockchain.load()

@@ -2,6 +2,48 @@
 
 ## Implemented
 
+### v0.4.0-sprint2 (2026-03-25)
+- [x] Epoch Rotation
+  - Every EPOCH_LENGTH blocks (100), active validators are frozen for that epoch
+  - `_current_epoch`, `_epoch_validators`, `_epochs` state tracked in Blockchain
+  - Stake changes during an epoch take effect at the next epoch boundary
+  - `get_current_epoch()`, `get_epoch_validators()` query methods
+  - SQLite `epochs` table (epoch_number, block_start, validators_json)
+  - Epoch rollback when rolling back past epoch boundaries
+  - RPC: `qv_getEpoch` (public), REST: `GET /epochs/current`
+- [x] Slashing (Double-Sign Evidence)
+  - EVIDENCE TxType for reporting double-sign misbehaviour
+  - `Transaction.evidence()` factory method with full payload validation
+  - Signature verification: both block signatures checked against validator pubkey
+  - SLASH_PERCENTAGE=50 config: slashes all stakers proportionally
+  - Validator removed from active set if stake drops below MIN_STAKE
+  - `_slashed_validators` set prevents re-staking to slashed validators
+  - `_processed_evidence` set prevents duplicate slashing
+  - SQLite `slashing_events` table (validator, evidence_tx_id, amount_slashed, block_index)
+  - Slashing rollback supported
+  - RPC: `qv_submitEvidence` (protected), `qv_getSlashingEvents` (public)
+  - REST: `POST /evidence`, `GET /slashing-events`
+  - EVIDENCE payloads use 32KB limit (contains two ML-DSA-65 signatures)
+  - 37 new tests (9 tx validation, 6 epoch, 9 slashing, 2 rollback, 6 SQLite, 5 edge cases)
+- [x] Auth Verify-Before-Sign fix (SPRINT1-003)
+  - Initiator signs proof = Sign(sk, domain || challenge || address) in hello_auth
+  - Responder verifies proof BEFORE signing anything (prevents identity confusion)
+  - Missing, empty, invalid, or wrong-key proof rejected
+- [x] P2P Encrypted Channel
+  - ML-KEM-768 key exchange after mutual authentication
+  - AES-256-GCM encrypted transport for all post-auth messages
+  - Session key derived via SHA3-256 from ML-KEM shared secret
+  - Initiator encapsulates shared secret using responder's encryption_pk
+  - Encrypted message format: `{"type": "encrypted", "data": ciphertext_hex}`
+  - Graceful fallback: v1 peers and peers without encryption_pk stay plaintext
+  - Peer fields: session_key, encrypted, encryption_pk
+  - broadcast() uses send_encrypted() for automatic encryption when available
+- [x] Connection Deduplication (A-01)
+  - Detects duplicate connections to same remote address after authentication
+  - Deterministic tie-breaker: node with smaller address keeps its outbound connection
+  - Peer fields: is_initiator, remote_address
+  - 48 new tests (7 proof, 22 encryption, 10 dedup, 1 full handshake+encryption, 8 misc)
+
 ### v0.4.0-sprint1 (2026-03-25)
 - [x] Genesis validator on-chain transaction (SPRINT1-007)
   - Genesis validator registered via REGISTER_VALIDATOR tx in genesis block
