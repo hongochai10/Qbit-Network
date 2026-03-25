@@ -357,3 +357,214 @@ class TestPersistence:
         # The tampered tx will fail verify()
         tampered_tx = bc2.get_block(1).transactions[0]
         assert tampered_tx.verify() is False  # signature invalid
+
+
+# ========== REGISTER_VALIDATOR ==========
+
+class TestRegisterValidator:
+    """Tests for REGISTER_VALIDATOR transaction type and on-chain validator registry."""
+
+    def test_valid_validator_registration(self, blockchain, wallet):
+        """A properly formed REGISTER_VALIDATOR tx registers the address."""
+        w2 = Wallet.generate()
+        reg = Transaction.register_validator(w2.address, w2.signing_pk, w2.address, nonce=0)
+        reg.sign(w2.signing_sk, w2.signing_pk)
+        submit_and_mine(blockchain, wallet, reg)
+        assert blockchain.is_registered_validator(w2.address)
+        assert blockchain.consensus.is_validator(w2.address)
+
+    def test_address_derivation_mismatch_rejected(self, blockchain, wallet):
+        """REGISTER_VALIDATOR with validator_address that doesn't match pubkey is rejected."""
+        w2 = Wallet.generate()
+        w3 = Wallet.generate()
+        # Use w2's pubkey but claim w3's address
+        tx = Transaction(
+            TxType.REGISTER_VALIDATOR, w2.address,
+            payload={"validator_pubkey": w2.signing_pk.hex(),
+                     "validator_address": w3.address},  # mismatch!
+            nonce=0
+        )
+        tx.sign(w2.signing_sk, w2.signing_pk)
+        ok, err = blockchain.submit_tx(tx)
+        assert not ok
+        # Validation rejects address mismatch
+        assert "validator_address" in err or "payload" in err
+
+    def test_duplicate_registration_rejected_first_wins(self, blockchain, wallet):
+        """Second REGISTER_VALIDATOR for same address is silently ignored (first-wins)."""
+        w2 = Wallet.generate()
+        reg1 = Transaction.register_validator(w2.address, w2.signing_pk, w2.address, nonce=0)
+        reg1.sign(w2.signing_sk, w2.signing_pk)
+        submit_and_mine(blockchain, wallet, reg1)
+        assert blockchain.is_registered_validator(w2.address)
+
+        # Second registration with same address (different key would fail addr check, so reuse)
+        reg2 = Transaction.register_validator(w2.address, w2.signing_pk, w2.address, nonce=1)
+        reg2.sign(w2.signing_sk, w2.signing_pk)
+        ok, _ = blockchain.submit_tx(reg2)
+        # Pool may accept it but block processing will skip (first-wins)
+        if ok:
+            # After w2 registered, round-robin may select either validator
+            next_idx = blockchain.height + 1
+            expected = blockchain.consensus.select_validator(next_idx)
+            if expected == wallet.address:
+                block = blockchain.produce_block(wallet.address, wallet.signing_sk)
+            else:
+                block = blockchain.produce_block(w2.address, w2.signing_sk)
+            assert block is not None
+        # Validator is still registered (unchanged)
+        assert blockchain.is_registered_validator(w2.address)
+
+    def test_only_registered_validators_can_produce_blocks(self):
+        """An unregistered wallet cannot produce blocks."""
+        impostor = Wallet.generate()
+        v1 = Wallet.generate()
+        bc = Blockchain()
+        bc.consensus.add_validator(v1.address, v1.signing_pk)
+        bc.init_chain(v1.address, v1.signing_sk)
+
+        tx = Transaction.notarize(v1.address, "aa", nonce=0)
+        tx.sign(v1.signing_sk, v1.signing_pk)
+        bc.submit_tx(tx)
+
+        # Impostor tries to produce block
+        block = bc.produce_block(impostor.address, impostor.signing_sk)
+        assert block is None  # only v1 is in validator set
+
+    def test_validator_registration_rollback(self, blockchain, wallet):
+        """Rolling back a REGISTER_VALIDATOR block removes the validator."""
+        w2 = Wallet.generate()
+        reg = Transaction.register_validator(w2.address, w2.signing_pk, w2.address, nonce=0)
+        reg.sign(w2.signing_sk, w2.signing_pk)
+        submit_and_mine(blockchain, wallet, reg)
+        assert blockchain.is_registered_validator(w2.address)
+
+        # Rollback the registration block
+        blockchain._rollback_to(1)
+        assert not blockchain.is_registered_validator(w2.address)
+        assert not blockchain.consensus.is_validator(w2.address)
+
+    def test_validator_registry_survives_sqlite_reload(self, tmp_dir):
+        """Validator registered on-chain persists through SQLite reload."""
+        w1 = Wallet.generate()
+        bc = Blockchain(data_dir=tmp_dir)
+        bc.consensus.add_validator(w1.address, w1.signing_pk)
+        bc.init_chain(w1.address, w1.signing_sk, validator_pk=w1.signing_pk)
+
+        w2 = Wallet.generate()
+        reg = Transaction.register_validator(w2.address, w2.signing_pk, w2.address, nonce=0)
+        reg.sign(w2.signing_sk, w2.signing_pk)
+        submit_and_mine(bc, w1, reg)
+        assert bc.is_registered_validator(w2.address)
+
+        # Reload
+        bc2 = Blockchain(data_dir=tmp_dir)
+        bc2.consensus.add_validator(w1.address, w1.signing_pk)
+        bc2.consensus.add_validator(w2.address, w2.signing_pk)
+        loaded = bc2.load()
+        assert loaded is True
+        assert bc2.is_registered_validator(w2.address)
+
+    def test_register_validator_invalid_pubkey_rejected(self, blockchain, wallet):
+        """REGISTER_VALIDATOR with non-hex pubkey is rejected."""
+        tx = Transaction(
+            TxType.REGISTER_VALIDATOR, wallet.address,
+            payload={"validator_pubkey": "not-hex!", "validator_address": wallet.address},
+            nonce=0
+        )
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, err = blockchain.submit_tx(tx)
+        assert not ok
+
+    def test_register_validator_wrong_pubkey_size(self, blockchain, wallet):
+        """REGISTER_VALIDATOR with wrong-size pubkey is rejected."""
+        tx = Transaction(
+            TxType.REGISTER_VALIDATOR, wallet.address,
+            payload={"validator_pubkey": "ab" * 100, "validator_address": wallet.address},
+            nonce=0
+        )
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, err = blockchain.submit_tx(tx)
+        assert not ok
+
+
+# ========== _ChainProxy (SQLite mode) ==========
+
+class TestChainProxy:
+    """Tests for _ChainProxy indexing in SQLite-backed blockchain."""
+
+    def _build_sqlite_chain(self, tmp_dir, wallet, num_blocks=3):
+        bc = Blockchain(data_dir=tmp_dir)
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk)
+        for i in range(num_blocks):
+            tx = Transaction.notarize(wallet.address, f"{i:064x}", nonce=i)
+            tx.sign(wallet.signing_sk, wallet.signing_pk)
+            bc.submit_tx(tx)
+            bc.produce_block(wallet.address, wallet.signing_sk)
+        return bc
+
+    def test_len_after_genesis(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=0)
+        assert len(bc.chain) == 1  # genesis only
+
+    def test_len_after_blocks(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=3)
+        assert len(bc.chain) == 4  # genesis + 3
+
+    def test_bool_true_when_chain_has_blocks(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=0)
+        assert bool(bc.chain) is True
+
+    def test_positive_index(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=2)
+        block = bc.chain[0]
+        assert block.index == 0
+
+    def test_negative_index(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=2)
+        last = bc.chain[-1]
+        assert last.index == 2  # genesis + 2 blocks -> index 2
+
+    def test_slice_returns_list(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=3)
+        sliced = bc.chain[1:3]
+        assert isinstance(sliced, list)
+        assert len(sliced) == 2
+
+    def test_out_of_range_raises(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=1)
+        with pytest.raises(IndexError):
+            _ = bc.chain[99]
+
+    def test_iteration(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=2)
+        blocks = list(bc.chain)
+        assert len(blocks) == 3  # genesis + 2
+
+    def test_get_block_returns_none_for_out_of_range(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=1)
+        assert bc.get_block(999) is None
+
+    def test_latest_block_in_sync_after_append(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=0)
+        initial_hash = bc.latest_block.block_hash
+
+        tx = Transaction.notarize(wallet.address, "aa", nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        bc.submit_tx(tx)
+        bc.produce_block(wallet.address, wallet.signing_sk)
+
+        assert bc.latest_block.block_hash != initial_hash
+        assert bc.latest_block.index == 1
+
+    def test_height_consistency_after_multiple_operations(self, wallet, tmp_dir):
+        bc = self._build_sqlite_chain(tmp_dir, wallet, num_blocks=5)
+        assert bc.height == 5
+        assert len(bc.chain) == 6  # genesis + 5
+
+    def test_db_lock_attribute_exists(self, wallet, tmp_dir):
+        bc = Blockchain(data_dir=tmp_dir)
+        assert hasattr(bc, '_db_lock')
+        import threading
+        assert isinstance(bc._db_lock, type(threading.Lock()))

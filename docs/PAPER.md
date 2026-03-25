@@ -10,7 +10,7 @@
 
 ## Abstract
 
-We present QBit Network, a purpose-built blockchain system that replaces all quantum-vulnerable cryptographic primitives with NIST-standardized post-quantum algorithms. QBit Network utilizes ML-DSA-65 (CRYSTALS-Dilithium) for digital signatures and ML-KEM-768 (CRYSTALS-Kyber) for key encapsulation, providing quantum-resistant document notarization, encrypted vault storage, and secure data sharing. The system implements a dual-keypair identity model, Proof of Authority consensus with round-robin validator selection, and a domain-separated Merkle tree construction. Through nine rounds of security auditing encompassing 104 identified and resolved vulnerabilities, we demonstrate that a production-grade PQC blockchain can be realized with acceptable performance overhead. Our implementation achieves 0.29ms per ML-DSA signature, 3.8ms for block production with 50 transactions, and a per-transaction wire overhead of approximately 10.9KB — a 55x increase over ECDSA-based systems, which we argue is an acceptable trade-off for quantum resistance.
+We present QBit Network, a purpose-built blockchain system that replaces all quantum-vulnerable cryptographic primitives with NIST-standardized post-quantum algorithms. QBit Network utilizes ML-DSA-65 (CRYSTALS-Dilithium) for digital signatures and ML-KEM-768 (CRYSTALS-Kyber) for key encapsulation, providing quantum-resistant document notarization, encrypted vault storage, and secure data sharing. The system implements a dual-keypair identity model, Proof of Authority consensus with round-robin validator selection, and a domain-separated Merkle tree construction. Version 0.3.0 extends the protocol with a 3-step ML-DSA-65 authenticated P2P handshake, on-chain validator key distribution, permanent key revocation, SQLite-primary chain storage, a 26-endpoint REST API gateway, and real-time WebSocket subscriptions. Through thirteen rounds of security auditing encompassing 181+ identified vulnerabilities, we demonstrate that a production-grade PQC blockchain can be realized with acceptable performance overhead. Our implementation achieves 0.29ms per ML-DSA signature, 3.8ms for block production with 50 transactions, and a per-transaction wire overhead of approximately 10.9KB — a 55x increase over ECDSA-based systems, which we argue is an acceptable trade-off for quantum resistance.
 
 **Keywords:** post-quantum cryptography, blockchain, ML-DSA, ML-KEM, document notarization, key encapsulation, CRYSTALS-Dilithium, CRYSTALS-Kyber
 
@@ -40,9 +40,10 @@ This paper presents:
 
 1. **A complete PQC blockchain architecture** replacing all quantum-vulnerable primitives (ECDSA, ECDH) with NIST-standardized alternatives (ML-DSA, ML-KEM).
 2. **A dual-keypair identity model** separating signing (ML-DSA) from encryption (ML-KEM) responsibilities, with an on-chain key registry binding encryption keys to addresses.
-3. **A domain-specific transaction model** optimized for document notarization, encrypted storage, and ML-KEM-based secure sharing.
-4. **A comprehensive security analysis** from nine independent audit rounds covering cryptographic, protocol, network, and implementation security.
-5. **Performance benchmarks** quantifying the overhead of PQC primitives in a blockchain context.
+3. **A domain-specific transaction model** optimized for document notarization, encrypted storage, and ML-KEM-based secure sharing — including on-chain validator key distribution and permanent key revocation.
+4. **A ML-DSA-65 mutual authentication protocol** for P2P connections, providing a 3-step challenge-response handshake that resists downgrade, impersonation, and cross-protocol signature reuse.
+5. **A comprehensive security analysis** from thirteen independent audit rounds covering cryptographic, protocol, network, and implementation security.
+6. **Performance benchmarks** quantifying the overhead of PQC primitives in a blockchain context.
 
 ---
 
@@ -114,7 +115,7 @@ This separation follows the principle of key-use separation recommended by NIST 
 
 ### 3.3 Transaction Types
 
-QBit Network defines four transaction types:
+QBit Network defines six transaction types:
 
 **NOTARIZE**: Creates an immutable timestamp proof that a document (identified by its SHA3-256 hash) existed at the transaction's timestamp. The first notarization of a given hash is preserved as the canonical proof; subsequent notarizations by other parties are recorded but do not overwrite the first.
 
@@ -132,13 +133,17 @@ SHARE transactions include an optional `expires` field (Unix timestamp) after wh
 
 **REGISTER_KEY**: Publishes an ML-KEM encryption public key on-chain, binding it to the sender's address. The system maintains a version history of all registered keys, ensuring that shares encrypted to previous keys remain identifiable.
 
+**REGISTER_VALIDATOR**: Distributes an ML-DSA-65 validator public key on-chain, enabling all nodes to verify block signatures without out-of-band key exchange. The payload includes the validator's ML-DSA public key and the derived address (verified to match). Duplicate registrations are rejected. The genesis validator is auto-registered in memory; subsequent validators join via this transaction.
+
+**REVOKE_KEY**: Permanently revokes a signing, encryption, or validator key on-chain. Self-revocation only. Revoking a signing key immediately blocks the address from submitting further transactions. Revoking a validator key removes the validator from the active consensus set. The genesis validator cannot be revoked. Revocations are rolled back during chain reorganization.
+
 ### 3.4 Transaction Structure
 
 Each transaction contains:
 
 | Field | Description |
 |-------|-------------|
-| `type` | NOTARIZE, STORE, SHARE, or REGISTER_KEY |
+| `type` | NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, or REVOKE_KEY |
 | `from` | Sender address (qv1...) |
 | `to` | Recipient address (SHARE only) |
 | `timestamp` | Unix timestamp |
@@ -202,7 +207,7 @@ Self-produced blocks undergo full consensus validation before commitment, preven
 
 ### 4.1 Audit Methodology
 
-The system underwent nine rounds of security auditing:
+The system underwent thirteen rounds of security auditing:
 
 | Round | Focus | Issues Found |
 |-------|-------|-------------|
@@ -215,7 +220,12 @@ The system underwent nine rounds of security auditing:
 | 7 | Fix regression and edge case analysis | 11 |
 | 8 | Cross-module consistency verification | 4 |
 | 9 | Semantic and protocol correctness | 5 |
-| **Total** | | **104** |
+| 10 | v0.2.0 feature audit (fork, TLS, CLI, store) | 7 |
+| 11 | Rate limiting and auth baseline | 9 |
+| 12 | v0.2.1 full audit (P2P auth, Docker, store/share) | 9 |
+| 13 Sprint 1 | v0.3.0 Sprint 1 (HELLO_AUTH, REGISTER_VALIDATOR, rate limiting, CI) | 14 |
+| 13 Sprint 2 | v0.3.0 Sprint 2 (SQLite-primary, REVOKE_KEY, REST API, WebSocket) | 16 |
+| **Total** | | **181+** |
 
 ### 4.2 Cryptographic Security
 
@@ -231,7 +241,21 @@ The system underwent nine rounds of security auditing:
 
 **Token comparison**: RPC authentication uses `hmac.compare_digest` for constant-time comparison, preventing timing side-channel attacks.
 
-### 4.3 Protocol Security
+### 4.3 P2P Authentication Protocol
+
+Prior to v0.3.0, P2P connections were unauthenticated — any node could announce blocks or transactions without proving identity. Version 0.3.0 introduces a 3-step ML-DSA-65 mutual challenge-response handshake:
+
+1. **hello_auth** (Initiator → Responder): Initiator sends its ML-DSA public key, derived node address, and a 32-byte random challenge.
+2. **auth_response** (Responder → Initiator): Responder signs the initiator's challenge and issues its own counter-challenge.
+3. **auth_confirm** (Initiator → Responder): Initiator signs the counter-challenge; both sides mark the connection authenticated.
+
+Signatures use a domain-separated prefix `"QBIT_AUTH_v2:" || challenge || signer_address` to prevent cross-protocol reuse. Challenges are single-use and cryptographically random. Auth deadlines use `time.monotonic()` to resist wall-clock skew attacks. Failed authentication triggers immediate disconnect with no fallback to unauthenticated state. Block and transaction messages from unauthenticated v2 peers are rejected after the grace period.
+
+### 4.4 Multi-Validator Key Distribution
+
+In earlier versions, validator public keys were distributed out-of-band at node startup. This creates a bootstrapping problem: nodes that join after genesis must be manually configured with each validator's public key. Version 0.3.0 solves this with the `REGISTER_VALIDATOR` transaction type. Validators publish their ML-DSA-65 public keys on-chain, where any node can discover and verify them without out-of-band communication. The registry is persisted in SQLite and fully rolled back on chain reorganization. Duplicate registrations are rejected to prevent key substitution attacks.
+
+### 4.5 Protocol Security
 
 **Replay protection**: Transactions include a `chainId` field and per-sender nonces. Cross-block replay is prevented by the `_chain_tx_ids` set checked during consensus validation.
 
@@ -241,7 +265,9 @@ The system underwent nine rounds of security auditing:
 
 **Notarization immutability**: The first notarization of a document hash is preserved; subsequent notarizations cannot overwrite it. A `get_all_notarizations()` API returns all parties who notarized the same hash.
 
-### 4.4 Network Security
+**Key revocation**: Compromised or rotated keys can be revoked permanently via `REVOKE_KEY` transactions. Revoked signing keys are blocked from further transaction submission at both the RPC and consensus layers. This closes a gap where a leaked signing key could remain active indefinitely.
+
+### 4.6 Network Security
 
 **SSRF prevention**: The `_is_safe_peer()` function blocks connections to private RFC 1918 ranges (configurable), link-local addresses, reserved ranges, cloud metadata endpoints, and common service ports (SSH, MySQL, etc.).
 
@@ -251,22 +277,23 @@ The system underwent nine rounds of security auditing:
 
 **Data canonicalization**: P2P re-broadcasts use `block.to_dict()` / `tx.to_dict()` canonical forms, not raw peer data, preventing injection of extra fields.
 
-### 4.5 Concurrency Safety
+### 4.7 Concurrency Safety
 
 All transaction-creating RPC endpoints acquire a per-address `asyncio.Lock` before computing the nonce, signing, and submitting. This prevents concurrent requests from producing duplicate nonces.
 
-### 4.6 Persistence Security
+### 4.8 Persistence Security
 
 Both chain and wallet files use atomic writes (tempfile + `os.replace`). Wallet files are written with 0o600 permissions set before the atomic rename (no TOCTOU window). Chain loading validates all blocks in a temporary list before committing (all-or-nothing), preventing partial corruption on load failure.
 
-### 4.7 Known Limitations
+### 4.9 Known Limitations
 
 | Limitation | Impact | Mitigation Path |
 |------------|--------|-----------------|
 | Python `bytes` immutability | Secret keys persist in heap after GC | C extension with `mmap` for key storage |
-| No P2P authentication | MITM, Sybil, Eclipse attacks possible | Noise Protocol or mutual TLS |
-| No fork resolution | Conflicting blocks cause permanent divergence | Finality gadget or longest-valid-chain rule |
-| In-memory chain storage | Memory exhaustion on large chains | LevelDB/RocksDB backend |
+| Sybil/Eclipse attacks | HELLO_AUTH raises bar; no peer reputation scoring | Peer reputation system (v0.4.0) |
+| No chain pruning | Disk grows without bound | Pruning strategy (v0.4.0) |
+| Responder signs before verifying initiator fields | Protocol correctness gap | Auth protocol redesign (deferred v0.4.0) |
+| Genesis validator not registered via on-chain tx | Minor bootstrapping inconsistency | Low risk; auto-registered in memory |
 | No transaction pool persistence | Pending TXs lost on crash | WAL-based pool persistence |
 
 ---
@@ -299,22 +326,29 @@ Both chain and wallet files use atomic writes (tempfile + `os.replace`). Wallet 
 
 ```
 qbit_network/
-├── crypto/          Zero-dependency PQC primitives
-│   ├── mldsa.py     ML-DSA-65 (sign, verify, keygen)
-│   ├── mlkem.py     ML-KEM-768 (encapsulate, decapsulate, keygen)
-│   ├── hashing.py   SHA3-256, SHAKE-256, Merkle tree
-│   └── aes.py       AES-256-GCM
-├── core/            Blockchain state machine
-│   ├── wallet.py    Dual-keypair identity, scrypt+AES encryption
-│   ├── transaction.py  4 TX types with validation
-│   ├── block.py     Block structure with Merkle proofs
+├── crypto/            Zero-dependency PQC primitives
+│   ├── mldsa.py       ML-DSA-65 (sign, verify, keygen)
+│   ├── mlkem.py       ML-KEM-768 (encapsulate, decapsulate, keygen)
+│   ├── hashing.py     SHA3-256, SHAKE-256, Merkle tree
+│   └── aes.py         AES-256-GCM
+├── core/              Blockchain state machine
+│   ├── wallet.py      Dual-keypair identity, scrypt+AES encryption
+│   ├── transaction.py 6 TX types with validation
+│   ├── block.py       Block structure with Merkle proofs
 │   ├── blockchain.py  Chain management, indices, persistence
-│   └── consensus.py   PoA with round-robin
-├── network/         Communication
-│   ├── p2p.py       TCP P2P with peer validation
-│   └── rpc.py       JSON-RPC 2.0 with bearer auth
-└── node.py          Full node orchestrator
+│   ├── consensus.py   PoA with round-robin, revocation enforcement
+│   ├── store.py       SQLite backend (blocks, validators, revocations)
+│   └── proof.py       Merkle proof export
+├── network/           Communication
+│   ├── p2p.py         TCP P2P, HELLO_AUTH 3-step auth, peer validation
+│   ├── rpc.py         JSON-RPC 2.0 with bearer auth, WebSocket attach
+│   ├── rest_api.py    REST API gateway (26 endpoints, sub-app pattern)
+│   ├── websocket.py   WebSocket pub/sub (3 channels, WebSocketManager)
+│   └── rate_limiter.py Token bucket rate limiting (P2P + RPC)
+└── node.py            Full node orchestrator
 ```
+
+Dependencies flow strictly downward: `crypto` has zero internal dependencies; `core` depends only on `crypto`; `network` depends on `core`; `node` orchestrates all layers.
 
 Dependencies flow strictly downward: `crypto` has zero internal dependencies; `core` depends only on `crypto`; `network` depends on `core`; `node` orchestrates all layers.
 
@@ -424,14 +458,17 @@ The separation of ML-DSA (signing) and ML-KEM (encryption) follows NIST SP 800-5
 
 ### 8.3 Security Hardening Through Iterative Audit
 
-The nine-round audit process demonstrates the value of iterative security review:
+The thirteen-round audit process demonstrates the value of iterative security review:
 
 - **Round 1-3** (manual review): Found fundamental issues — broken serialization, XOR encryption, missing validation.
 - **Round 4-5** (regression + automated): Found fix-induced bugs and systematic weaknesses — out-of-order block injection, SSRF via peer gossip.
 - **Round 6-7** (red team + edge cases): Found concurrency bugs and protocol-level attacks — nonce race conditions, genesis injection.
 - **Round 8-9** (consistency + semantic): Found subtle correctness issues — notarization overwrite, produce_block bypassing consensus.
+- **Round 10-11** (feature + rate limiting): Found feature-scope issues — unbounded reorg depth, SQLite partial failure, rate limiter shared-state race.
+- **Round 12** (v0.2.1 full audit): Found validator registry overwrite, XSS in HTML proof export, genesis validator not in SQLite.
+- **Round 13 Sprint 1-2** (v0.3.0): Found auth grace period bypass, v1 downgrade on failed auth, handshake flood, rate limiter LRU eviction bypass — all fixed.
 
-This progression from obvious to subtle issues illustrates why single-pass auditing is insufficient for blockchain systems.
+This progression from obvious to subtle issues illustrates why single-pass auditing is insufficient for blockchain systems. New features consistently introduce new attack surfaces that require dedicated audit scope.
 
 ---
 
@@ -441,14 +478,24 @@ QBit Network demonstrates that a fully post-quantum blockchain system is practic
 
 1. **ML-DSA-65 and ML-KEM-768 are performant**: Sub-millisecond operations enable real-time blockchain transaction processing without specialized hardware.
 2. **The 55x size overhead is manageable**: For document notarization workloads with moderate transaction volumes, storage requirements remain practical.
-3. **Security requires depth**: 104 vulnerabilities across 9 audit rounds — including 7 critical issues — underscore the complexity of building secure blockchain systems, even with well-studied cryptographic primitives.
+3. **Security requires depth**: 181+ vulnerabilities across 13 audit rounds underscore the complexity of building secure blockchain systems, even with well-studied cryptographic primitives.
 4. **Dual-keypair identity enables new capabilities**: The combination of ML-DSA signing with ML-KEM key encapsulation provides a natural framework for authenticated encrypted communication on-chain.
+5. **ML-DSA enables P2P authentication**: The same signing primitive used for transactions and blocks can be applied directly to P2P handshake authentication, enabling post-quantum-secure node identity without additional key material.
+
+### Current Status (v0.3.0, 2026-03-25)
+
+- 6 transaction types (NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY)
+- 3-step ML-DSA-65 P2P mutual authentication (HELLO_AUTH)
+- SQLite-primary persistence (no in-memory chain list for disk-backed nodes)
+- 26-endpoint REST API gateway + WebSocket subscriptions
+- 13 audit rounds, 181+ issues found; 331+ tests passing
+- 3 findings deferred to v0.4.0 (responder-signs-before-verify, genesis validator on-chain tx, parameterized SQLite queries)
 
 ### Future Work
 
-- **Database-backed storage**: Replace in-memory chain with LevelDB/RocksDB for production scalability.
-- **P2P authentication**: Implement Noise Protocol Framework for authenticated peer connections.
+- **Auth protocol hardening**: Fix responder-signs-before-verify (SPRINT1-003); requires redesign of the handshake ordering.
 - **Consensus evolution**: Migrate from PoA to delegated Proof of Stake with slashing for multi-party operation.
+- **P2P encrypted channel**: Add ML-KEM session key + AES-GCM message encryption to the P2P layer.
 - **Light client protocol**: Enable Merkle proof-based verification without full chain download.
 - **Cross-chain anchoring**: Periodic hash commitments to established chains for additional security guarantees.
 
@@ -485,11 +532,21 @@ QBit Network demonstrates that a fully post-quantum blockchain system is practic
 | RPC batch limit | 50 | Prevents CPU exhaustion via batch keygen |
 | scrypt N | 16,384 (min), 1,048,576 (max) | Balances brute-force resistance with DoS prevention |
 
-## Appendix B: RPC API Summary
+## Appendix B: API Summary
+
+### JSON-RPC 2.0
 
 **Public (11 methods):** `qv_blockNumber`, `qv_getBlock`, `qv_getTransaction`, `qv_pendingTxCount`, `qv_verifyDocument`, `qv_getEncryptionPk`, `qv_peerCount`, `qv_nodeInfo`, `qv_validators`, `qv_getTxsBySender`, `qv_getTxsByRecipient`
 
-**Protected (11 methods, require Bearer token):** `qv_newWallet`, `qv_listWallets`, `qv_getWalletKeys`, `qv_registerKey`, `qv_notarize`, `qv_store`, `qv_share`, `qv_getSharedWithMe`, `qv_getSharedSecret`, `qv_decapsulateShared`, `qv_sendRawTransaction`
+**Protected (13 methods, require Bearer token):** `qv_newWallet`, `qv_listWallets`, `qv_getWalletKeys`, `qv_registerKey`, `qv_notarize`, `qv_store`, `qv_share`, `qv_getSharedWithMe`, `qv_getSharedSecret`, `qv_decapsulateShared`, `qv_sendRawTransaction`, `qv_registerValidator`, `qv_revokeKey`
+
+### REST API (`/api/v1/`)
+
+14 public endpoints (13 GET + 1 POST `/verify`) and 7 protected POST/GET endpoints. See `docs/PROTOCOL.md` Section 6 for the full endpoint list.
+
+### WebSocket (`/ws`)
+
+Channels: `new_block`, `new_tx`, `chain_stats`. Protocol: JSON subscribe/unsubscribe/ping/pong. See `docs/PROTOCOL.md` Section 5 for the full message format.
 
 ## Appendix C: Test Execution Summary
 

@@ -520,3 +520,220 @@ class TestResponseStructure(AsyncRESTTestCase):
     async def test_content_type_json(self):
         resp = await self.client.get("/api/v1/health")
         self.assertIn("application/json", resp.headers.get("Content-Type", ""))
+
+
+# ===================================================================
+# Sprint 3: REST API edge cases
+# ===================================================================
+
+class TestBlockHashValidation(AsyncRESTTestCase):
+    """Block hash hex validation tests (Sprint 3)."""
+
+    async def test_non_hex_block_hash_rejected(self):
+        """Non-hex characters in block hash path return 400."""
+        resp = await self.client.get("/api/v1/blocks/hash/not-valid-hex!!!")
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIsNotNone(body["error"])
+        self.assertIn("invalid hash", body["error"]["message"].lower())
+
+    async def test_uppercase_hex_accepted(self):
+        """Uppercase hex in block hash is valid."""
+        node = self.app["_mock_node"]
+        block = node.blockchain.get_block(0)
+        resp = await self.client.get(f"/api/v1/blocks/hash/{block.block_hash.upper()}")
+        # Either 200 (found) or 404 (not found by uppercase hash) depending on case-sensitivity
+        # The key check is that it doesn't return 400 (invalid format)
+        self.assertNotEqual(resp.status, 400)
+
+    async def test_all_zeros_hash_returns_404(self):
+        """A valid hex hash that doesn't exist returns 404."""
+        resp = await self.client.get("/api/v1/blocks/hash/" + "00" * 32)
+        self.assertEqual(resp.status, 404)
+
+    async def test_short_hex_returns_404(self):
+        """A short but valid hex string that doesn't match any block returns 404."""
+        resp = await self.client.get("/api/v1/blocks/hash/abcdef")
+        self.assertEqual(resp.status, 404)
+
+
+class TestVerifyPublicEndpoint(AsyncRESTTestCase):
+    """/verify is accessible without auth token."""
+
+    async def test_verify_no_auth_required(self):
+        """POST /verify works without Authorization header."""
+        resp = await self.client.post(
+            "/api/v1/verify",
+            json={"document_hash": "abc123def456"},
+        )
+        # Should succeed (200) even without auth
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("verified", body["data"])
+
+    async def test_verify_not_found_no_auth(self):
+        """POST /verify returns false for unknown hash without auth."""
+        resp = await self.client.post(
+            "/api/v1/verify",
+            json={"document_hash": "doesnotexist123"},
+        )
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertFalse(body["data"]["verified"])
+
+    async def test_verify_missing_hash_no_auth(self):
+        """POST /verify with empty hash returns 400 without auth."""
+        resp = await self.client.post(
+            "/api/v1/verify",
+            json={"document_hash": ""},
+        )
+        self.assertEqual(resp.status, 400)
+
+
+class TestPaginationEdgeCases(AsyncRESTTestCase):
+    """Pagination edge cases (Sprint 3)."""
+
+    async def test_page_beyond_total_returns_empty(self):
+        """Requesting page beyond total returns empty list, not error."""
+        resp = await self.client.get("/api/v1/blocks?page=9999&limit=10")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertEqual(body["data"]["blocks"], [])
+        self.assertGreaterEqual(body["data"]["total"], 0)
+
+    async def test_page_zero_rejected(self):
+        """page=0 returns 400."""
+        resp = await self.client.get("/api/v1/blocks?page=0")
+        self.assertEqual(resp.status, 400)
+
+    async def test_page_negative_rejected(self):
+        """Negative page returns 400."""
+        resp = await self.client.get("/api/v1/blocks?page=-1")
+        self.assertEqual(resp.status, 400)
+
+    async def test_limit_zero_rejected(self):
+        """limit=0 returns 400."""
+        resp = await self.client.get("/api/v1/blocks?limit=0")
+        self.assertEqual(resp.status, 400)
+
+    async def test_limit_above_max_rejected(self):
+        """limit=101 (above MAX=100) returns 400."""
+        resp = await self.client.get("/api/v1/blocks?limit=101")
+        self.assertEqual(resp.status, 400)
+
+    async def test_txs_sender_page_beyond_total(self):
+        """Sender tx pagination beyond total returns empty list."""
+        node = self.app["_mock_node"]
+        addr = node.wallet.address
+        resp = await self.client.get(f"/api/v1/txs/sender/{addr}?page=999&limit=10")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        # Empty list when page exceeds total
+        self.assertEqual(len(body["data"]["transactions"]), 0)
+
+    async def test_page_one_is_valid(self):
+        """page=1 is the minimum valid page."""
+        resp = await self.client.get("/api/v1/blocks?page=1")
+        self.assertEqual(resp.status, 200)
+
+    async def test_limit_one_returns_single_block(self):
+        """limit=1 returns exactly one block."""
+        resp = await self.client.get("/api/v1/blocks?page=1&limit=1")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertLessEqual(len(body["data"]["blocks"]), 1)
+
+
+class TestOversizedPOST(AsyncRESTTestCase):
+    """Oversized POST body is rejected (Sprint 3)."""
+
+    async def test_oversized_submit_tx_rejected(self):
+        """POST body larger than client_max_size (1 MB) is rejected."""
+        huge_body = b"x" * (1024 * 1024 + 1)  # 1 MB + 1 byte
+        resp = await self.client.post(
+            "/api/v1/txs",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=huge_body,
+        )
+        # aiohttp returns 413 or 400 for oversized body
+        self.assertIn(resp.status, (400, 413, 500))
+
+    async def test_oversized_notarize_rejected(self):
+        """POST /notarize with huge body returns error."""
+        huge_body = b"x" * (1024 * 1024 + 1)
+        resp = await self.client.post(
+            "/api/v1/notarize",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=huge_body,
+        )
+        self.assertIn(resp.status, (400, 413, 500))
+
+
+class TestAdditionalProtectedEndpoints(AsyncRESTTestCase):
+    """Additional protected endpoint auth checks (Sprint 3)."""
+
+    async def test_store_no_auth_rejected(self):
+        """POST /store without auth returns 401."""
+        resp = await self.client.post("/api/v1/store", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_share_no_auth_rejected(self):
+        """POST /share without auth returns 401."""
+        resp = await self.client.post("/api/v1/share", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_register_validator_no_auth_rejected(self):
+        """POST /register-validator without auth returns 401."""
+        resp = await self.client.post("/api/v1/register-validator", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_bearer_prefix_required(self):
+        """Auth token without 'Bearer' prefix returns 401."""
+        resp = await self.client.post(
+            "/api/v1/wallets",
+            headers={"Authorization": AUTH_TOKEN},  # missing "Bearer " prefix
+        )
+        self.assertEqual(resp.status, 401)
+
+    async def test_token_with_prefix_garbage_rejected(self):
+        """Token with garbage prefix is rejected."""
+        resp = await self.client.post(
+            "/api/v1/wallets",
+            headers={"Authorization": f"Token {AUTH_TOKEN}"},  # "Token" instead of "Bearer"
+        )
+        self.assertEqual(resp.status, 401)
+
+    async def test_info_endpoint_public(self):
+        """/info endpoint is accessible without auth."""
+        resp = await self.client.get("/api/v1/info")
+        self.assertEqual(resp.status, 200)
+
+    async def test_validators_endpoint_public(self):
+        """/validators endpoint is accessible without auth."""
+        resp = await self.client.get("/api/v1/validators")
+        self.assertEqual(resp.status, 200)
+
+    async def test_pool_endpoint_public(self):
+        """/pool endpoint is accessible without auth."""
+        resp = await self.client.get("/api/v1/pool")
+        self.assertEqual(resp.status, 200)
+
+    async def test_notarize_non_json_body(self):
+        """POST /notarize with non-JSON returns 400."""
+        resp = await self.client.post(
+            "/api/v1/notarize",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}",
+                     "Content-Type": "text/plain"},
+            data=b"this is not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_block_by_index_string_rejected(self):
+        """GET /blocks/abc returns 400 (invalid index)."""
+        resp = await self.client.get("/api/v1/blocks/abc")
+        self.assertEqual(resp.status, 400)
+
+    async def test_block_by_index_float_rejected(self):
+        """GET /blocks/1.5 returns 400 (float is not valid index)."""
+        resp = await self.client.get("/api/v1/blocks/1.5")
+        self.assertEqual(resp.status, 400)

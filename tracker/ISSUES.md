@@ -14,16 +14,15 @@
 |----|----------|-------------|--------|
 | ISS-007 | Scalability | No chain pruning — disk grows without limit | Open — needs pruning strategy |
 | ISS-009 | Security | Sybil/Eclipse attacks possible with no peer reputation | Open — needs reputation system |
-| ISS-010 | UX | No key revocation mechanism — compromised keys can't be invalidated | Open — needs governance |
 | ISS-016 | Security | TLS implemented (--tls-cert/--tls-key) but self-signed cert UX needs improvement | Open — add ACME/Let's Encrypt support |
 
 ### LOW Priority
 
 | ID | Category | Description | Status |
 |----|----------|-------------|--------|
-| ISS-012 | Code | `get_nonce` naming misleading — returns next expected, not current | Open — rename deferred to Sprint 2 (SQLite migration) |
 | ISS-013 | Protocol | Reverse-order blocks in sync silently discarded — no reordering | Open |
 | ISS-014 | Protocol | `getSharedWithMe` doesn't verify wallet ownership | Open — by design |
+
 ## Closed Issues
 
 | ID | Category | Description | Resolution | Closed |
@@ -37,5 +36,7 @@
 | ISS-005 | Protocol | Unsolicited MSG_BLOCKS can cause chain-split between honest nodes | Request-ID correlation added in v0.2.0 — unsolicited blocks rejected | 2026-03-25 |
 | ISS-006 | Scalability | In-memory chain — all blocks/indices in RAM | LevelDB/SQLite persistent backend added in v0.2.0 | 2026-03-25 |
 | ISS-011 | Code | Consensus nonce validation O(n^2) — could precompute sender counts | Precomputed sender-count map; validation now O(n) in v0.2.0 | 2026-03-25 |
+| ISS-010 | UX | No key revocation mechanism — compromised keys can't be invalidated | `REVOKE_KEY` tx type implemented in v0.3.0-sprint2 | 2026-03-25 |
+| ISS-012 | Code | `get_nonce` naming misleading — returns next expected, not current | `get_next_nonce()` alias added in v0.3.0-sprint2 (ISS-012 clarification) | 2026-03-25 |
 
-See [AUDIT_LOG.md](AUDIT_LOG.md) for the 137+ closed issues from 12 audit rounds, plus 14 from Round 13 (151+ total).
+See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (181+ issues across 13 rounds).

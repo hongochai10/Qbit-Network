@@ -1,0 +1,1073 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QBit Network — Chain Explorer</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d0d1a;
+  --bg-card: #141428;
+  --bg-card-hover: #1a1a35;
+  --bg-input: #1e1e3a;
+  --border: #2a2a50;
+  --text: #e0e0f0;
+  --text-dim: #8888aa;
+  --text-muted: #555577;
+  --accent: #00d4ff;
+  --accent-dim: #0099bb;
+  --green: #00ff88;
+  --green-dim: #00cc6a;
+  --red: #ff4466;
+  --orange: #ffaa33;
+  --purple: #bb77ff;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --radius: 8px;
+}
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ---- Scrollbar ---- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ---- Layout ---- */
+.container { max-width: 1200px; margin: 0 auto; padding: 0 16px 40px; }
+
+/* ---- Header ---- */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 0; border-bottom: 1px solid var(--border);
+  flex-wrap: wrap; gap: 12px;
+}
+.header-left { display: flex; align-items: center; gap: 12px; }
+.logo {
+  width: 36px; height: 36px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--purple));
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 16px; color: #fff;
+}
+.header h1 { font-size: 1.25rem; font-weight: 600; }
+.header h1 span { color: var(--accent); }
+.header-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.conn-status {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 0.8rem; color: var(--text-dim);
+}
+.conn-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--red); transition: background 0.3s;
+}
+.conn-dot.connected { background: var(--green); }
+.node-info-chips {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.chip {
+  background: var(--bg-card); border: 1px solid var(--border);
+  padding: 4px 10px; border-radius: 4px; font-size: 0.75rem;
+  color: var(--text-dim); white-space: nowrap;
+}
+.chip b { color: var(--text); font-weight: 600; }
+
+/* ---- Config Bar ---- */
+.config-bar {
+  display: flex; gap: 8px; padding: 12px 0;
+  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.config-bar input {
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text); padding: 6px 10px; border-radius: 4px;
+  font-size: 0.8rem; font-family: var(--mono); flex: 1; min-width: 200px;
+}
+.config-bar input:focus { outline: none; border-color: var(--accent); }
+.config-bar input::placeholder { color: var(--text-muted); }
+.btn {
+  background: var(--accent); color: #000; border: none;
+  padding: 6px 14px; border-radius: 4px; font-size: 0.8rem;
+  font-weight: 600; cursor: pointer; white-space: nowrap;
+  transition: opacity 0.2s;
+}
+.btn:hover { opacity: 0.85; }
+.btn.secondary { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
+.btn.secondary:hover { background: var(--bg-card-hover); }
+
+/* ---- Stats Bar ---- */
+.stats-bar {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; padding: 16px 0;
+}
+.stat-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px;
+  transition: border-color 0.3s;
+}
+.stat-card:hover { border-color: var(--accent-dim); }
+.stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: 4px; }
+.stat-value { font-size: 1.5rem; font-weight: 700; font-family: var(--mono); color: var(--accent); }
+.stat-value.green { color: var(--green); }
+
+/* ---- Tabs ---- */
+.tabs {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border);
+  margin-top: 8px; overflow-x: auto;
+}
+.tab {
+  padding: 10px 18px; font-size: 0.85rem; cursor: pointer;
+  color: var(--text-dim); border-bottom: 2px solid transparent;
+  transition: color 0.2s, border-color 0.2s; white-space: nowrap;
+  background: none; border-top: none; border-left: none; border-right: none;
+  font-family: var(--sans);
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ---- Panels ---- */
+.panel { display: none; padding: 16px 0; }
+.panel.active { display: block; }
+
+/* ---- Table ---- */
+.table-wrap { overflow-x: auto; }
+table {
+  width: 100%; border-collapse: collapse; font-size: 0.82rem;
+}
+th {
+  text-align: left; padding: 8px 10px; color: var(--text-dim);
+  font-weight: 600; font-size: 0.72rem; text-transform: uppercase;
+  letter-spacing: 0.06em; border-bottom: 1px solid var(--border);
+}
+td {
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+tr:hover td { background: var(--bg-card); }
+.hash-cell {
+  font-family: var(--mono); font-size: 0.78rem; color: var(--accent);
+  cursor: pointer; transition: color 0.2s;
+}
+.hash-cell:hover { color: #fff; }
+.tx-type {
+  display: inline-block; padding: 2px 8px; border-radius: 3px;
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+}
+.tx-type.NOTARIZE { background: rgba(0,212,255,0.15); color: var(--accent); }
+.tx-type.STORE { background: rgba(187,119,255,0.15); color: var(--purple); }
+.tx-type.SHARE { background: rgba(0,255,136,0.15); color: var(--green); }
+.tx-type.REGISTER_KEY { background: rgba(255,170,51,0.15); color: var(--orange); }
+
+/* ---- Block Detail ---- */
+.block-detail {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; margin: 8px 0;
+  animation: slideDown 0.2s ease-out;
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.detail-grid {
+  display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px;
+  font-size: 0.8rem;
+}
+.detail-label { color: var(--text-dim); font-weight: 600; }
+.detail-value { font-family: var(--mono); word-break: break-all; }
+
+/* ---- Search / Input group ---- */
+.input-group {
+  display: flex; gap: 8px; margin-bottom: 16px; max-width: 600px;
+}
+.input-group input {
+  flex: 1; background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text); padding: 8px 12px; border-radius: 4px;
+  font-family: var(--mono); font-size: 0.82rem;
+}
+.input-group input:focus { outline: none; border-color: var(--accent); }
+.input-group input::placeholder { color: var(--text-muted); }
+
+/* ---- Result Cards ---- */
+.result-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; margin-top: 12px;
+}
+.result-card h3 { font-size: 0.9rem; margin-bottom: 12px; color: var(--accent); }
+.result-card.error { border-color: var(--red); }
+.result-card.error h3 { color: var(--red); }
+.result-card.success { border-color: var(--green); }
+.result-card.success h3 { color: var(--green); }
+
+/* ---- Validator List ---- */
+.validator-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px; border-bottom: 1px solid var(--border);
+  font-size: 0.82rem;
+}
+.validator-item:last-child { border-bottom: none; }
+.validator-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+  flex-shrink: 0;
+}
+.validator-addr { font-family: var(--mono); color: var(--accent); word-break: break-all; }
+
+/* ---- Pool Breakdown ---- */
+.pool-bar {
+  display: flex; height: 24px; border-radius: 4px; overflow: hidden;
+  margin: 12px 0; background: var(--bg-input);
+}
+.pool-segment { transition: width 0.5s ease; min-width: 0; }
+.pool-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.78rem; }
+.pool-legend-item { display: flex; align-items: center; gap: 5px; }
+.pool-legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+/* ---- Load More ---- */
+.load-more {
+  text-align: center; padding: 12px;
+}
+
+/* ---- Toast ---- */
+.toast-container {
+  position: fixed; bottom: 20px; right: 20px;
+  display: flex; flex-direction: column; gap: 8px; z-index: 1000;
+}
+.toast {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 16px;
+  font-size: 0.8rem; color: var(--text); box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  animation: toastIn 0.3s ease-out;
+  max-width: 340px;
+}
+.toast.block { border-left: 3px solid var(--accent); }
+.toast.tx { border-left: 3px solid var(--green); }
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* ---- New-row highlight ---- */
+@keyframes rowFlash {
+  from { background: rgba(0,212,255,0.12); }
+  to { background: transparent; }
+}
+tr.new-row { animation: rowFlash 1.5s ease-out; }
+
+/* ---- Responsive ---- */
+@media (max-width: 768px) {
+  .header { flex-direction: column; align-items: flex-start; }
+  .stats-bar { grid-template-columns: repeat(2, 1fr); }
+  .detail-grid { grid-template-columns: 1fr; }
+  .config-bar { flex-direction: column; }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">Q</div>
+      <h1><span>QBit</span> Network Explorer</h1>
+    </div>
+    <div class="header-right">
+      <div class="conn-status">
+        <div class="conn-dot" id="connDot"></div>
+        <span id="connLabel">Disconnected</span>
+      </div>
+      <div class="node-info-chips" id="nodeChips"></div>
+    </div>
+  </div>
+
+  <!-- Config Bar -->
+  <div class="config-bar">
+    <input type="text" id="apiUrl" placeholder="API Base URL (e.g. http://localhost:8545)">
+    <input type="text" id="authToken" placeholder="Auth token (optional, for protected endpoints)">
+    <button class="btn" onclick="App.connect()">Connect</button>
+  </div>
+
+  <!-- Stats Bar -->
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="stat-label">Chain Height</div>
+      <div class="stat-value" id="statHeight">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Transactions</div>
+      <div class="stat-value" id="statTxCount">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Pending Pool</div>
+      <div class="stat-value green" id="statPool">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Validators</div>
+      <div class="stat-value" id="statValidators">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Block Time</div>
+      <div class="stat-value" id="statBlockTime">--</div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="tabBar">
+    <button class="tab active" data-panel="blocks">Recent Blocks</button>
+    <button class="tab" data-panel="txSearch">Transaction Viewer</button>
+    <button class="tab" data-panel="validators">Validators</button>
+    <button class="tab" data-panel="verifier">Document Verifier</button>
+    <button class="tab" data-panel="pool">Pool Monitor</button>
+  </div>
+
+  <!-- Panel: Recent Blocks -->
+  <div class="panel active" id="panel-blocks">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Index</th>
+            <th>Hash</th>
+            <th>Validator</th>
+            <th>Txs</th>
+            <th>Timestamp</th>
+          </tr>
+        </thead>
+        <tbody id="blocksBody"></tbody>
+      </table>
+    </div>
+    <div class="load-more">
+      <button class="btn secondary" id="loadMoreBtn" onclick="App.loadMoreBlocks()">Load More</button>
+    </div>
+    <div id="blockDetail"></div>
+  </div>
+
+  <!-- Panel: Transaction Viewer -->
+  <div class="panel" id="panel-txSearch">
+    <div class="input-group">
+      <input type="text" id="txSearchInput" placeholder="Enter Transaction ID...">
+      <button class="btn" onclick="App.searchTx()">Search</button>
+    </div>
+    <div id="txResult"></div>
+  </div>
+
+  <!-- Panel: Validators -->
+  <div class="panel" id="panel-validators">
+    <div id="validatorList"></div>
+  </div>
+
+  <!-- Panel: Document Verifier -->
+  <div class="panel" id="panel-verifier">
+    <div class="input-group">
+      <input type="text" id="docHashInput" placeholder="Enter document hash (SHA3-256)...">
+      <button class="btn" onclick="App.verifyDoc()">Verify</button>
+    </div>
+    <div id="verifyResult"></div>
+  </div>
+
+  <!-- Panel: Pool Monitor -->
+  <div class="panel" id="panel-pool">
+    <div id="poolInfo"></div>
+  </div>
+
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+"use strict";
+var App = (function() {
+
+  // ---- State ----
+  var apiBase = "";
+  var wsUrl = "";
+  var authToken = "";
+  var ws = null;
+  var wsReconnectDelay = 1000;
+  var wsMaxDelay = 30000;
+  var wsReconnectTimer = null;
+  var blocksCache = [];
+  var blocksPage = 1;
+  var blockTimestamps = [];
+
+  // ---- Escaping ----
+  function esc(s) {
+    if (s === null || s === undefined) return "";
+    var d = document.createElement("div");
+    d.appendChild(document.createTextNode(String(s)));
+    return d.innerHTML;
+  }
+
+  function truncHash(h, n) {
+    if (!h) return "";
+    n = n || 8;
+    if (h.length <= n * 2 + 3) return esc(h);
+    return esc(h.slice(0, n)) + "..." + esc(h.slice(-n));
+  }
+
+  // ---- DOM helpers ----
+  function $(id) { return document.getElementById(id); }
+
+  function setText(id, val) {
+    var el = $(id);
+    if (el) el.textContent = String(val);
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function() {});
+    }
+    showToast("Copied to clipboard", "tx");
+  }
+
+  // ---- Toast ----
+  function showToast(msg, cls) {
+    var container = $("toasts");
+    var t = document.createElement("div");
+    t.className = "toast " + (cls || "");
+    t.textContent = msg;
+    container.appendChild(t);
+    setTimeout(function() {
+      if (t.parentNode) t.parentNode.removeChild(t);
+    }, 4000);
+  }
+
+  // ---- API ----
+  function apiGet(path) {
+    var headers = { "Content-Type": "application/json" };
+    if (authToken) headers["Authorization"] = "Bearer " + authToken;
+    return fetch(apiBase + "/api/v1" + path, { headers: headers })
+      .then(function(r) { return r.json(); })
+      .then(function(j) {
+        if (j.error) throw new Error(j.error.message || "API error");
+        return j.data;
+      });
+  }
+
+  function apiPost(path, body) {
+    var headers = { "Content-Type": "application/json" };
+    if (authToken) headers["Authorization"] = "Bearer " + authToken;
+    return fetch(apiBase + "/api/v1" + path, {
+      method: "POST", headers: headers, body: JSON.stringify(body)
+    })
+      .then(function(r) { return r.json(); })
+      .then(function(j) {
+        if (j.error) throw new Error(j.error.message || "API error");
+        return j.data;
+      });
+  }
+
+  // ---- Connection ----
+  function setConnected(yes) {
+    var dot = $("connDot");
+    var label = $("connLabel");
+    if (yes) {
+      dot.className = "conn-dot connected";
+      label.textContent = "Connected";
+    } else {
+      dot.className = "conn-dot";
+      label.textContent = "Disconnected";
+    }
+  }
+
+  function connectWS() {
+    if (ws) {
+      try { ws.close(); } catch(e) {}
+      ws = null;
+    }
+
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch(e) {
+      scheduleReconnect();
+      return;
+    }
+
+    ws.onopen = function() {
+      wsReconnectDelay = 1000;
+      setConnected(true);
+      // Subscribe to channels
+      wsSend({ type: "subscribe", channel: "new_block" });
+      wsSend({ type: "subscribe", channel: "new_tx" });
+      wsSend({ type: "subscribe", channel: "chain_stats" });
+    };
+
+    ws.onmessage = function(ev) {
+      try {
+        var msg = JSON.parse(ev.data);
+        handleWSEvent(msg);
+      } catch(e) {}
+    };
+
+    ws.onclose = function() {
+      setConnected(false);
+      scheduleReconnect();
+    };
+
+    ws.onerror = function() {};
+  }
+
+  function wsSend(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(obj));
+    }
+  }
+
+  function scheduleReconnect() {
+    if (wsReconnectTimer) return;
+    wsReconnectTimer = setTimeout(function() {
+      wsReconnectTimer = null;
+      connectWS();
+    }, wsReconnectDelay);
+    wsReconnectDelay = Math.min(wsReconnectDelay * 2, wsMaxDelay);
+  }
+
+  function handleWSEvent(msg) {
+    if (msg.type !== "event") return;
+    if (msg.channel === "new_block") {
+      onNewBlock(msg.data);
+    } else if (msg.channel === "new_tx") {
+      showToast("New TX: " + (msg.data.tx_type || "?") + " " + truncHash(msg.data.tx_id, 6), "tx");
+    } else if (msg.channel === "chain_stats") {
+      updateStats(msg.data);
+    }
+  }
+
+  // ---- Stats ----
+  function updateStats(s) {
+    if (s.height !== undefined) setText("statHeight", s.height);
+    if (s.tx_count !== undefined) setText("statTxCount", s.tx_count);
+    if (s.pool_size !== undefined) setText("statPool", s.pool_size);
+    if (s.peers !== undefined) {
+      // peers is set from chain_stats but validators are separate
+    }
+  }
+
+  function computeAvgBlockTime() {
+    if (blockTimestamps.length < 2) {
+      setText("statBlockTime", "--");
+      return;
+    }
+    var sorted = blockTimestamps.slice().sort(function(a,b){ return a-b; });
+    var last = sorted.slice(-10);
+    if (last.length < 2) { setText("statBlockTime", "--"); return; }
+    var diffs = [];
+    for (var i = 1; i < last.length; i++) {
+      diffs.push(last[i] - last[i-1]);
+    }
+    var avg = diffs.reduce(function(a,b){ return a+b; }, 0) / diffs.length;
+    setText("statBlockTime", avg.toFixed(1) + "s");
+  }
+
+  // ---- Blocks ----
+  function renderBlocks() {
+    var tbody = $("blocksBody");
+    tbody.innerHTML = "";
+    for (var i = 0; i < blocksCache.length; i++) {
+      var b = blocksCache[i];
+      tbody.appendChild(makeBlockRow(b, false));
+    }
+  }
+
+  function makeBlockRow(b, isNew) {
+    var tr = document.createElement("tr");
+    if (isNew) tr.className = "new-row";
+    tr.setAttribute("data-index", b.index);
+
+    var tdIdx = document.createElement("td");
+    tdIdx.textContent = b.index;
+    tr.appendChild(tdIdx);
+
+    var tdHash = document.createElement("td");
+    tdHash.className = "hash-cell";
+    tdHash.textContent = truncHashPlain(b.hash, 10);
+    tdHash.title = "Click to copy full hash";
+    tdHash.addEventListener("click", function(e) {
+      e.stopPropagation();
+      copyText(b.hash);
+    });
+    tr.appendChild(tdHash);
+
+    var tdVal = document.createElement("td");
+    tdVal.className = "hash-cell";
+    tdVal.textContent = truncHashPlain(b.validator, 8);
+    tdVal.title = "Click to copy validator address";
+    tdVal.addEventListener("click", function(e) {
+      e.stopPropagation();
+      copyText(b.validator);
+    });
+    tr.appendChild(tdVal);
+
+    var tdTxs = document.createElement("td");
+    tdTxs.textContent = b.transactions ? b.transactions.length : 0;
+    tr.appendChild(tdTxs);
+
+    var tdTime = document.createElement("td");
+    tdTime.textContent = formatTime(b.timestamp);
+    tr.appendChild(tdTime);
+
+    tr.style.cursor = "pointer";
+    tr.addEventListener("click", function() { toggleBlockDetail(b); });
+
+    return tr;
+  }
+
+  function truncHashPlain(h, n) {
+    if (!h) return "";
+    n = n || 8;
+    if (h.length <= n * 2 + 3) return h;
+    return h.slice(0, n) + "..." + h.slice(-n);
+  }
+
+  function formatTime(ts) {
+    if (!ts) return "";
+    try {
+      var d = new Date(ts * 1000);
+      if (isNaN(d.getTime())) {
+        d = new Date(ts);
+      }
+      return d.toLocaleString();
+    } catch(e) { return String(ts); }
+  }
+
+  function onNewBlock(b) {
+    // Prepend to cache
+    // Avoid duplicates
+    for (var i = 0; i < blocksCache.length; i++) {
+      if (blocksCache[i].index === b.index) return;
+    }
+    blocksCache.unshift(b);
+    if (blocksCache.length > 100) blocksCache.pop();
+
+    // Track timestamps
+    if (b.timestamp) {
+      var ts = typeof b.timestamp === "number" ? b.timestamp : new Date(b.timestamp).getTime() / 1000;
+      blockTimestamps.push(ts);
+    }
+
+    // Update stats
+    setText("statHeight", b.index);
+    computeAvgBlockTime();
+
+    // Insert row at top
+    var tbody = $("blocksBody");
+    var row = makeBlockRow(b, true);
+    if (tbody.firstChild) {
+      tbody.insertBefore(row, tbody.firstChild);
+    } else {
+      tbody.appendChild(row);
+    }
+
+    // Remove excess rows
+    while (tbody.children.length > 50) {
+      tbody.removeChild(tbody.lastChild);
+    }
+
+    showToast("New Block #" + b.index + " (" + (b.transactions ? b.transactions.length : 0) + " txs)", "block");
+  }
+
+  var currentDetailIndex = null;
+
+  function toggleBlockDetail(b) {
+    var detailDiv = $("blockDetail");
+    if (currentDetailIndex === b.index) {
+      detailDiv.innerHTML = "";
+      currentDetailIndex = null;
+      return;
+    }
+    currentDetailIndex = b.index;
+
+    var html = '<div class="block-detail"><div class="detail-grid">';
+    html += detailRow("Index", b.index);
+    html += detailRow("Hash", b.hash);
+    html += detailRow("Previous Hash", b.previous_hash);
+    html += detailRow("Validator", b.validator);
+    html += detailRow("Timestamp", formatTime(b.timestamp));
+    html += detailRow("Merkle Root", b.merkle_root || "N/A");
+    html += detailRow("Transactions", b.transactions ? b.transactions.length : 0);
+    html += '</div>';
+
+    if (b.transactions && b.transactions.length > 0) {
+      html += '<div style="margin-top:14px"><table><thead><tr>';
+      html += '<th>TX ID</th><th>Type</th><th>Sender</th><th>Nonce</th>';
+      html += '</tr></thead><tbody>';
+      for (var i = 0; i < b.transactions.length; i++) {
+        var tx = b.transactions[i];
+        html += '<tr>';
+        html += '<td class="hash-cell" onclick="App.copyText(\'' + escAttr(tx.tx_id || "") + '\')">' + esc(truncHashPlain(tx.tx_id, 8)) + '</td>';
+        html += '<td><span class="tx-type ' + esc(tx.tx_type || "") + '">' + esc(tx.tx_type || "") + '</span></td>';
+        html += '<td class="hash-cell" onclick="App.copyText(\'' + escAttr(tx.sender || "") + '\')">' + esc(truncHashPlain(tx.sender, 8)) + '</td>';
+        html += '<td>' + esc(tx.nonce) + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    html += '</div>';
+    detailDiv.innerHTML = html;
+  }
+
+  function escAttr(s) {
+    return String(s).replace(/'/g, "\\'").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function detailRow(label, val) {
+    return '<div class="detail-label">' + esc(label) + '</div><div class="detail-value">' + esc(val) + '</div>';
+  }
+
+  // ---- Load blocks from REST ----
+  function fetchBlocks(page) {
+    // Fetch blocks in reverse order (latest first)
+    return apiGet("/blocks?page=" + page + "&limit=20")
+      .then(function(data) {
+        var blocks = data.blocks || [];
+        // Reverse so newest first
+        blocks.sort(function(a,b) { return b.index - a.index; });
+        return { blocks: blocks, total: data.total || 0 };
+      });
+  }
+
+  function loadInitialBlocks() {
+    // Calculate the page for the latest blocks
+    apiGet("/info").then(function(info) {
+      var height = info.chain_height;
+      if (height === undefined || height < 0) {
+        setText("statHeight", 0);
+        setText("statTxCount", 0);
+        setText("statValidators", (info.validators || []).length);
+        return;
+      }
+      var total = height + 1;
+      // We want the last page (highest index blocks)
+      var lastPage = Math.max(1, Math.ceil(total / 20));
+      blocksPage = lastPage;
+
+      setText("statHeight", height);
+      setText("statValidators", (info.validators || []).length);
+
+      return fetchBlocks(lastPage);
+    }).then(function(result) {
+      if (!result) return;
+      blocksCache = result.blocks;
+      // Collect timestamps
+      blockTimestamps = [];
+      for (var i = 0; i < blocksCache.length; i++) {
+        if (blocksCache[i].timestamp) {
+          var ts = blocksCache[i].timestamp;
+          if (typeof ts === "number") blockTimestamps.push(ts);
+        }
+      }
+      computeAvgBlockTime();
+      renderBlocks();
+    }).catch(function(e) {
+      showToast("Failed to load blocks: " + e.message, "");
+    });
+  }
+
+  function loadMoreBlocks() {
+    if (blocksPage <= 1) {
+      showToast("No more blocks to load", "");
+      return;
+    }
+    blocksPage--;
+    fetchBlocks(blocksPage).then(function(result) {
+      var blocks = result.blocks;
+      for (var i = 0; i < blocks.length; i++) {
+        var exists = false;
+        for (var j = 0; j < blocksCache.length; j++) {
+          if (blocksCache[j].index === blocks[i].index) { exists = true; break; }
+        }
+        if (!exists) blocksCache.push(blocks[i]);
+      }
+      blocksCache.sort(function(a,b) { return b.index - a.index; });
+      renderBlocks();
+    }).catch(function(e) {
+      showToast("Failed to load blocks: " + e.message, "");
+    });
+  }
+
+  // ---- Transaction Search ----
+  function searchTx() {
+    var txid = $("txSearchInput").value.trim();
+    if (!txid) { showToast("Enter a Transaction ID", ""); return; }
+
+    var container = $("txResult");
+    container.innerHTML = '<div class="result-card"><h3>Searching...</h3></div>';
+
+    apiGet("/txs/" + encodeURIComponent(txid))
+      .then(function(data) {
+        var html = '<div class="result-card success"><h3>Transaction Found</h3>';
+        html += '<div class="detail-grid">';
+        html += detailRow("TX ID", data.tx_id);
+        html += detailRow("Type", data.tx_type);
+        html += detailRow("Sender", data.sender);
+        html += detailRow("Nonce", data.nonce);
+        if (data.block_index !== undefined) {
+          html += detailRow("Block Index", data.block_index);
+        }
+        html += detailRow("Timestamp", formatTime(data.timestamp));
+
+        // Type-specific payload display
+        if (data.payload) {
+          var p = data.payload;
+          if (data.tx_type === "NOTARIZE") {
+            html += detailRow("Document Hash", p.document_hash || "");
+            html += detailRow("Metadata", p.metadata || "");
+          } else if (data.tx_type === "SHARE") {
+            html += detailRow("Recipient", p.recipient || "");
+            html += detailRow("CID", p.cid || "");
+          } else if (data.tx_type === "STORE") {
+            html += detailRow("Document Hash", p.document_hash || "");
+            html += detailRow("CID", p.cid || "");
+            html += detailRow("Metadata", p.metadata || "");
+          }
+        }
+
+        html += '</div></div>';
+        container.innerHTML = html;
+      })
+      .catch(function(e) {
+        container.innerHTML = '<div class="result-card error"><h3>Not Found</h3><p>' + esc(e.message) + '</p></div>';
+      });
+  }
+
+  // ---- Validators ----
+  function loadValidators() {
+    apiGet("/validators")
+      .then(function(data) {
+        var list = data.validators || [];
+        setText("statValidators", list.length);
+        var container = $("validatorList");
+        if (list.length === 0) {
+          container.innerHTML = '<div class="result-card"><h3>No validators registered</h3></div>';
+          return;
+        }
+        var html = '<div class="result-card"><h3>Registered Validators (' + list.length + ')</h3>';
+        for (var i = 0; i < list.length; i++) {
+          html += '<div class="validator-item">';
+          html += '<div class="validator-dot"></div>';
+          html += '<div class="validator-addr" title="Click to copy" onclick="App.copyText(\'' + escAttr(list[i]) + '\')">' + esc(truncHashPlain(list[i], 16)) + '</div>';
+          html += '</div>';
+        }
+        html += '</div>';
+        container.innerHTML = html;
+      })
+      .catch(function(e) {
+        $("validatorList").innerHTML = '<div class="result-card error"><h3>Error</h3><p>' + esc(e.message) + '</p></div>';
+      });
+  }
+
+  // ---- Document Verifier ----
+  function verifyDoc() {
+    var hash = $("docHashInput").value.trim();
+    if (!hash) { showToast("Enter a document hash", ""); return; }
+
+    var container = $("verifyResult");
+    container.innerHTML = '<div class="result-card"><h3>Verifying...</h3></div>';
+
+    apiPost("/verify", { document_hash: hash })
+      .then(function(data) {
+        var html;
+        if (data.verified) {
+          html = '<div class="result-card success"><h3>Document Verified</h3>';
+          html += '<div class="detail-grid">';
+          var proof = data.proof || {};
+          html += detailRow("Document Hash", proof.document_hash || hash);
+          html += detailRow("Block Index", proof.block_index);
+          html += detailRow("TX ID", proof.tx_id);
+          html += detailRow("Notarizer", proof.sender || proof.notarizer || "");
+          html += detailRow("Timestamp", formatTime(proof.timestamp));
+          html += '</div></div>';
+        } else {
+          html = '<div class="result-card error"><h3>Not Found</h3>';
+          html += '<p>No notarization found for this document hash.</p></div>';
+        }
+        container.innerHTML = html;
+      })
+      .catch(function(e) {
+        container.innerHTML = '<div class="result-card error"><h3>Error</h3><p>' + esc(e.message) + '</p></div>';
+      });
+  }
+
+  // ---- Pool Monitor ----
+  function loadPool() {
+    apiGet("/pool")
+      .then(function(data) {
+        setText("statPool", data.count || 0);
+        renderPoolInfo(data);
+      })
+      .catch(function(e) {
+        $("poolInfo").innerHTML = '<div class="result-card error"><h3>Error</h3><p>' + esc(e.message) + '</p></div>';
+      });
+  }
+
+  function renderPoolInfo(data) {
+    var container = $("poolInfo");
+    var count = data.count || 0;
+    var byType = data.by_type || {};
+
+    var html = '<div class="result-card"><h3>Transaction Pool (' + esc(count) + ' pending)</h3>';
+
+    // Pool bar
+    var types = ["NOTARIZE", "STORE", "SHARE", "REGISTER_KEY"];
+    var colors = { NOTARIZE: "var(--accent)", STORE: "var(--purple)", SHARE: "var(--green)", REGISTER_KEY: "var(--orange)" };
+
+    if (count > 0) {
+      html += '<div class="pool-bar">';
+      for (var i = 0; i < types.length; i++) {
+        var t = types[i];
+        var c = byType[t] || 0;
+        if (c > 0) {
+          var pct = (c / count * 100).toFixed(1);
+          html += '<div class="pool-segment" style="width:' + pct + '%;background:' + colors[t] + '"></div>';
+        }
+      }
+      html += '</div>';
+    }
+
+    html += '<div class="pool-legend">';
+    for (var j = 0; j < types.length; j++) {
+      var tt = types[j];
+      var cc = byType[tt] || 0;
+      html += '<div class="pool-legend-item">';
+      html += '<div class="pool-legend-dot" style="background:' + colors[tt] + '"></div>';
+      html += '<span>' + esc(tt) + ': ' + cc + '</span>';
+      html += '</div>';
+    }
+    html += '</div></div>';
+
+    container.innerHTML = html;
+  }
+
+  // ---- Tabs ----
+  function initTabs() {
+    var tabBar = $("tabBar");
+    tabBar.addEventListener("click", function(e) {
+      var tab = e.target.closest(".tab");
+      if (!tab) return;
+      var panelId = tab.getAttribute("data-panel");
+      if (!panelId) return;
+
+      // Deactivate all
+      var tabs = tabBar.querySelectorAll(".tab");
+      for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove("active");
+      var panels = document.querySelectorAll(".panel");
+      for (var j = 0; j < panels.length; j++) panels[j].classList.remove("active");
+
+      tab.classList.add("active");
+      var panel = $("panel-" + panelId);
+      if (panel) panel.classList.add("active");
+
+      // Lazy load data for certain panels
+      if (panelId === "validators") loadValidators();
+      if (panelId === "pool") loadPool();
+    });
+  }
+
+  // ---- Settings persistence ----
+  function saveSettings() {
+    try {
+      localStorage.setItem("qbit_apiUrl", apiBase);
+      localStorage.setItem("qbit_authToken", authToken);
+    } catch(e) {}
+  }
+
+  function loadSettings() {
+    try {
+      var savedUrl = localStorage.getItem("qbit_apiUrl");
+      var savedToken = localStorage.getItem("qbit_authToken");
+      if (savedUrl) {
+        apiBase = savedUrl;
+        $("apiUrl").value = savedUrl;
+      }
+      if (savedToken) {
+        authToken = savedToken;
+        $("authToken").value = savedToken;
+      }
+    } catch(e) {}
+  }
+
+  // ---- Connect ----
+  function connect() {
+    var urlInput = $("apiUrl").value.trim();
+    var tokenInput = $("authToken").value.trim();
+
+    if (!urlInput) {
+      // Default to same origin
+      urlInput = window.location.protocol + "//" + window.location.host;
+    }
+
+    // Strip trailing slash
+    apiBase = urlInput.replace(/\/+$/, "");
+    authToken = tokenInput;
+
+    // Derive WS URL
+    var wsProto = apiBase.startsWith("https") ? "wss" : "ws";
+    var hostPart = apiBase.replace(/^https?:\/\//, "");
+    wsUrl = wsProto + "://" + hostPart + "/ws";
+
+    saveSettings();
+
+    // Load initial data
+    loadInitialBlocks();
+    loadValidators();
+    loadPool();
+
+    // Fetch tx count from pool/count
+    apiGet("/pool/count").then(function(data) {
+      setText("statPool", data.count || 0);
+    }).catch(function() {});
+
+    // Connect WebSocket
+    connectWS();
+  }
+
+  // ---- Init ----
+  function init() {
+    initTabs();
+    loadSettings();
+
+    // If we have a saved URL, auto-connect
+    if (apiBase) {
+      $("apiUrl").value = apiBase;
+      connect();
+    } else {
+      // Default URL
+      $("apiUrl").value = window.location.protocol + "//" + window.location.host;
+    }
+
+    // Handle Enter key in search fields
+    $("txSearchInput").addEventListener("keydown", function(e) {
+      if (e.key === "Enter") searchTx();
+    });
+    $("docHashInput").addEventListener("keydown", function(e) {
+      if (e.key === "Enter") verifyDoc();
+    });
+  }
+
+  // Start
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+
+  // Public API
+  return {
+    connect: connect,
+    loadMoreBlocks: loadMoreBlocks,
+    searchTx: searchTx,
+    verifyDoc: verifyDoc,
+    copyText: copyText
+  };
+
+})();
+</script>
+</body>
+</html>

@@ -57,8 +57,25 @@ tx_id = hex(SHA3-256(signable_bytes))
 | `STORE` | `documentHash` (hex), `cid` | `metadata` |
 | `SHARE` | `cid`, `encapsulatedKey` (hex) | `expires` (int >= 0) |
 | `REGISTER_KEY` | `encryption_pk` (hex) | - |
+| `REGISTER_VALIDATOR` | `validator_pubkey` (hex, 1952 bytes), `validator_address` (qv1...) | - |
+| `REVOKE_KEY` | `key_type` (`signing`\|`encryption`\|`validator`), `reason` (`compromised`\|`rotation`\|`decommission`) | - |
 
 No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
+
+#### REGISTER_VALIDATOR Rules
+
+- `validator_pubkey` must be exactly 1952 bytes when decoded.
+- `validator_address` must equal `"qv1" + hex(SHA3-256(validator_pubkey))`.
+- The `from` field must match `validator_address` (self-registration only).
+- If the address is already in the validator registry, the transaction is rejected.
+
+#### REVOKE_KEY Rules
+
+- The `from` field must be the address of the key being revoked (self-revocation only).
+- `key_type` must be one of: `signing`, `encryption`, `validator`.
+- `reason` must be one of: `compromised`, `rotation`, `decommission`.
+- Revoking an already-revoked key is rejected (idempotency guard).
+- The genesis validator's signing key cannot be revoked.
 
 ### Validation Rules
 
@@ -140,10 +157,10 @@ TCP with newline-delimited JSON messages. Reader limit: 10 MB.
 | `hello_auth` | Initiator→Responder | Authenticated handshake step 1 (ML-DSA challenge) | v0.2.1 |
 | `auth_response` | Responder→Initiator | Authenticated handshake step 2 (signed challenge + counter-challenge) | v0.2.1 |
 | `auth_confirm` | Initiator→Responder | Authenticated handshake step 3 (signed counter-challenge) | v0.2.1 |
-| `new_block` | Broadcast | New block announcement | v0.1.0 |
-| `new_tx` | Broadcast | New transaction announcement | v0.1.0 |
-| `get_blocks` | Request | Request blocks (with request_id) | v0.2.0 |
-| `blocks` | Response | Block data response (with request_id) | v0.2.0 |
+| `new_block` | Broadcast | New block announcement (requires auth for v2 peers) | v0.1.0 |
+| `new_tx` | Broadcast | New transaction announcement (requires auth for v2 peers) | v0.1.0 |
+| `get_blocks` | Request | Request blocks with request_id (requires auth for v2 peers) | v0.2.0 |
+| `blocks` | Response | Block data response with request_id (requires auth for v2 peers) | v0.2.0 |
 | `get_peers` | Request | Request peer list | v0.1.0 |
 | `peers` | Response | Peer address list | v0.1.0 |
 | `status` | Broadcast | Chain height announcement | v0.2.0 |
@@ -159,21 +176,69 @@ Negotiation: `min(initiator_version, responder_version)`.
 
 ### Authenticated Handshake (v0.2.1+)
 
-```
-Initiator → Responder: hello_auth { protocol_version, node_id, port, chain_id, challenge, timestamp, signing_pk }
-Responder → Initiator: auth_response { ..., challenge_sig, counter_challenge }
-Initiator → Responder: auth_confirm { challenge_sig }
+Full 3-step mutual authentication using ML-DSA-65 challenge-response:
 
-Signature: ML-DSA.Sign(sk, "QBIT_AUTH_v2:" || peer_challenge || own_address)
+#### Step 1 — hello_auth (Initiator → Responder)
+
+```json
+{
+  "type": "hello_auth",
+  "protocol_version": 2,
+  "node_id": "qv1...",
+  "port": 9000,
+  "chain_id": "qvault-mainnet",
+  "challenge": "<32 bytes hex, os.urandom>",
+  "timestamp": 1700000000,
+  "signing_pk": "<ML-DSA-65 public key hex, 1952 bytes>"
+}
 ```
 
-Domain prefix `QBIT_AUTH_v2:` prevents cross-protocol signature reuse. Timestamp validated within MAX_BLOCK_DRIFT (30s).
+#### Step 2 — auth_response (Responder → Initiator)
+
+```json
+{
+  "type": "auth_response",
+  "protocol_version": 2,
+  "node_id": "qv1...",
+  "port": 9000,
+  "chain_id": "qvault-mainnet",
+  "challenge_sig": "<ML-DSA sig over initiator's challenge>",
+  "counter_challenge": "<32 bytes hex, os.urandom>",
+  "signing_pk": "<ML-DSA-65 public key hex, 1952 bytes>"
+}
+```
+
+Responder validates `timestamp` within MAX_BLOCK_DRIFT (30s), verifies `chain_id`, derives `node_id` from `signing_pk`, signs the initiator's `challenge`.
+
+#### Step 3 — auth_confirm (Initiator → Responder)
+
+```json
+{
+  "type": "auth_confirm",
+  "challenge_sig": "<ML-DSA sig over responder's counter_challenge>"
+}
+```
+
+Both sides mark `peer.authenticated = True` after verifying the other's signature.
+
+#### Signature Domain
+
+```
+ML-DSA.Sign(sk, "QBIT_AUTH_v2:" || peer_challenge || own_address)
+```
+
+Domain prefix `QBIT_AUTH_v2:` prevents cross-protocol signature reuse. Challenges are 32-byte random values (`os.urandom(32)`), single-use (cleared before verification). Auth deadline tracked with `time.monotonic()` to prevent clock-skew bypass.
+
+#### Auth Gating
+
+After the grace period expires, `new_block`, `new_tx`, `get_blocks`, and `blocks` messages from unauthenticated v2 peers are rejected. A failed challenge-response triggers disconnect with no v1 fallback (no downgrade to unauthenticated state on auth failure).
 
 ### Connection Flow
 
-1. **Authenticated (v2)**: `connect()` → send `hello_auth` with challenge → await `auth_response` → verify → send `auth_confirm` → `peer.authenticated = True`
+1. **Authenticated (v2)**: `connect()` → send `hello_auth` with challenge → await `auth_response` → verify responder sig → send `auth_confirm` → `peer.authenticated = True`
 2. **Unauthenticated (v1 fallback)**: `connect()` → send `hello` → `peer.authenticated = False`
-3. Inbound without HELLO/HELLO_AUTH within 10s: disconnected
+3. Failed auth: disconnect, no v1 fallback
+4. Inbound without HELLO/HELLO_AUTH within 10s: disconnected
 
 ### Peer Validation
 
@@ -192,7 +257,102 @@ Rejected addresses:
 3. Process received blocks sequentially; stop on first invalid
 4. Lock genesis hash after first block accepted
 
-## 5. Wallet Encryption
+## 5. WebSocket Subscription Protocol
+
+WebSocket endpoint: `WS /ws` on the RPC server port.
+
+### Client → Server Messages
+
+```json
+// Subscribe to a channel
+{"action": "subscribe", "channel": "new_block"}
+
+// Unsubscribe from a channel
+{"action": "unsubscribe", "channel": "new_block"}
+
+// Keepalive ping
+{"action": "ping"}
+```
+
+Available channels: `new_block`, `new_tx`, `chain_stats`.
+
+### Server → Client Messages
+
+```json
+// Subscription confirmed
+{"subscribed": "new_block"}
+
+// Event (new_block)
+{"channel": "new_block", "data": { /* block dict */ }}
+
+// Event (new_tx)
+{"channel": "new_tx", "data": { /* tx dict */ }}
+
+// Periodic stats broadcast (every 5s when subscribers exist)
+{"channel": "chain_stats", "data": {"height": 42, "tx_count": 310, "pool_size": 5, "peers": 3}}
+
+// Pong response
+{"action": "pong"}
+
+// Error
+{"error": {"code": 400, "message": "unknown channel"}}
+```
+
+### Limits
+
+| Parameter | Value |
+|-----------|-------|
+| Max connections | 100 |
+| Max subscriptions per client | 10 |
+| Message rate limit | 10 msg/s per client |
+| Max inbound message | 8 KB |
+| Heartbeat | 30s (aiohttp built-in; auto-close on timeout) |
+
+No authentication required. Event payloads contain only public chain data.
+
+## 6. REST API
+
+Base path: `/api/v1/`. All responses use the envelope format:
+
+```json
+{"data": <result>, "error": null}          // success
+{"data": null, "error": {"code": N, "message": "..."}}  // error
+```
+
+### Public Endpoints
+
+| Method | Path | Query Params | Response |
+|--------|------|--------------|----------|
+| GET | `/info` | — | Node info |
+| GET | `/health` | — | `{"status": "ok"}` |
+| GET | `/blocks` | `page`, `limit` | Paginated block list |
+| GET | `/blocks/latest` | — | Most recent block |
+| GET | `/blocks/:index` | — | Block by index |
+| GET | `/blocks/hash/:hash` | — | Block by hash |
+| GET | `/txs/:txid` | — | Transaction by ID |
+| GET | `/txs/sender/:addr` | `page`, `limit` | Transactions by sender |
+| GET | `/address/:addr` | — | Address summary |
+| GET | `/notarizations/:hash` | — | All notarizations for document hash |
+| GET | `/validators` | — | Active validator list |
+| GET | `/pool` | `page`, `limit` | Pending transactions |
+| GET | `/pool/count` | — | Pending transaction count |
+| POST | `/verify` | — | Verify document hash against chain |
+
+### Protected Endpoints (Bearer token required)
+
+| Method | Path | Body |
+|--------|------|------|
+| POST | `/txs` | Raw transaction dict |
+| POST | `/wallets` | `{password}` |
+| GET | `/wallets` | — |
+| POST | `/notarize` | `{wallet, document_hash, metadata?}` |
+| POST | `/store` | `{wallet, document_hash, cid}` |
+| POST | `/share` | `{wallet, recipient, cid, encapsulated_key}` |
+| POST | `/register-validator` | `{wallet, validator_pubkey}` |
+
+Pagination: `page` is 1-based, `limit` default 20, max 100. Rate limiting, CORS, and bearer auth reuse the same implementation as the JSON-RPC server.
+
+## 7. Wallet Encryption
 
 ### Key Derivation
 

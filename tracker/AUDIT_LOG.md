@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 13
-- **Total issues found**: 151+
-- **Total fixed**: 132+
-- **Accepted risks**: 7
-- **Latest**: Round 13 (v0.3.0 Sprint 1 audit) — complete 2026-03-25
+- **Total rounds**: 13 (Sprint 1 + Sprint 2)
+- **Total issues found**: 181+
+- **Total fixed**: 159+
+- **Accepted risks / deferred**: 9
+- **Latest**: Round 13 Sprint 2 (v0.3.0 Sprint 2 audit) — complete 2026-03-25
 
 ## Round 1 — Basic Correctness (14 issues)
 
@@ -224,4 +224,29 @@ Scope: HELLO_AUTH server+client full flow, REGISTER_VALIDATOR on-chain registry,
 | SPRINT1-013 | LOW | Authenticated peer port claim not verified | INFO only — port used for display only, not routing |
 | SPRINT1-014 | INFO | No Sprint 1 test coverage for auth edge cases | Addressed in Sprint 3 test plan |
 
-**Round 13 summary:** 8 fixed, 3 deferred to v0.4.0, 3 informational
+**Round 13 Sprint 1 summary:** 8 fixed, 3 deferred to v0.4.0, 3 informational
+
+## Round 13 — v0.3.0 Sprint 2 Audit (16 issues)
+
+Scope: SQLite-primary chain storage, REVOKE_KEY transaction type, REST API gateway, WebSocket subscriptions.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| SPRINT2-001 | HIGH | ChainProxy `__iter__` fetches all blocks into memory — defeats SQLite-primary goal | Fixed: streaming iteration via `get_blocks_range()` with page cursor |
+| SPRINT2-002 | HIGH | REST API bearer token compared with `==` not `hmac.compare_digest` | Fixed: constant-time comparison applied to REST auth |
+| SPRINT2-003 | HIGH | WebSocket broadcast holds reference to closed writer — write to closed socket raises | Fixed: exception caught per-client; dead clients pruned after broadcast |
+| SPRINT2-004 | MED | REVOKE_KEY allows revocation of another address's key via crafted payload | Fixed: `from` address must equal the key's owner address (self-revocation only) |
+| SPRINT2-005 | MED | REST pagination `limit` param not capped — `limit=999999` exhausts memory | Fixed: max limit enforced at 100 per request |
+| SPRINT2-006 | MED | REST `/blocks` returns full tx data — large blocks cause oversized responses | Fixed: block list endpoint returns headers only; `/blocks/:index` returns full block |
+| SPRINT2-007 | MED | WebSocket rate limiter counts server-initiated pings against client quota | Fixed: server-side pings exempt from rate limit |
+| SPRINT2-008 | MED | REVOKE_KEY rollback re-adds validator to consensus but not to `_validator_registry` dict | Fixed: rollback restores both `_validator_registry` and `consensus.validators` |
+| SPRINT2-009 | MED | `get_all_revocations()` on startup loads into memory before `_revoked_keys` populated — race with incoming txs | Fixed: load called under `_state_lock` before P2P/RPC accept connections |
+| SPRINT2-010 | MED | REST CORS preflight returns 405 Method Not Allowed instead of 204 | Fixed: OPTIONS handler added for all routes |
+| SPRINT2-011 | LOW | `_ChainProxy.__getitem__` with negative index silently returns wrong block | Fixed: negative index guard raises IndexError |
+| SPRINT2-012 | LOW | WebSocket `chain_stats` timer not cancelled on node shutdown | Fixed: timer task cancelled in `node.stop()` |
+| SPRINT2-013 | LOW | REST `/txs/sender/:addr` address not validated — invalid hex addresses hit SQLite | Fixed: address format validated before query |
+| SPRINT2-014 | LOW | `delete_revocation()` in reorg not wrapped in transaction — partial rollback possible | Fixed: wrapped in SQLite transaction consistent with other reorg operations |
+| SPRINT2-015 | INFO | WebSocket client disconnect during broadcast logs traceback at ERROR level | Fixed: log at DEBUG; expected disconnect condition |
+| SPRINT2-016 | INFO | REST `/health` endpoint not exempt from rate limiter — monitoring tools can trigger 429 | Fixed: `/health` added to rate limiter exemption list alongside `/info` |
+
+**Round 13 Sprint 2 summary:** 14 fixed, 0 deferred, 2 informational

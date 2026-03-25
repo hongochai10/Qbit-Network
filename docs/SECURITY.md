@@ -17,19 +17,25 @@
 |------|--------|-----------------|
 | Python `bytes` key material in heap | Accepted | Requires C extension / mmap for zeroing |
 | Sybil/Eclipse attacks | Accepted | HELLO_AUTH raises bar; needs peer reputation |
+| Responder signs before verifying initiator fields (SPRINT1-003) | Deferred v0.4.0 | Requires auth protocol redesign |
+| Genesis validator not registered via on-chain tx (SPRINT1-007) | Deferred v0.4.0 | Low risk; auto-registered in memory on init_chain() |
+| SQLite validator table uses string concat, not parameterized (SPRINT1-011) | Deferred v0.4.0 | Address is hex-validated before use |
 
-### Resolved in v0.2.0-v0.2.1
+### Resolved in v0.2.0-v0.3.0
 
 | Risk | Resolution |
 |------|-----------|
-| P2P not authenticated | HELLO_AUTH ML-DSA challenge-response (v0.2.1) |
+| P2P not authenticated | HELLO_AUTH ML-DSA challenge-response (v0.2.1, completed v0.3.0-sprint1) |
 | No fork resolution | Pure longest-chain with try_reorg (v0.2.0) |
-| In-memory only | SQLite dual-write persistence (v0.2.0) |
+| In-memory only | SQLite-primary persistence (v0.3.0-sprint2) |
 | Secrets over HTTP | TLS support with --tls-cert/--tls-key (v0.2.0) |
+| No key revocation | REVOKE_KEY transaction type (v0.3.0-sprint2) |
+| No on-chain validator key distribution | REGISTER_VALIDATOR tx type + persistent registry (v0.3.0-sprint1) |
+| No rate limiting | Token bucket per peer/client (v0.3.0-sprint1) |
 
 ## Audit History
 
-12 rounds of security audit, 128+ issues found and resolved:
+13 rounds of security audit, 181+ issues found:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -42,9 +48,13 @@
 | 7 | Fix regression + edge cases | 11 |
 | 8 | Module consistency | 4 |
 | 9 | Semantic + protocol correctness | 5 |
-| 10 | v0.2.0 feature audit (fork, TLS, CLI, store) | 11 |
-| 11 | Fix verification + regression check | 7 |
-| 12 | v0.2.1 full audit (P2P auth, Docker, store/share) | In progress |
+| 10 | v0.2.0 feature audit (fork, TLS, CLI, store) | 7 |
+| 11 | Rate limiting + auth baseline | 9 |
+| 12 | v0.2.1 full audit (P2P auth, Docker, store/share) | 9 |
+| 13 Sprint 1 | v0.3.0 Sprint 1 (HELLO_AUTH, REGISTER_VALIDATOR, rate limiting, CI) | 14 |
+| 13 Sprint 2 | v0.3.0 Sprint 2 (SQLite-primary, REVOKE_KEY, REST API, WebSocket) | 16 |
+
+Round 13 Sprint 2 findings (SPRINT2-001 through SPRINT2-016): see `tracker/AUDIT_LOG.md` for the complete log.
 
 ## Key Security Controls
 
@@ -66,6 +76,33 @@
 - First notarization preserved (subsequent notarizations of same hash don't overwrite)
 - Encryption key history maintained (all REGISTER_KEY versions kept)
 - Atomic chain load (all-or-nothing validation into temp list)
+
+### Authentication Protocol
+
+- HELLO_AUTH 3-step ML-DSA-65 challenge-response: both sides verify the other's signature before marking `peer.authenticated = True`
+- Failed auth triggers immediate disconnect; no downgrade to unauthenticated state (no v1 fallback on failure)
+- Challenges are 32-byte single-use random values (`os.urandom(32)`), cleared before verification
+- Signature domain: `"QBIT_AUTH_v2:" || challenge || signer_address` prevents cross-protocol reuse
+- Auth deadline tracked with `time.monotonic()` to prevent wall-clock skew bypass (SPRINT1-010 fix)
+- Auth gating enforced on every message after grace period, not just at expiry (SPRINT1-001 fix)
+- HELLO/HELLO_AUTH messages themselves counted in rate limiter to prevent handshake flood (SPRINT1-004 fix)
+
+### Rate Limiting
+
+- Token bucket per peer IP (P2P) and per client IP (RPC)
+- P2P: 20 msg/s sustained, 100 burst; disconnect after 3 violations
+- RPC: 10 req/s sustained, 50 burst; HTTP 429 on violation
+- LRU cap at 10,000 tracked IPs; active peers excluded from eviction (SPRINT1-008 fix)
+- `asyncio.Lock` per bucket prevents shared-state race under concurrent requests
+
+### Key Revocation Security Model
+
+- Self-revocation only: the `from` address must own the key being revoked
+- Signing key revocation: address immediately blocked from submitting transactions at both `submit_tx` and consensus validation layers
+- Validator revocation: validator removed from active set; existing blocks remain valid (revocation is not retroactive)
+- The genesis validator's signing key is permanently protected from revocation
+- Idempotency guard: revoking an already-revoked key is rejected to prevent log pollution
+- Revocations are rolled back atomically during chain reorg, restoring prior state
 
 ### Network
 

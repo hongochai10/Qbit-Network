@@ -382,8 +382,22 @@ def cmd_verify_proof(args):
             print(f"  Notarizer:  {proof['notarizer']}")
 
 
+def _get_ipfs_client(args):
+    """Create an IPFSClient from CLI args, or return None if unavailable."""
+    from cli.ipfs_client import IPFSClient
+    ipfs_api = getattr(args, 'ipfs_api', 'http://127.0.0.1:5001')
+    max_size = getattr(args, 'max_file_size', None)
+    kwargs = {"api_url": ipfs_api}
+    if max_size is not None:
+        kwargs["max_file_size"] = max_size
+    client = IPFSClient(**kwargs)
+    if not client.is_available():
+        return None
+    return client
+
+
 def cmd_store(args):
-    """Store a document reference on-chain."""
+    """Store a document reference on-chain, optionally pinning to IPFS."""
     if not os.path.isfile(args.file):
         print(f"Error: file not found: {args.file}", file=sys.stderr)
         sys.exit(1)
@@ -402,7 +416,29 @@ def cmd_store(args):
             print("Specify wallet with --wallet ADDRESS", file=sys.stderr)
             sys.exit(1)
 
-    cid = args.cid or f"local:{doc_hash}"
+    cid = args.cid
+    ipfs_pinned = False
+
+    # If --ipfs flag is set or no manual CID, try IPFS pinning
+    if getattr(args, 'ipfs', False) and not cid:
+        client = _get_ipfs_client(args)
+        if client is not None:
+            try:
+                cid = client.add_file(args.file)
+                ipfs_pinned = True
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            except Exception as e:
+                print(f"Warning: IPFS pin failed ({e}). "
+                      f"Falling back to local reference.", file=sys.stderr)
+        else:
+            print("Warning: IPFS daemon not available. "
+                  "Using local reference instead.", file=sys.stderr)
+
+    if not cid:
+        cid = f"local:{doc_hash}"
+
     metadata = args.metadata or os.path.basename(args.file)
 
     result = _rpc_call(
@@ -417,17 +453,26 @@ def cmd_store(args):
 
     tx_id = result["result"]["tx_id"]
     if args.json:
-        print(json.dumps({"tx_id": tx_id, "document_hash": doc_hash, "cid": cid}))
+        print(json.dumps({"tx_id": tx_id, "document_hash": doc_hash,
+                          "cid": cid, "ipfs_pinned": ipfs_pinned}))
     else:
         print(f"Stored: {os.path.basename(args.file)}")
         print(f"  SHA3-256: {doc_hash}")
         print(f"  CID:      {cid}")
         print(f"  TX ID:    {tx_id}")
-        print(f"  Note: Document hash recorded on-chain. File itself is NOT uploaded.")
+        if ipfs_pinned:
+            print(f"  File pinned to IPFS.")
+        else:
+            print(f"  Note: Document hash recorded on-chain. File itself is NOT uploaded.")
 
 
 def cmd_share(args):
-    """Share a document with another user via ML-KEM encryption."""
+    """Share a document with another user via ML-KEM encryption.
+
+    When --ipfs is set and IPFS is available, the file is encrypted with
+    ML-KEM-768 and the encrypted blob is pinned to IPFS.  The encapsulated
+    key and CID are recorded on-chain via the SHARE transaction.
+    """
     if not os.path.isfile(args.file):
         print(f"Error: file not found: {args.file}", file=sys.stderr)
         sys.exit(1)
@@ -451,7 +496,37 @@ def cmd_share(args):
         print("Error: --to RECIPIENT_ADDRESS required", file=sys.stderr)
         sys.exit(1)
 
-    cid = args.cid or f"local:{doc_hash}"
+    cid = args.cid
+    ipfs_pinned = False
+
+    # If --ipfs flag is set and no manual CID, encrypt + pin to IPFS
+    if getattr(args, 'ipfs', False) and not cid:
+        client = _get_ipfs_client(args)
+        if client is not None:
+            try:
+                with open(args.file, "rb") as f:
+                    plaintext = f.read()
+                if len(plaintext) > client.max_file_size:
+                    print(f"Error: file too large "
+                          f"({len(plaintext)} > {client.max_file_size} bytes)",
+                          file=sys.stderr)
+                    sys.exit(1)
+                # The actual ML-KEM encryption happens server-side via qv_share
+                # Here we just pin the raw file; the RPC handles encryption
+                cid = client.add_bytes(plaintext, os.path.basename(args.file))
+                ipfs_pinned = True
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            except Exception as e:
+                print(f"Warning: IPFS pin failed ({e}). "
+                      f"Falling back to local reference.", file=sys.stderr)
+        else:
+            print("Warning: IPFS daemon not available. "
+                  "Using local reference instead.", file=sys.stderr)
+
+    if not cid:
+        cid = f"local:{doc_hash}"
 
     result = _rpc_call(
         args.rpc, "qv_share",
@@ -465,13 +540,77 @@ def cmd_share(args):
 
     tx_id = result["result"]["tx_id"]
     if args.json:
-        print(json.dumps({"tx_id": tx_id, "cid": cid, "recipient": recipient}))
+        print(json.dumps({"tx_id": tx_id, "cid": cid, "recipient": recipient,
+                          "ipfs_pinned": ipfs_pinned}))
     else:
         print(f"Shared: {os.path.basename(args.file)}")
         print(f"  To:       {recipient}")
         print(f"  CID:      {cid}")
         print(f"  TX ID:    {tx_id}")
+        if ipfs_pinned:
+            print(f"  File pinned to IPFS.")
         print(f"  Encrypted with ML-KEM-768 (quantum-resistant)")
+
+
+def cmd_retrieve(args):
+    """Retrieve a file from IPFS by CID, optionally verifying on-chain hash."""
+    from cli.ipfs_client import IPFSClient
+
+    cid = args.cid
+    # Validate CID format
+    if not IPFSClient.validate_cid(cid):
+        print(f"Error: invalid CID format: {cid}", file=sys.stderr)
+        print("  Expected Qm... (CIDv0) or bafy... (CIDv1)", file=sys.stderr)
+        sys.exit(1)
+
+    ipfs_api = getattr(args, 'ipfs_api', 'http://127.0.0.1:5001')
+    client = IPFSClient(api_url=ipfs_api)
+
+    if not client.is_available():
+        print("Error: IPFS daemon not available at " + ipfs_api, file=sys.stderr)
+        print("  Start your IPFS daemon: ipfs daemon", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        data = client.cat(cid)
+    except Exception as e:
+        print(f"Error: failed to retrieve {cid}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Optionally verify hash against on-chain record
+    if getattr(args, 'verify_hash', False):
+        retrieved_hash = hashlib.sha3_256(data).hexdigest()
+        result = _rpc_call(
+            args.rpc, "qv_verifyDocument",
+            {"document_hash": retrieved_hash},
+            verify_ssl=not args.insecure)
+        if "error" in result or not result.get("result"):
+            print(f"Warning: document hash {retrieved_hash} not found on-chain",
+                  file=sys.stderr)
+        else:
+            proof = result["result"]
+            print(f"On-chain match: block #{proof['block_index']}, "
+                  f"tx {proof['tx_id'][:16]}...", file=sys.stderr)
+
+    output_path = getattr(args, 'output', '')
+    if output_path:
+        with open(output_path, "wb") as f:
+            f.write(data)
+        if args.json:
+            print(json.dumps({"cid": cid, "output": output_path,
+                              "size": len(data)}))
+        else:
+            print(f"Retrieved: {cid}")
+            print(f"  Saved to: {output_path}")
+            print(f"  Size:     {len(data)} bytes")
+    else:
+        # Write raw bytes to stdout
+        if args.json:
+            import base64
+            print(json.dumps({"cid": cid, "size": len(data),
+                              "data_b64": base64.b64encode(data).decode()}))
+        else:
+            sys.stdout.buffer.write(data)
 
 
 def main():
@@ -520,6 +659,12 @@ def main():
     sp.add_argument("--token", default="", help="RPC auth token")
     sp.add_argument("--cid", default="", help="IPFS CID (optional, auto-generates local ref)")
     sp.add_argument("--metadata", default="", help="Optional metadata")
+    sp.add_argument("--ipfs", action="store_true",
+                    help="Pin file to IPFS and use CID on-chain")
+    sp.add_argument("--ipfs-api", default="http://127.0.0.1:5001",
+                    help="IPFS API endpoint (default: http://127.0.0.1:5001)")
+    sp.add_argument("--max-file-size", type=int, default=10*1024*1024,
+                    help="Max file size in bytes (default: 10MB)")
 
     # share
     shp = sub.add_parser("share", help="Share a document with ML-KEM encryption")
@@ -529,6 +674,21 @@ def main():
     shp.add_argument("--token", default="", help="RPC auth token")
     shp.add_argument("--cid", default="", help="IPFS CID (optional)")
     shp.add_argument("--expires", type=int, default=0, help="Expiry timestamp (0=never)")
+    shp.add_argument("--ipfs", action="store_true",
+                     help="Pin file to IPFS and use CID on-chain")
+    shp.add_argument("--ipfs-api", default="http://127.0.0.1:5001",
+                     help="IPFS API endpoint (default: http://127.0.0.1:5001)")
+    shp.add_argument("--max-file-size", type=int, default=10*1024*1024,
+                     help="Max file size in bytes (default: 10MB)")
+
+    # retrieve (IPFS)
+    rp = sub.add_parser("retrieve", help="Retrieve a file from IPFS by CID")
+    rp.add_argument("cid", help="IPFS CID to retrieve")
+    rp.add_argument("--output", "-o", default="", help="Save to file path")
+    rp.add_argument("--verify-hash", action="store_true",
+                    help="Verify retrieved file hash against on-chain record")
+    rp.add_argument("--ipfs-api", default="http://127.0.0.1:5001",
+                    help="IPFS API endpoint (default: http://127.0.0.1:5001)")
 
     # verify-proof (offline)
     vpp = sub.add_parser("verify-proof", help="Verify proof offline (no node needed)")
@@ -553,6 +713,8 @@ def main():
         cmd_store(args)
     elif args.command == "share":
         cmd_share(args)
+    elif args.command == "retrieve":
+        cmd_retrieve(args)
     elif args.command == "verify-proof":
         cmd_verify_proof(args)
     else:

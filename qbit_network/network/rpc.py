@@ -111,6 +111,27 @@ class RPCServer:
         self._app.router.add_post("/", self._handle)
         self._app.router.add_get("/", self._info)
         self._runner = None
+        self._mount_dashboard()
+
+    def _mount_dashboard(self):
+        """Serve the dashboard SPA at /dashboard/ from the bundled dashboard/ dir."""
+        dashboard_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "dashboard",
+        )
+        if os.path.isdir(dashboard_dir):
+            # Serve index.html at /dashboard/ and /dashboard
+            async def _dashboard_index(request):
+                index_path = os.path.join(dashboard_dir, "index.html")
+                if os.path.isfile(index_path):
+                    return web.FileResponse(index_path)
+                raise web.HTTPNotFound()
+
+            self._app.router.add_get("/dashboard", _dashboard_index)
+            self._app.router.add_get("/dashboard/", _dashboard_index)
+            # Serve any other static assets from the dashboard directory
+            self._app.router.add_static("/dashboard/static/", dashboard_dir)
+            logger.info(f"Dashboard mounted at /dashboard/ (serving from {dashboard_dir})")
 
     def attach_websocket(self, ws_manager):
         """Attach a WebSocketManager and register the /ws route."""

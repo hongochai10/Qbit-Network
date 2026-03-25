@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.3.0-sprint3 (2026-03-25)
+
+### IPFS Integration for CLI (store/share/retrieve)
+- New `cli/ipfs_client.py` — stdlib-only IPFS HTTP API client (`urllib.request`)
+  - `add_file(path)` / `add_bytes(data, name)` — pin content, return CID
+  - `cat(cid)` — retrieve file by CID
+  - `pin_ls(cid)` — check if CID is pinned
+  - `is_available()` — check if IPFS daemon is running
+  - CID format validation: CIDv0 (`Qm...`) and CIDv1 (`bafy...`)
+  - Configurable max file size (default 10 MB), multipart/form-data encoding
+  - Timeouts: 30s for add, 10s for read, 5s for availability check
+- CLI `store` command updated:
+  - `--ipfs` flag: pin file to IPFS and use real CID on-chain
+  - `--ipfs-api URL` to configure IPFS endpoint
+  - `--max-file-size` configurable size limit
+  - Falls back to `local:<hash>` if IPFS unavailable (with warning)
+- CLI `share` command updated:
+  - `--ipfs` flag: pin file to IPFS before SHARE tx submission
+  - Same `--ipfs-api` and `--max-file-size` options
+- New CLI `retrieve` command:
+  - `qbit retrieve <cid>` — fetch file from IPFS by CID
+  - `--output FILE` — save to file instead of stdout
+  - `--verify-hash` — check retrieved file hash against on-chain record
+  - CID format validation before attempting retrieval
+- All existing commands work unchanged without IPFS (backward-compatible)
+- 35 new tests in `tests/test_ipfs.py` (client + CLI integration, mocked)
+
+### Web Dashboard / Chain Explorer
+- Single-page application at `/dashboard/` — self-contained HTML file (no build tools, no CDN)
+  - **Live Stats Bar:** chain height, total transactions, pending pool size, validator count, avg block time (last 10 blocks)
+  - **Recent Blocks:** table with index, hash, validator, tx count, timestamp; click to expand full detail + transactions; pagination via "Load More"
+  - **Transaction Viewer:** search by TX ID; shows type, sender, nonce, payload (type-specific: document_hash for NOTARIZE, recipient+CID for SHARE, etc.)
+  - **Validator Panel:** lists all registered validators with copy-on-click addresses
+  - **Document Verifier:** input document hash, calls POST `/api/v1/verify`, shows verified/not-found result with proof details
+  - **Pool Monitor:** pending count + visual breakdown bar by tx type (NOTARIZE/STORE/SHARE/REGISTER_KEY)
+- WebSocket integration: subscribes to `new_block`, `new_tx`, `chain_stats`; toast notifications for new blocks/txs
+- Auto-reconnect with exponential backoff (1s to 30s max)
+- Configurable API base URL + auth token; settings persisted in `localStorage`
+- Dark theme (#0d0d1a background, #00d4ff accent), responsive grid, monospace hashes
+- XSS-safe: all dynamic content escaped via `createTextNode` before DOM insertion
+- Static file route added to `RPCServer._mount_dashboard()` in `qbit_network/network/rpc.py`
+
 ## v0.3.0-sprint2 (2026-03-25)
 
 ### Storage: SQLite-Primary Chain Storage

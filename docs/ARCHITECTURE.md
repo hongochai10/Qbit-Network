@@ -12,14 +12,14 @@
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    Application                       │
-│              (QBit Network Client / CLI)                   │
+│              (QBit Network Client / CLI)             │
 ├─────────────────────────────────────────────────────┤
-│                   JSON-RPC API                       │
-│             (node.py + rpc.py)                       │
-│      Bearer auth | Body limits | Batch caps          │
+│           JSON-RPC API  |  REST API  |  WebSocket   │
+│       (node.py + rpc.py + rest_api.py + websocket.py)│
+│   Bearer auth | Body limits | Batch caps | Rate limit│
 ├─────────────┬───────────────────┬───────────────────┤
 │  Blockchain │    Consensus      │     P2P Network   │
-│  (chain +   │    (PoA round-    │   (TCP + JSON     │
+│  (SQLite +  │    (PoA round-    │   (TCP + JSON     │
 │   indices)  │     robin)        │    newline-delim)  │
 ├─────────────┴───────────────────┴───────────────────┤
 │                     Core                             │
@@ -56,6 +56,8 @@ Each wallet holds two independent PQC keypairs:
 The encryption public key is registered on-chain via `REGISTER_KEY` transactions, enabling other users to look it up for SHARE operations.
 
 ## Transaction Types
+
+Six transaction types are defined. All share the same wire format and validation rules; only the `payload` schema differs.
 
 ### NOTARIZE
 Proves a document existed at a specific time.
@@ -105,6 +107,38 @@ Alice → Bob flow:
 ### REGISTER_KEY
 Binds an ML-KEM encryption public key to the sender's address on-chain.
 
+### REGISTER_VALIDATOR
+Registers an ML-DSA-65 validator public key on-chain, enabling other nodes to verify block signatures without out-of-band key distribution.
+
+```json
+{
+  "type": "REGISTER_VALIDATOR",
+  "from": "qv1...",
+  "payload": {
+    "validator_pubkey": "ML-DSA hex (1952 bytes)",
+    "validator_address": "qv1... (must match derivation from validator_pubkey)"
+  }
+}
+```
+
+Duplicate registration (address already in registry) is rejected. The genesis validator is auto-registered in memory on `init_chain()`.
+
+### REVOKE_KEY
+Permanently revokes a signing, encryption, or validator key on-chain.
+
+```json
+{
+  "type": "REVOKE_KEY",
+  "from": "qv1...",
+  "payload": {
+    "key_type": "signing | encryption | validator",
+    "reason": "compromised | rotation | decommission"
+  }
+}
+```
+
+Self-revocation only: the sender must be the key owner. Revoking a signing key blocks the address from submitting further transactions. Revoking a validator key removes the validator from the active set. The genesis validator cannot be revoked.
+
 ## Block Structure
 
 ```
@@ -140,9 +174,126 @@ Node hash:   SHA3-256(0x01 || left || right)
 Odd element: Promoted to next layer without pairing (no duplication)
 ```
 
+## REST API Gateway
+
+Mounted at `/api/v1/` alongside the JSON-RPC endpoint. Implemented as an aiohttp sub-app in `network/rest_api.py`.
+
+### Public Endpoints (no auth required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/info` | Node info (version, chain_id, height, peers) |
+| GET | `/api/v1/health` | Liveness check |
+| GET | `/api/v1/blocks` | Paginated block list (`page`, `limit`) |
+| GET | `/api/v1/blocks/latest` | Most recent block |
+| GET | `/api/v1/blocks/:index` | Block by index |
+| GET | `/api/v1/blocks/hash/:hash` | Block by hash |
+| GET | `/api/v1/txs/:txid` | Transaction by ID |
+| GET | `/api/v1/txs/sender/:addr` | Transactions by sender (paginated) |
+| GET | `/api/v1/address/:addr` | Address summary |
+| GET | `/api/v1/notarizations/:hash` | All notarizations for document hash |
+| GET | `/api/v1/validators` | Active validator list |
+| GET | `/api/v1/pool` | Transaction pool (paginated) |
+| GET | `/api/v1/pool/count` | Transaction pool count |
+| POST | `/api/v1/verify` | Verify document hash (public read-only) |
+
+### Protected Endpoints (Bearer token required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/txs` | Submit raw transaction |
+| POST | `/api/v1/wallets` | Create wallet |
+| GET | `/api/v1/wallets` | List wallets |
+| POST | `/api/v1/notarize` | Submit NOTARIZE transaction |
+| POST | `/api/v1/store` | Submit STORE transaction |
+| POST | `/api/v1/share` | Submit SHARE transaction |
+| POST | `/api/v1/register-validator` | Submit REGISTER_VALIDATOR transaction |
+
+Response envelope: `{"data": ..., "error": null}` on success; `{"data": null, "error": {"code": N, "message": "..."}}` on error. Pagination uses 1-based `page` with configurable `limit` (default 20, max 100). CORS middleware supports configurable origins with preflight `204` responses.
+
+## WebSocket Subscription System
+
+Available at `WS /ws` on the same port as the RPC server. Implemented in `network/websocket.py`.
+
+### Channels
+
+| Channel | Event | Payload |
+|---------|-------|---------|
+| `new_block` | Block appended (local production or P2P receipt) | Block dict |
+| `new_tx` | Transaction submitted (RPC or P2P) | TX dict |
+| `chain_stats` | Periodic broadcast every 5s | `{height, tx_count, pool_size, peers}` |
+
+`chain_stats` broadcasts are skipped when no clients are subscribed.
+
+### Client Protocol
+
+```json
+// Subscribe
+{"action": "subscribe", "channel": "new_block"}
+
+// Unsubscribe
+{"action": "unsubscribe", "channel": "new_block"}
+
+// Keepalive
+{"action": "ping"}
+// Response: {"action": "pong"}
+```
+
+Errors return `{"error": {"code": N, "message": "..."}}`.
+
+### WebSocketManager Limits
+
+| Parameter | Value |
+|-----------|-------|
+| Max concurrent connections | 100 |
+| Max subscriptions per client | 10 |
+| Rate limit per client | 10 msg/s |
+| Heartbeat interval | 30s (aiohttp built-in) |
+| Max inbound message size | 8 KB |
+
+No authentication required; event payloads contain only public chain data.
+
+## Rate Limiting
+
+Token bucket rate limiting in `network/rate_limiter.py`.
+
+### P2P Rate Limiting
+
+- Per-peer IP: 20 msg/s sustained, 100-message burst
+- HELLO and HELLO_AUTH messages are exempt
+- Peers disconnected after 3 violations
+
+### RPC Rate Limiting
+
+- Per-client IP: 10 req/s sustained, 50-request burst
+- `GET /` (health) and `GET /api/v1/info` are exempt
+- Returns HTTP 429 with JSON-RPC error body on violation
+- Localhost (`127.0.0.1`, `::1`) exempt in development
+
+### Shared Parameters
+
+- LRU cap at 10,000 tracked IPs
+- Active peers excluded from LRU eviction
+- Stale entries purged every 60s
+
+## Key Revocation
+
+On-chain revocation via `REVOKE_KEY` transactions. The revocation registry (`_revoked_keys`) is persisted in the SQLite `revoked_keys` table and loaded on startup.
+
+### Effects by Key Type
+
+| Key Type | Effect |
+|----------|--------|
+| `signing` | Address blocked from submitting transactions; `submit_tx` and consensus reject |
+| `encryption` | Marked in registry; downstream consumers filter |
+| `validator` | Removed from `_validator_registry` and `consensus.validators`; cannot produce blocks |
+
+Revocations are fully rolled back during chain reorg. The genesis validator cannot be revoked.
+
 ## Persistence
 
-- `chain.json`: Atomic write via tempfile + os.replace
+- SQLite (`chain.db`): Primary storage for blocks, transactions, validator registry, revocation registry, and indices when `data_dir` is set. `_ChainProxy` provides a backward-compatible list-like interface over SQLite for code that accesses `blockchain.chain`.
+- In-memory mode: Used when no `data_dir` is set (tests, ephemeral nodes); full `_chain_list` retained.
 - `wallets/*.json`: Atomic write, permission 0o600, scrypt+AES-GCM encryption
 - Load validation: hash chain integrity, tx signatures, block signatures (when validator known)
 - Atomic load: validate all blocks in temp list before committing

@@ -2,6 +2,33 @@
 
 ## Implemented
 
+### v0.3.0-sprint3 (2026-03-25)
+- [x] IPFS integration for CLI store/share/retrieve commands
+  - `cli/ipfs_client.py` — lightweight IPFS HTTP API client (stdlib-only, no pip deps)
+  - Methods: `add_file()`, `add_bytes()`, `cat()`, `pin_ls()`, `is_available()`
+  - CID format validation (CIDv0 `Qm...` and CIDv1 `bafy...`)
+  - Configurable file size limit (default 10MB), 30s upload / 10s read timeouts
+  - `qbit store --ipfs` — hash file, pin to IPFS, record CID + hash on-chain
+  - `qbit share --ipfs` — pin file to IPFS, submit SHARE tx with CID
+  - `qbit retrieve <cid>` — fetch from IPFS, optional `--output`, `--verify-hash`
+  - `--ipfs-api` flag on store/share/retrieve (default `http://127.0.0.1:5001`)
+  - Graceful fallback: IPFS unavailable warns and uses `local:` reference
+  - Manual `--cid` still supported (takes precedence over `--ipfs`)
+  - 35 tests (client unit tests + CLI integration tests with mocked IPFS/RPC)
+- [x] Web dashboard / chain explorer — single-file SPA at `/dashboard/`
+  - Real-time block feed via WebSocket (`new_block`, `new_tx`, `chain_stats` channels)
+  - Recent Blocks table with click-to-expand detail view and transaction listing
+  - Transaction Viewer — search by TX ID with type-specific payload display
+  - Validator Panel — list of registered validators with status indicators
+  - Document Verifier — SHA3-256 hash verification via REST `/verify` endpoint
+  - Pool Monitor — pending transaction count + breakdown by type with visual bar
+  - Live Stats Bar: chain height, total txs, pending pool, validators, avg block time
+  - Configurable API endpoint + auth token, settings persisted in localStorage
+  - Auto-reconnecting WebSocket with exponential backoff (1s-30s)
+  - Dark theme, responsive layout, XSS-safe DOM escaping, copy-on-click hashes
+  - No external dependencies — pure HTML/CSS/vanilla JS, < 35KB total
+  - Static file serving route added to RPCServer at `/dashboard/`
+
 ### v0.3.0-sprint2 (2026-03-25)
 - [x] SQLite-primary storage: removed in-memory chain list for disk-backed blockchains
   - Blocks stored only in SQLite when `data_dir` is set (no more dual-write memory overhead)
@@ -80,22 +107,22 @@
 ### v0.1.0
 - [x] ML-DSA-65 + ML-KEM-768 + SHA3-256 + AES-256-GCM (liboqs)
 - [x] Dual-keypair wallet (signing + encryption) with scrypt+AES encryption
-- [x] 5 TX types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR
+- [x] 4 TX types: NOTARIZE, STORE, SHARE, REGISTER_KEY
 - [x] PoA consensus (round-robin), Merkle tree (domain-separated)
 - [x] JSON-RPC 2.0 (22 methods, bearer auth, batch, body limits)
 - [x] TCP P2P (peer discovery, SSRF protection, MAX_PEERS, HELLO timeout)
-- [x] Atomic persistence, chain load validation, 13-round security audit (151+ issues)
+- [x] Atomic persistence, chain load validation, 9-round security audit (104 issues)
 
 ---
 
-## Planned (v0.3.0) — Remaining Sprints
+## Planned (v0.4.0)
 
 ### Protocol
 - [ ] P2P encrypted channel (ML-KEM session key + AES-GCM)
 - [ ] Validator staking / deposit mechanism
-- [x] Key revocation transactions (ISS-010) -- implemented in sprint 2
 - [ ] Block finality (checkpoint mechanism)
-- [ ] Responder-signs-before-verify protocol fix (SPRINT1-003, deferred)
+- [ ] Responder-signs-before-verify protocol fix (SPRINT1-003, deferred from v0.3.0)
+- [ ] Genesis validator on-chain REGISTER_VALIDATOR tx (SPRINT1-007, deferred from v0.3.0)
 
 ### Consensus
 - [ ] Delegated Proof of Stake (dPoS)
@@ -103,10 +130,9 @@
 - [ ] Slashing for misbehavior
 
 ### Storage
-- [ ] Full SQLite migration (replace in-memory chain list) — includes ISS-012 nonce rename
 - [ ] Chain pruning (ISS-007)
 - [ ] Transaction pool persistence
-- [ ] Parameterized SQLite queries in validator table (SPRINT1-011, deferred)
+- [ ] Parameterized SQLite queries in validator/revocation tables (SPRINT1-011, deferred from v0.3.0)
 
 ### Security
 - [ ] Key material zeroing via ctypes/mmap (ISS-001)
@@ -115,11 +141,8 @@
 
 ### Client
 - [ ] IPFS integration for STORE/SHARE workflows
-- [ ] Web dashboard / chain explorer
-- [x] WebSocket subscriptions (new block, new tx, chain stats events)
 - [ ] Human-readable proof PDF export
 
 ### Infrastructure
-- [x] REST API gateway (Sprint 2)
 - [ ] Light client protocol (Merkle proof verification only)
 - [ ] Cross-chain bridge (hash anchoring)

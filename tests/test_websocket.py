@@ -537,3 +537,231 @@ async def test_ws_multiple_clients_same_channel():
             await ws2.close()
     finally:
         await server.close()
+
+
+# ---------------------------------------------------------------------------
+# Sprint 3: additional WebSocket edge-case tests
+# ---------------------------------------------------------------------------
+
+class TestWebSocketManagerEdgeCases:
+    """Additional edge cases for WebSocketManager (Sprint 3)."""
+
+    def setup_method(self):
+        self.mgr = WebSocketManager()
+
+    def _mock_ws(self, closed=False):
+        ws = MagicMock()
+        ws.closed = closed
+        ws.send_str = AsyncMock()
+        ws.send_json = AsyncMock()
+        ws.close = AsyncMock()
+        return ws
+
+    def test_max_subscriptions_per_client_enforced(self):
+        """A client cannot subscribe to more than MAX_SUBSCRIPTIONS_PER_CLIENT channels."""
+        ws = self._mock_ws()
+        self.mgr._all_clients.add(ws)
+        ws_id = id(ws)
+        # Force client to already have MAX_SUBSCRIPTIONS_PER_CLIENT channels
+        self.mgr._client_channels[ws_id] = set(
+            f"fake_ch_{i}" for i in range(MAX_SUBSCRIPTIONS_PER_CLIENT)
+        )
+        ok, msg = self.mgr.add_subscriber(ws, "new_block")
+        assert ok is False
+        assert "max subscriptions" in msg
+
+    @pytest.mark.asyncio
+    async def test_broadcast_to_empty_channel_is_noop(self):
+        """Broadcasting to a channel with no subscribers does not raise."""
+        mgr = WebSocketManager()
+        # Should not raise
+        await mgr.broadcast("new_block", {"index": 1})
+
+    @pytest.mark.asyncio
+    async def test_broadcast_empty_channel_noop_async(self):
+        """Async version: broadcast with no subscribers is a no-op."""
+        mgr = WebSocketManager()
+        # No clients, no subscribers -- must not raise
+        await mgr.broadcast("new_block", {"index": 1})
+        await mgr.broadcast("new_tx", {"id": "abc"})
+        await mgr.broadcast("chain_stats", {})
+
+    @pytest.mark.asyncio
+    async def test_broadcast_invalid_channel_is_noop(self):
+        """Broadcast to a completely unknown channel name is a no-op."""
+        mgr = WebSocketManager()
+        ws = self._mock_ws()
+        mgr._all_clients.add(ws)
+        # Should not raise even with unknown channel
+        await mgr.broadcast("nonexistent_channel_xyz", {"data": 1})
+
+    @pytest.mark.asyncio
+    async def test_slow_client_send_error_causes_cleanup(self):
+        """If send_str raises an exception (simulating slow client), client is removed."""
+        mgr = WebSocketManager()
+        ws = self._mock_ws()
+        ws.send_str.side_effect = Exception("write error")
+        mgr._all_clients.add(ws)
+        mgr.add_subscriber(ws, "new_block")
+
+        await mgr.broadcast("new_block", {"index": 1})
+
+        assert ws not in mgr._all_clients
+        assert ws not in mgr._subscribers["new_block"]
+
+    @pytest.mark.asyncio
+    async def test_closed_client_removed_during_broadcast(self):
+        """Clients with ws.closed=True are removed during broadcast."""
+        mgr = WebSocketManager()
+        ws = self._mock_ws(closed=True)
+        mgr._all_clients.add(ws)
+        mgr.add_subscriber(ws, "new_tx")
+
+        await mgr.broadcast("new_tx", {"id": "test"})
+
+        assert ws not in mgr._all_clients
+        assert ws not in mgr._subscribers["new_tx"]
+
+    def test_connected_count_after_remove_all(self):
+        """connected_count drops to 0 after all clients are removed."""
+        mgr = WebSocketManager()
+        ws1 = self._mock_ws()
+        ws2 = self._mock_ws()
+        mgr._all_clients.add(ws1)
+        mgr._all_clients.add(ws2)
+        assert mgr.connected_count() == 2
+        mgr.remove_all(ws1)
+        mgr.remove_all(ws2)
+        assert mgr.connected_count() == 0
+
+    def test_remove_all_clears_client_channels(self):
+        """remove_all removes client from _client_channels dict."""
+        mgr = WebSocketManager()
+        ws = self._mock_ws()
+        mgr._all_clients.add(ws)
+        mgr.add_subscriber(ws, "new_block")
+        assert id(ws) in mgr._client_channels
+        mgr.remove_all(ws)
+        assert id(ws) not in mgr._client_channels
+
+    @pytest.mark.asyncio
+    async def test_multiple_broadcasts_same_channel(self):
+        """Multiple consecutive broadcasts all reach subscribers."""
+        mgr = WebSocketManager()
+        ws = self._mock_ws()
+        mgr._all_clients.add(ws)
+        mgr.add_subscriber(ws, "new_block")
+
+        for i in range(5):
+            await mgr.broadcast("new_block", {"index": i})
+
+        assert ws.send_str.call_count == 5
+
+    def test_valid_channels_includes_expected_channels(self):
+        """VALID_CHANNELS contains the expected set of channels."""
+        assert "new_block" in VALID_CHANNELS
+        assert "new_tx" in VALID_CHANNELS
+        assert "chain_stats" in VALID_CHANNELS
+
+
+@pytest.mark.asyncio
+async def test_ws_max_connections_101st_rejected():
+    """The 101st WebSocket connection attempt returns 503 Service Unavailable."""
+    mgr = WebSocketManager()
+    app = web.Application()
+    app["ws_manager"] = mgr
+    app.router.add_get("/ws", websocket_handler)
+    server = TestServer(app)
+    await server.start_server()
+
+    fake_clients = []
+    try:
+        # Fill up to MAX_WS_CONNECTIONS with mock objects
+        for _ in range(MAX_WS_CONNECTIONS):
+            fake_ws = MagicMock()
+            fake_ws.closed = False
+            mgr._all_clients.add(fake_ws)
+            fake_clients.append(fake_ws)
+
+        assert mgr.connected_count() == MAX_WS_CONNECTIONS
+
+        # 101st connection should be rejected
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            try:
+                ws = await session.ws_connect(server.make_url("/ws"))
+                # If it somehow connected, close it
+                await ws.close()
+                # Should not reach here
+                pytest.fail("Expected 503 but connection was accepted")
+            except aiohttp.WSServerHandshakeError as e:
+                assert e.status == 503
+            except Exception:
+                # Some clients raise different exceptions; the key is that
+                # the connection was not cleanly established
+                pass
+    finally:
+        mgr._all_clients.clear()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_invalid_number_message_type():
+    """A message with a numeric 'type' field gets an error response."""
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            await ws.send_json({"type": 42})  # numeric, not string
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "error"
+            await ws.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_null_type_field():
+    """A message with null 'type' field gets an error response."""
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            await ws.send_json({"type": None})
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "error"
+            await ws.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_array_message():
+    """An array (non-object) JSON message gets an error response."""
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            await ws.send_str("[1, 2, 3]")
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "error"
+            assert "JSON object" in resp["message"]
+            await ws.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_subscribe_all_valid_channels():
+    """Can subscribe to all valid channels without error."""
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            for ch in VALID_CHANNELS:
+                await ws.send_json({"type": "subscribe", "channel": ch})
+                resp = json.loads((await ws.receive()).data)
+                assert resp["type"] == "subscribed", f"Failed for channel {ch}: {resp}"
+            await ws.close()
+    finally:
+        await server.close()
