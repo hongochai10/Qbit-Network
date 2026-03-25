@@ -1,0 +1,3 @@
+liboqs-python>=0.14.0
+cryptography>=42.0.0
+aiohttp>=3.9.0
