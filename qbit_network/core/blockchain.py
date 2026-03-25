@@ -246,8 +246,9 @@ class Blockchain:
             for tx in fb.transactions:
                 mined_in_fork.add(tx.tx_id)
 
-        # Return displaced txs to pool — validate nonce freshness first
+        # Return displaced txs to pool — sort by (sender, nonce) so lower nonces process first
         returned = 0
+        displaced_txs.sort(key=lambda t: (t.sender, t.nonce))
         for tx in displaced_txs:
             if tx.tx_id in mined_in_fork or tx.tx_id in self._tx_by_id:
                 continue
@@ -288,10 +289,15 @@ class Blockchain:
             displaced = self._rollback_to(block.index)
             self._append_block(block)
             self._drain_pool(block)
-            # Return valid displaced txs to pool
+            # Return valid displaced txs to pool — with nonce validation
             new_tx_ids = {tx.tx_id for tx in block.transactions}
+            displaced.sort(key=lambda t: (t.sender, t.nonce))
             for tx in displaced:
-                if tx.tx_id not in new_tx_ids and tx.tx_id not in self._tx_by_id:
+                if tx.tx_id in new_tx_ids or tx.tx_id in self._tx_by_id:
+                    continue
+                expected = self.get_nonce(tx.sender) + \
+                    self._pool_sender_count.get(tx.sender, 0)
+                if tx.nonce == expected:
                     self.tx_pool.append(tx)
                     self._pool_ids.add(tx.tx_id)
                     self._pool_sender_count[tx.sender] = \
@@ -421,7 +427,7 @@ class Blockchain:
 
     def get_tx(self, tx_id: str) -> Transaction | None:
         loc = self._tx_by_id.get(tx_id)
-        if loc:
+        if loc is not None:
             block_idx, tx_idx = loc
             return self.chain[block_idx].transactions[tx_idx]
         return None

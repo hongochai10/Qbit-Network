@@ -291,25 +291,24 @@ def cmd_verify_proof(args):
     merkle_valid = verify_merkle_proof(
         bytes.fromhex(tx_id), proof_tuples, bytes.fromhex(block["merkleRoot"]))
 
-    # 2. Verify block hash
+    # 2. Verify block header hash
     header_obj = {
         "index": block["index"],
         "merkleRoot": block["merkleRoot"],
         "prevHash": block["prevHash"],
         "timestamp": block["timestamp"],
-        "txCount": len(merkle_path) + 1 if merkle_path else 1,
+        "txCount": block.get("txCount", 0),
         "validator": block["validator"],
     }
-    # Note: txCount in header is not stored in proof — we trust the block hash
-    # Recompute by checking the claimed hash matches the block sig
-    block_sig = bytes.fromhex(block["signature"])
-
-    # 3. Verify block signature (requires knowing validator pk — embedded or lookup)
-    # For offline verification, trust the merkle proof + block hash chain
+    header_bytes = json.dumps(header_obj, sort_keys=True, separators=(",", ":")).encode()
+    computed_hash = sha3_256(header_bytes).hex()
+    claimed_hash = block.get("hash", "")
 
     errors = []
     if not merkle_valid:
         errors.append("Merkle proof INVALID — transaction not in block")
+    if computed_hash != claimed_hash:
+        errors.append(f"Block hash mismatch: computed {computed_hash[:16]}... != claimed {claimed_hash[:16]}...")
 
     if args.json:
         print(json.dumps({

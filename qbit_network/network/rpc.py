@@ -1,5 +1,6 @@
 """JSON-RPC 2.0 API server with bearer token authentication and optional TLS."""
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -67,9 +68,6 @@ def _generate_self_signed(data_dir: str) -> tuple[str, str]:
         return cert_path, key_path
     except ImportError:
         raise RuntimeError("cryptography package required for --tls-self-signed")
-
-
-import ipaddress  # needed for SAN in self-signed cert
 
 
 class RPCServer:
