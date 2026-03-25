@@ -542,6 +542,14 @@ class P2PNode:
                 removed = self._rate_limiter.cleanup()
                 if removed:
                     logger.debug(f"Rate limiter cleanup: removed {removed} stale entries")
+                # Cleanup stale _auth_attempts entries (R14-004)
+                cutoff = time.monotonic() - _AUTH_RATE_WINDOW
+                stale = [k for k, ts_list in self._auth_attempts.items()
+                         if not ts_list or ts_list[-1] < cutoff]
+                for k in stale:
+                    del self._auth_attempts[k]
+                if stale:
+                    logger.debug(f"Auth attempts cleanup: removed {len(stale)} stale entries")
         except asyncio.CancelledError:
             pass
 

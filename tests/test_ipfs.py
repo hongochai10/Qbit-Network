@@ -184,7 +184,7 @@ class TestIPFSClientCat(unittest.TestCase):
     def test_cat_success(self, mock_urlopen):
         data = b"file contents here"
         resp = MagicMock()
-        resp.read.return_value = data
+        resp.read.side_effect = [data, b""]
         resp.__enter__ = lambda s: resp
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -477,9 +477,9 @@ class TestCLIRetrieve(unittest.TestCase):
         id_resp.__enter__ = lambda s: id_resp
         id_resp.__exit__ = MagicMock(return_value=False)
 
-        # Mock cat
+        # Mock cat (chunked read: data then empty)
         cat_resp = MagicMock()
-        cat_resp.read.return_value = file_data
+        cat_resp.read.side_effect = [file_data, b""]
         cat_resp.__enter__ = lambda s: cat_resp
         cat_resp.__exit__ = MagicMock(return_value=False)
 

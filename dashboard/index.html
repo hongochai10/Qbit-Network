@@ -714,7 +714,7 @@ var App = (function() {
   }
 
   function escAttr(s) {
-    return String(s).replace(/'/g, "\\'").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return String(s).replace(/\\/g,'\\\\').replace(/'/g,"&#39;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"").replace(/\r/g,"");
   }
 
   function detailRow(label, val) {
@@ -973,15 +973,15 @@ var App = (function() {
   // ---- Settings persistence ----
   function saveSettings() {
     try {
-      localStorage.setItem("qbit_apiUrl", apiBase);
-      localStorage.setItem("qbit_authToken", authToken);
+      sessionStorage.setItem("qbit_apiUrl", apiBase);
+      sessionStorage.setItem("qbit_authToken", authToken);
     } catch(e) {}
   }
 
   function loadSettings() {
     try {
-      var savedUrl = localStorage.getItem("qbit_apiUrl");
-      var savedToken = localStorage.getItem("qbit_authToken");
+      var savedUrl = sessionStorage.getItem("qbit_apiUrl");
+      var savedToken = sessionStorage.getItem("qbit_authToken");
       if (savedUrl) {
         apiBase = savedUrl;
         $("apiUrl").value = savedUrl;

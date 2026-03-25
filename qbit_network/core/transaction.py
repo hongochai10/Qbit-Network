@@ -102,6 +102,11 @@ class Transaction:
             dh = self.payload.get("documentHash", "")
             if not dh or not _HEX_RE.match(dh):
                 return False, "documentHash must be non-empty hex string"
+            meta = self.payload.get("metadata")
+            if meta is not None and not isinstance(meta, str):
+                return False, "metadata must be a string"
+            if isinstance(meta, str) and len(meta) > 1024:
+                return False, "metadata exceeds 1024 characters"
 
         elif self.tx_type == TxType.STORE:
             dh = self.payload.get("documentHash", "")
@@ -109,6 +114,11 @@ class Transaction:
                 return False, "documentHash must be non-empty hex string"
             if not self.payload.get("cid"):
                 return False, "cid required for STORE tx"
+            meta = self.payload.get("metadata")
+            if meta is not None and not isinstance(meta, str):
+                return False, "metadata must be a string"
+            if isinstance(meta, str) and len(meta) > 1024:
+                return False, "metadata exceeds 1024 characters"
 
         elif self.tx_type == TxType.SHARE:
             if not self.payload.get("cid"):
@@ -141,6 +151,9 @@ class Transaction:
             expected_addr = Wallet.derive_address(bytes.fromhex(vpk))
             if vaddr != expected_addr:
                 return False, "validator_address does not match validator_pubkey"
+            # Self-registration only: sender must be the validator (T-01)
+            if self.sender != vaddr:
+                return False, "REGISTER_VALIDATOR requires sender == validator_address"
 
         elif self.tx_type == TxType.REVOKE_KEY:
             _VALID_KEY_TYPES = {"signing", "encryption", "validator"}
@@ -187,6 +200,11 @@ class Transaction:
             raise ValueError("signature/sender_pubkey must be valid hex")
         if spk and len(spk) != 1952:  # ML-DSA-65 public key size
             raise ValueError(f"sender_pubkey wrong size: {len(spk)}")
+        chain_id = data.get("chainId")
+        if chain_id is None:
+            raise ValueError("chainId is required")
+        if not isinstance(chain_id, str):
+            raise ValueError("chainId must be string")
         return cls(
             tx_type=TxType(data["type"]),
             sender=data["from"],
@@ -194,7 +212,7 @@ class Transaction:
             timestamp=data["timestamp"],
             payload=data["payload"],
             nonce=data.get("nonce", 0),
-            chain_id=data.get("chainId", CHAIN_ID),
+            chain_id=chain_id,
             signature=sig,
             sender_pubkey=spk,
         )

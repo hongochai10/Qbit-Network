@@ -12,7 +12,7 @@ import logging
 from .block import Block
 from .transaction import Transaction, TxType
 from .consensus import ProofOfAuthority
-from ..config import MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH
+from ..config import MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH, CHAIN_ID
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -192,6 +192,10 @@ class Blockchain:
         if len(self.tx_pool) >= MAX_TX_POOL_SIZE:
             return False, "tx pool full"
 
+        # Chain ID validation (T-03) — before signature check
+        if tx.chain_id != CHAIN_ID:
+            return False, f"wrong chain_id: expected {CHAIN_ID}"
+
         # Revoked signing key cannot submit any transactions
         if self.is_key_revoked(tx.sender, "signing"):
             return False, "sender signing key has been revoked"
@@ -218,8 +222,8 @@ class Blockchain:
             key_type = tx.payload.get("key_type", "")
             if self.is_key_revoked(tx.sender, key_type):
                 return False, f"{key_type} key already revoked for this address"
-            # Genesis validator cannot revoke any of their own keys
-            if key_type in ("validator", "signing", "encryption") and self._height >= 0:
+            # Genesis validator cannot revoke signing or validator keys (K-01)
+            if key_type in ("validator", "signing") and self._height >= 0:
                 genesis_block = self._get_block_by_index(0)
                 if genesis_block and tx.sender == genesis_block.validator:
                     return False, "cannot revoke genesis validator keys"
@@ -250,12 +254,17 @@ class Blockchain:
         if self._height < 0:
             return None
 
+        # Early turn check (C-02) — skip expensive work if not our turn
+        parent = self._latest_block
+        expected = self.consensus.select_validator(parent.index + 1)
+        if expected and expected != validator_address:
+            return None  # not our turn
+
         # Revoked signing key cannot produce blocks (SPRINT2-014)
         if self.is_key_revoked(validator_address, "signing"):
             logger.error(f"Cannot produce block: signing key revoked for {validator_address[:16]}...")
             return None
 
-        parent = self._latest_block
         txs = self.tx_pool[:MAX_TX_PER_BLOCK]
 
         if not txs:
@@ -657,6 +666,18 @@ class Blockchain:
                         f"Encryption key revoked: {tx.sender[:16]}... "
                         f"reason={reason} (block #{block.index})")
                 elif key_type == "signing":
+                    # Purge pool txs from the revoked sender (K-03)
+                    revoked_addr = tx.sender
+                    to_remove = [t for t in self.tx_pool if t.sender == revoked_addr]
+                    for t in to_remove:
+                        self.tx_pool.remove(t)
+                        self._pool_ids.discard(t.tx_id)
+                        self._pool_sender_count[t.sender] = max(
+                            0, self._pool_sender_count.get(t.sender, 0) - 1)
+                    if to_remove:
+                        logger.info(
+                            f"Purged {len(to_remove)} pool txs from revoked sender "
+                            f"{revoked_addr[:16]}...")
                     logger.info(
                         f"Signing key revoked: {tx.sender[:16]}... "
                         f"reason={reason} (block #{block.index})")

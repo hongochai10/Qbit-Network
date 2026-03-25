@@ -18,7 +18,7 @@ from .network.p2p import (
 from .network.rpc import RPCServer
 from .network.rest_api import RESTApi
 from .network.websocket import WebSocketManager
-from .config import DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, BLOCK_INTERVAL
+from .config import DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, BLOCK_INTERVAL, VERSION
 
 logger = logging.getLogger("qbit_network.node")
 
@@ -316,7 +316,7 @@ class FullNode:
         all_validators = set(self.blockchain.consensus.validators.keys())
         all_validators.update(self.blockchain._validator_registry.keys())
         return {
-            "version": "0.2.0",
+            "version": VERSION,
             "chain_height": self.blockchain.height,
             "pending_txs": len(self.blockchain.tx_pool),
             "peers": self.p2p.peer_count(),

@@ -22,7 +22,7 @@ address = "qv1" + hex(SHA3-256(ML-DSA-65 public key))
   "to": "qv1... (recipient, required for SHARE)",
   "timestamp": 1700000000,
   "nonce": 0,
-  "chainId": "qvault-mainnet",
+  "chainId": "qbit-mainnet",
   "payload": { ... },
   "signature": "ML-DSA hex",
   "sender_pubkey": "ML-DSA public key hex (1952 bytes)"
@@ -186,7 +186,7 @@ Full 3-step mutual authentication using ML-DSA-65 challenge-response:
   "protocol_version": 2,
   "node_id": "qv1...",
   "port": 9000,
-  "chain_id": "qvault-mainnet",
+  "chain_id": "qbit-mainnet",
   "challenge": "<32 bytes hex, os.urandom>",
   "timestamp": 1700000000,
   "signing_pk": "<ML-DSA-65 public key hex, 1952 bytes>"
@@ -201,7 +201,7 @@ Full 3-step mutual authentication using ML-DSA-65 challenge-response:
   "protocol_version": 2,
   "node_id": "qv1...",
   "port": 9000,
-  "chain_id": "qvault-mainnet",
+  "chain_id": "qbit-mainnet",
   "challenge_sig": "<ML-DSA sig over initiator's challenge>",
   "counter_challenge": "<32 bytes hex, os.urandom>",
   "signing_pk": "<ML-DSA-65 public key hex, 1952 bytes>"

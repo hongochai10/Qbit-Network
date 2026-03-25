@@ -38,5 +38,8 @@ P2P_RATE_VIOLATIONS_MAX = 3  # disconnects after this many violations
 RPC_RATE_LIMIT = 10       # requests/second sustained
 RPC_RATE_BURST = 50       # max burst capacity
 
+# Version
+VERSION = "0.3.0"
+
 # Storage
 DATA_DIR = os.environ.get("QBIT_DATA_DIR", os.path.expanduser("~/.qbit"))

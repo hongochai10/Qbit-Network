@@ -98,7 +98,18 @@ class IPFSClient:
         req = urllib.request.Request(url, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=_READ_TIMEOUT) as resp:
-                return resp.read()
+                chunks = []
+                total = 0
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > self.max_file_size:
+                        raise ValueError(
+                            f"response exceeds {self.max_file_size} bytes")
+                    chunks.append(chunk)
+                return b"".join(chunks)
         except urllib.error.URLError as e:
             raise IPFSError(f"IPFS cat failed for {cid}: {e}") from e
 
@@ -140,12 +151,14 @@ class IPFSClient:
     @staticmethod
     def _encode_multipart(data: bytes, filename: str) -> tuple[bytes, str]:
         """Build a multipart/form-data body for the IPFS /add endpoint."""
+        # Sanitize filename to prevent header injection (R14-005)
+        safe_filename = filename.replace('"', '_').replace('\r', '').replace('\n', '')
         boundary = uuid.uuid4().hex
         parts = []
         parts.append(f"--{boundary}\r\n".encode())
         parts.append(
             f'Content-Disposition: form-data; name="file"; '
-            f'filename="{filename}"\r\n'.encode())
+            f'filename="{safe_filename}"\r\n'.encode())
         parts.append(b"Content-Type: application/octet-stream\r\n\r\n")
         parts.append(data)
         parts.append(f"\r\n--{boundary}--\r\n".encode())

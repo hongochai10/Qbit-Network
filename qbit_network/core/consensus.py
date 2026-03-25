@@ -2,7 +2,7 @@
 import logging
 import time
 from ..crypto import MLDSA
-from ..config import MAX_BLOCK_DRIFT, MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK, MAX_TX_PAYLOAD_SIZE
+from ..config import MAX_BLOCK_DRIFT, MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK, MAX_TX_PAYLOAD_SIZE, BLOCK_INTERVAL
 from .block import Block
 
 logger = logging.getLogger("qbit_network.consensus")
@@ -38,11 +38,34 @@ class ProofOfAuthority:
     def set_genesis_hash(self, h: str):
         self._genesis_hash = h
 
-    def select_validator(self, block_index: int) -> str | None:
+    def select_validator(self, block_index: int,
+                         parent_timestamp: float | None = None) -> str | None:
         if not self.validators:
             return None
         addresses = sorted(self.validators.keys())
-        return addresses[block_index % len(addresses)]
+        n = len(addresses)
+        base = block_index % n
+        if parent_timestamp is not None:
+            return self._select_with_skip(addresses, base, n, parent_timestamp)
+        return addresses[base]
+
+    def select_validator_with_skip(self, block_index: int,
+                                   parent_timestamp: float) -> str | None:
+        """Select validator with skip-slot: if the expected validator hasn't
+        produced a block within BLOCK_INTERVAL * 3 (15s), allow the next one."""
+        if not self.validators:
+            return None
+        addresses = sorted(self.validators.keys())
+        n = len(addresses)
+        base = block_index % n
+        return self._select_with_skip(addresses, base, n, parent_timestamp)
+
+    @staticmethod
+    def _select_with_skip(addresses: list[str], base: int, n: int,
+                          parent_timestamp: float) -> str:
+        elapsed = time.time() - parent_timestamp
+        skips = max(0, int(elapsed / (BLOCK_INTERVAL * 3)))
+        return addresses[(base + skips) % n]
 
     def validate_block(self, block: Block, parent: Block | None) -> tuple[bool, str]:
 
@@ -79,7 +102,8 @@ class ProofOfAuthority:
             if f"{block.validator}:signing" in self._revoked_keys:
                 return False, "validator signing key revoked"
 
-        expected = self.select_validator(block.index)
+        expected = self.select_validator(block.index,
+                                        parent_timestamp=parent.timestamp)
         if expected and block.validator != expected:
             return False, (f"wrong validator turn: expected {expected[:16]}..., "
                            f"got {block.validator[:16]}...")

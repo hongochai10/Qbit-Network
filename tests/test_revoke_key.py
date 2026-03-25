@@ -504,14 +504,11 @@ class TestRevokedKeyEdgeCases:
         tx = Transaction.revoke_key(wallet.address, "encryption", "rotation", nonce=1)
         tx.sign(wallet.signing_sk, wallet.signing_pk)
         ok, err = blockchain.submit_tx(tx)
-        # Either allowed (no genesis protection for encryption) or blocked (full protection)
-        # This test documents the actual behavior
-        if ok:
-            submit_and_mine(blockchain, wallet, tx)
-            assert blockchain.is_key_revoked(wallet.address, "encryption")
-        else:
-            # If blocked, ensure it's a clear policy error
-            assert err  # some error message
+        # Genesis protection only covers signing and validator keys (K-01)
+        assert ok, f"encryption revocation should be allowed: {err}"
+        block = blockchain.produce_block(wallet.address, wallet.signing_sk)
+        assert block is not None, "produce_block returned None"
+        assert blockchain.is_key_revoked(wallet.address, "encryption")
 
     def test_revocation_survives_sqlite_reload(self, wallet, tmp_dir):
         """Revocation state persists through SQLite reload."""
