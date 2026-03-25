@@ -2,11 +2,19 @@
 
 ## Summary
 
-- **Total rounds**: 13 (Sprint 1 + Sprint 2)
+- **Total rounds**: 14 (including v0.4.0 sprints)
 - **Total issues found**: 181+
-- **Total fixed**: 159+
-- **Accepted risks / deferred**: 9
-- **Latest**: Round 13 Sprint 2 (v0.3.0 Sprint 2 audit) — complete 2026-03-25
+- **Total fixed**: 162+
+- **Accepted risks / deferred**: 6
+- **Latest**: v0.4.0-sprint2 audit — complete 2026-03-25
+
+## Deferred Findings Resolved in v0.4.0
+
+| Finding | Resolution |
+|---------|-----------|
+| SPRINT1-003: Responder signs before verifying initiator fields | Initiator includes proof in hello_auth; responder verifies before signing (v0.4.0-sprint2) |
+| SPRINT1-007: Genesis validator not registered via on-chain tx | Genesis validator registered via REGISTER_VALIDATOR tx in genesis block (v0.4.0-sprint1) |
+| SPRINT1-011: SQLite validator table uses string concat | Parameterized queries implemented (v0.4.0-sprint1) |
 
 ## Round 1 — Basic Correctness (14 issues)
 

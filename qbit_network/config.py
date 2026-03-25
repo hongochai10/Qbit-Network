@@ -48,5 +48,8 @@ SLASH_PERCENTAGE = 50        # percentage of total stake slashed for misbehaviou
 # Version
 VERSION = "0.4.0"
 
+# Pruning
+PRUNING_RETENTION = 10000     # blocks to keep during chain pruning
+
 # Storage
 DATA_DIR = os.environ.get("QBIT_DATA_DIR", os.path.expanduser("~/.qbit"))

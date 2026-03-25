@@ -2,6 +2,36 @@
 
 ## Implemented
 
+### v0.4.0-sprint3 (2026-03-25)
+- [x] Peer Reputation Scoring (ISS-009)
+  - `PeerReputation` class in `qbit_network/network/reputation.py`
+  - 8 event types: valid_block (+10), valid_tx (+1), invalid_block (-50), invalid_tx (-10), auth_failed (-100), timeout (-5), rate_limited (-20), protocol_error (-30)
+  - Default score 100, ban threshold -100
+  - `record()`, `get_score()`, `is_banned()`, `unban()`, `decay()` methods
+  - Score decay (0.99x per minute) moves old scores toward 0
+  - Integrated into P2P: events recorded on block/tx validation in node.py
+  - Banned peers auto-rejected on inbound connections
+  - Mid-session reputation ban check in both inbound and outbound read loops
+  - Auth failures, rate limit violations, protocol errors all recorded
+  - 26 new tests (scoring, banning, decay, unban, edge cases)
+- [x] Chain Pruning (ISS-007)
+  - `PRUNING_RETENTION = 10000` config parameter (blocks to keep)
+  - `Blockchain.prune(retention)` method: deletes old block data from SQLite
+  - `SQLiteStore.prune_blocks(before_index)` method: atomic block+tx deletion
+  - In-memory indices (tx_by_id, notarizations, key_registry, validators, stakes, epochs) preserved
+  - Only raw block JSON and txs table rows removed for pruned blocks
+  - Thread-safe via `_db_lock`
+  - No-op in in-memory mode, validated retention parameter
+  - 10 new tests (prune old blocks, indices preserved, pruned blocks inaccessible, store-level pruning)
+- [x] Block Signature in Proof Verification (R14-006)
+  - `export_proof()` accepts optional `validator_pubkey` parameter
+  - When provided, `validator_pubkey` included in proof bundle
+  - `verify_proof()` now verifies ML-DSA-65 block signature when `validator_pubkey` present
+  - Reconstructs block header bytes and verifies validator signature
+  - Tampered signatures and wrong pubkeys correctly detected
+  - Backward compatible: proofs without `validator_pubkey` skip sig check
+  - 10 new tests (roundtrip sig verification, tampered sig, wrong pubkey, JSON roundtrip)
+
 ### v0.4.0-sprint2 (2026-03-25)
 - [x] Epoch Rotation
   - Every EPOCH_LENGTH blocks (100), active validators are frozen for that epoch
@@ -91,8 +121,11 @@
   - Configurable API endpoint + auth token, settings persisted in localStorage
   - Auto-reconnecting WebSocket with exponential backoff (1s-30s)
   - Dark theme, responsive layout, XSS-safe DOM escaping, copy-on-click hashes
-  - No external dependencies — pure HTML/CSS/vanilla JS, < 35KB total
+  - No external dependencies — pure HTML/CSS/vanilla JS, < 45KB total
   - Static file serving route added to RPCServer at `/dashboard/`
+  - v0.4.0: Current Epoch stat chip, stake weight on validators, slashed indicators
+  - v0.4.0: Staking panel (6th tab) with validator stakes, top stakers, epoch info, slashing events
+  - v0.4.0: Fetches from GET /api/v1/stakes, GET /api/v1/epochs/current, GET /api/v1/slashing-events
 
 ### v0.3.0-sprint2 (2026-03-25)
 - [x] SQLite-primary storage: removed in-memory chain list for disk-backed blockchains
@@ -180,32 +213,20 @@
 
 ---
 
-## Planned (v0.4.0)
+## Planned (v0.5.0+)
 
 ### Protocol
-- [ ] P2P encrypted channel (ML-KEM session key + AES-GCM)
-- [ ] Validator staking / deposit mechanism
 - [ ] Block finality (checkpoint mechanism)
-- [ ] Responder-signs-before-verify protocol fix (SPRINT1-003, deferred from v0.3.0)
-- [ ] Genesis validator on-chain REGISTER_VALIDATOR tx (SPRINT1-007, deferred from v0.3.0)
-
-### Consensus
-- [ ] Delegated Proof of Stake (dPoS)
-- [ ] Multi-validator epoch rotation
-- [ ] Slashing for misbehavior
 
 ### Storage
-- [ ] Chain pruning (ISS-007)
+- [ ] Chain pruning (ISS-007 partially addressed via epoch checkpoints)
 - [ ] Transaction pool persistence
-- [ ] Parameterized SQLite queries in validator/revocation tables (SPRINT1-011, deferred from v0.3.0)
 
 ### Security
 - [ ] Key material zeroing via ctypes/mmap (ISS-001)
-- [ ] Peer reputation scoring (ISS-009)
 - [ ] ACME/Let's Encrypt TLS auto-provisioning (ISS-016)
 
 ### Client
-- [ ] IPFS integration for STORE/SHARE workflows
 - [ ] Human-readable proof PDF export
 
 ### Infrastructure

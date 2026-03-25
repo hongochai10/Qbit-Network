@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.4.0-sprint3 (2026-03-25)
+
+### Peer Reputation Scoring (ISS-009)
+- New `PeerReputation` class in `qbit_network/network/reputation.py`
+- Score-based tracking with 8 event types (valid_block, invalid_block, auth_failed, etc.)
+- Peers start at score 100; banned when score drops to -100 or below
+- Score decay (0.99x per decay call) ensures old events fade over time
+- Integrated into P2P layer: events recorded for block/tx validation results
+- Banned peers rejected on inbound connections and disconnected mid-session
+- Auth failures, rate limit violations, protocol errors all track reputation
+- Manual unban via `unban()` resets score to default
+
+### Chain Pruning (ISS-007)
+- New `PRUNING_RETENTION = 10000` configuration parameter
+- `Blockchain.prune(retention)` removes block data older than `height - retention`
+- `SQLiteStore.prune_blocks(before_index)` performs atomic block+tx row deletion
+- All indices preserved: notarizations, key_registry, validator_registry, stakes, epochs, slashing
+- Thread-safe via existing `_db_lock`; no-op in in-memory mode
+
+### Block Signature in Proof Verification (R14-006)
+- `export_proof()` now accepts optional `validator_pubkey` parameter
+- When present, validator's ML-DSA-65 public key included in proof bundle
+- `verify_proof()` performs full ML-DSA signature verification on block header
+- Tampered signatures and wrong validator pubkeys correctly detected with clear errors
+- Backward compatible: proofs without `validator_pubkey` skip signature check
+
+### Dashboard dPoS Updates
+- Current Epoch stat chip added to stats bar
+- Validators tab shows stake weight and slashed indicator badge per validator
+- New Staking panel (6th tab): validator stakes, top stakers, epoch info, slashing events
+- Pool Monitor updated with STAKE, DELEGATE, UNSTAKE, EVIDENCE tx type colors
+- Dashboard fetches from GET /api/v1/stakes, GET /api/v1/epochs/current, GET /api/v1/slashing-events
+- Dashboard size: 45KB (under 60KB limit), XSS-safe DOM manipulation
+
+### Documentation (v0.4.0 Complete)
+- ARCHITECTURE.md: dPoS consensus, epoch rotation, slashing, P2P encryption, peer reputation, chain pruning
+- PROTOCOL.md: dPoS consensus, STAKE/DELEGATE/UNSTAKE/EVIDENCE tx formats, encrypted channel spec, hello_auth proof field
+- SECURITY.md: dPoS security model, slashing, P2P encryption, deferred findings resolved
+- PAPER.md: updated abstract, dPoS section, 14 audit rounds, 958 tests, v0.4.0 status
+- AUDIT_LOG.md: deferred findings SPRINT1-003/007/011 marked resolved in v0.4.0
+- ISSUES.md: ISS-007 (pruning) and ISS-009 (reputation) closed
+- FEATURES.md: all v0.4.0 features marked implemented, remaining items moved to v0.5.0+
+- CHANGELOG.md: complete v0.4.0 changelog
+
+### Tests
+- 46 new tests (26 reputation, 10 pruning, 10 proof signature)
+- Total: 1004 tests, all passing
+
 ## v0.4.0-sprint2 (2026-03-25)
 
 ### Epoch Rotation

@@ -17,9 +17,19 @@
 |------|--------|-----------------|
 | Python `bytes` key material in heap | Accepted | Requires C extension / mmap for zeroing |
 | Sybil/Eclipse attacks | Accepted | HELLO_AUTH raises bar; needs peer reputation |
-| Responder signs before verifying initiator fields (SPRINT1-003) | Deferred v0.4.0 | Requires auth protocol redesign |
-| Genesis validator not registered via on-chain tx (SPRINT1-007) | Deferred v0.4.0 | Low risk; auto-registered in memory on init_chain() |
-| SQLite validator table uses string concat, not parameterized (SPRINT1-011) | Deferred v0.4.0 | Address is hex-validated before use |
+| ~~Responder signs before verifying initiator fields (SPRINT1-003)~~ | **Resolved v0.4.0** | Initiator includes proof in hello_auth; responder verifies before signing |
+| ~~Genesis validator not registered via on-chain tx (SPRINT1-007)~~ | **Resolved v0.4.0** | Genesis validator registered via REGISTER_VALIDATOR tx in genesis block |
+| ~~SQLite validator table uses string concat, not parameterized (SPRINT1-011)~~ | **Resolved v0.4.0** | Parameterized queries implemented |
+
+### Resolved in v0.4.0
+
+| Risk | Resolution |
+|------|-----------|
+| Responder signs before verifying initiator fields (SPRINT1-003) | Initiator proof in hello_auth; responder verify-before-sign (v0.4.0-sprint2) |
+| Genesis validator not on-chain (SPRINT1-007) | Genesis validator registered via REGISTER_VALIDATOR tx in genesis block (v0.4.0-sprint1) |
+| SQLite string concat in validator table (SPRINT1-011) | Parameterized queries (v0.4.0-sprint1) |
+| No peer reputation / Sybil mitigation (ISS-009) | Slashing for misbehavior + P2P encrypted channel (v0.4.0) |
+| P2P not encrypted | ML-KEM-768 session key + AES-256-GCM encrypted channel (v0.4.0-sprint2) |
 
 ### Resolved in v0.2.0-v0.3.0
 
@@ -35,7 +45,7 @@
 
 ## Audit History
 
-13 rounds of security audit, 181+ issues found:
+14 rounds of security audit, 181+ issues found:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -103,6 +113,25 @@ Round 13 Sprint 2 findings (SPRINT2-001 through SPRINT2-016): see `tracker/AUDIT
 - The genesis validator's signing key is permanently protected from revocation
 - Idempotency guard: revoking an already-revoked key is rejected to prevent log pollution
 - Revocations are rolled back atomically during chain reorg, restoring prior state
+
+### dPoS Security Model
+
+- Stake-weighted validator selection prevents low-stake validators from dominating block production
+- Slashing for double-signing: 50% stake reduction enforced by EVIDENCE transactions
+- Slashed validators cannot receive new stake (`_slashed_validators` set)
+- Unbonding period (100 blocks) prevents immediate stake withdrawal after misbehavior
+- Epoch rotation: validator set frozen per epoch prevents mid-epoch manipulation
+- Evidence processing validates both ML-DSA signatures against validator pubkey
+- Duplicate evidence rejected to prevent repeated slashing of the same validator
+
+### P2P Encrypted Channel
+
+- ML-KEM-768 key exchange after mutual authentication establishes session keys
+- AES-256-GCM encryption for all post-authentication P2P messages
+- Session key derived via SHA3-256 from ML-KEM shared secret (32 bytes)
+- Random 12-byte nonces per message prevent nonce reuse
+- Backward compatible: v1 peers and peers without encryption keys use plaintext
+- Connection deduplication prevents resource exhaustion from redundant connections
 
 ### Network
 

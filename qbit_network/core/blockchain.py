@@ -14,7 +14,7 @@ from .transaction import Transaction, TxType
 from .consensus import ProofOfAuthority
 from ..config import (MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH,
                       CHAIN_ID, MIN_STAKE, UNBONDING_PERIOD, EPOCH_LENGTH,
-                      SLASH_PERCENTAGE)
+                      SLASH_PERCENTAGE, PRUNING_RETENTION)
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -1153,6 +1153,41 @@ class Blockchain:
                 if expires == 0 or expires > now:
                     result.append(tx.to_dict())
         return result
+
+    # ---- Pruning ----
+
+    def prune(self, retention: int = PRUNING_RETENTION) -> int:
+        """Prune old block data, keeping only the last `retention` blocks.
+
+        Only works in SQLite mode. Removes raw block JSON and tx rows for
+        blocks older than height - retention. All in-memory indices remain
+        intact (they were built during load and stay valid for queries).
+        Notarizations, key registry, validator registry, stakes, epochs,
+        and slashing records are all preserved.
+
+        Returns the number of blocks pruned.
+        """
+        if not isinstance(retention, int) or retention < 1:
+            logger.warning(f"Invalid pruning retention: {retention}")
+            return 0
+        if self._store is None:
+            logger.debug("Pruning skipped: no SQLite store (in-memory mode)")
+            return 0
+        if self._height < retention:
+            return 0  # not enough blocks to prune
+
+        before_index = self._height - retention + 1
+        if before_index <= 0:
+            return 0
+
+        with self._db_lock:
+            count = self._store.prune_blocks(before_index)
+
+        if count > 0:
+            logger.info(
+                f"Pruned {count} blocks (retained last {retention}, "
+                f"height={self._height})")
+        return count
 
     # ---- Persistence ----
 

@@ -57,7 +57,7 @@ The encryption public key is registered on-chain via `REGISTER_KEY` transactions
 
 ## Transaction Types
 
-Six transaction types are defined. All share the same wire format and validation rules; only the `payload` schema differs.
+Ten transaction types are defined. All share the same wire format and validation rules; only the `payload` schema differs.
 
 ### NOTARIZE
 Proves a document existed at a specific time.
@@ -139,6 +139,66 @@ Permanently revokes a signing, encryption, or validator key on-chain.
 
 Self-revocation only: the sender must be the key owner. Revoking a signing key blocks the address from submitting further transactions. Revoking a validator key removes the validator from the active set. The genesis validator cannot be revoked.
 
+### STAKE
+Self-stakes weight on own validator address. Amount must be between MIN_STAKE (1) and MAX_STAKE (1,000,000).
+
+```json
+{
+  "type": "STAKE",
+  "from": "qv1...",
+  "payload": {
+    "validator_address": "qv1...",
+    "amount": 1000
+  }
+}
+```
+
+### DELEGATE
+Delegates stake weight to any registered validator.
+
+```json
+{
+  "type": "DELEGATE",
+  "from": "qv1...",
+  "payload": {
+    "validator_address": "qv1...",
+    "amount": 500
+  }
+}
+```
+
+### UNSTAKE
+Begins unbonding stake. Effective after UNBONDING_PERIOD (100 blocks).
+
+```json
+{
+  "type": "UNSTAKE",
+  "from": "qv1...",
+  "payload": {
+    "validator_address": "qv1...",
+    "amount": 500
+  }
+}
+```
+
+### EVIDENCE
+Reports validator double-signing. Contains two ML-DSA-65 signatures over different block hashes at the same block index.
+
+```json
+{
+  "type": "EVIDENCE",
+  "from": "qv1...",
+  "payload": {
+    "validator_address": "qv1...",
+    "block_index": 42,
+    "block_hash_1": "...",
+    "block_hash_2": "...",
+    "signature_1": "ML-DSA hex",
+    "signature_2": "ML-DSA hex"
+  }
+}
+```
+
 ## Block Structure
 
 ```
@@ -156,9 +216,44 @@ Self-revocation only: the sender must be the key owner. Revoking a signing key b
 └──────────────────────────────────────────────┘
 ```
 
-## Consensus: Proof of Authority
+## Consensus: Delegated Proof of Stake (dPoS)
 
-- Validators are registered at startup with their ML-DSA public keys
+As of v0.4.0, QBit Network uses Delegated Proof of Stake with the following properties:
+
+### Staking Model
+
+- **STAKE** transactions: validators self-stake weight (amount 1 to 1,000,000)
+- **DELEGATE** transactions: any address delegates stake weight to a registered validator
+- **UNSTAKE** transactions: begin unbonding (effective after UNBONDING_PERIOD = 100 blocks)
+- Stake state tracked per-validator: `{staker_address: amount}` with `_total_stake` aggregation
+- SQLite persistence: `stakes` and `unbonding` tables with full rollback support
+
+### Validator Selection
+
+- Stake-weighted deterministic selection: `SHA3-256(parent_hash:block_index)` as seed
+- Cumulative distribution over sorted validators by address
+- Automatic PoA round-robin fallback when no validators have stake (backward-compatible)
+
+### Epoch Rotation
+
+- Every EPOCH_LENGTH (100) blocks, the active validator set is frozen for that epoch
+- Epoch snapshots stored in-memory (`_epochs` dict) and SQLite (`epochs` table)
+- Stake changes during an epoch take effect at the next epoch boundary
+- Consensus uses frozen epoch validators for dPoS selection within the epoch
+- Epoch state correctly rolled back during chain reorganization
+
+### Slashing
+
+- EVIDENCE transaction type for reporting validator double-signing
+- Evidence must contain two valid ML-DSA-65 signatures over different block hashes at the same index
+- Slashing: reduces all stakers' positions by SLASH_PERCENTAGE (50%) proportionally
+- Validator removed from active set if total stake drops below MIN_STAKE
+- Slashed validators cannot receive new stake (`_slashed_validators` set)
+- Duplicate evidence rejected (`_processed_evidence` set)
+- SQLite `slashing_events` table for persistent slashing history with rollback support
+
+### Legacy PoA (Fallback)
+
 - Round-robin turn selection: `validator = sorted_validators[block_index % n]`
 - Block production only when transaction pool is non-empty
 - Self-produced blocks are validated through consensus before appending
@@ -173,6 +268,30 @@ Leaf hash:   SHA3-256(0x00 || leaf_data)
 Node hash:   SHA3-256(0x01 || left || right)
 Odd element: Promoted to next layer without pairing (no duplication)
 ```
+
+## P2P Encrypted Channel
+
+After mutual authentication, P2P connections are encrypted using ML-KEM-768 + AES-256-GCM:
+
+1. Initiator generates ML-KEM encapsulation using responder's `encryption_pk`
+2. Sends `session_key` message with ciphertext and own `encryption_pk`
+3. Responder decapsulates to recover shared secret
+4. Both derive 32-byte AES key via `SHA3-256(shared_secret)`
+5. All subsequent messages wrapped in `{"type": "encrypted", "data": ciphertext_hex}`
+
+Backward compatible: v1 peers and peers without `encryption_pk` stay plaintext.
+
+### Connection Deduplication
+
+After successful authentication, duplicate connections to the same remote address are detected and resolved. Deterministic tie-breaker: node with lexicographically smaller address keeps its outbound connection.
+
+## Peer Reputation
+
+The `_slashed_validators` set prevents re-staking to misbehaving validators. Authentication via HELLO_AUTH prevents unauthenticated peers from participating. Connection deduplication prevents resource exhaustion from redundant connections.
+
+## Chain Pruning
+
+Chain pruning strategy is tracked as ISS-007. Current storage growth is bounded by SQLite-primary persistence, which avoids in-memory chain list overhead. Epoch snapshots provide natural checkpoints for future pruning implementations.
 
 ## REST API Gateway
 
@@ -208,6 +327,14 @@ Mounted at `/api/v1/` alongside the JSON-RPC endpoint. Implemented as an aiohttp
 | POST | `/api/v1/store` | Submit STORE transaction |
 | POST | `/api/v1/share` | Submit SHARE transaction |
 | POST | `/api/v1/register-validator` | Submit REGISTER_VALIDATOR transaction |
+| POST | `/api/v1/stake` | Submit STAKE transaction |
+| POST | `/api/v1/delegate` | Submit DELEGATE transaction |
+| POST | `/api/v1/unstake` | Submit UNSTAKE transaction |
+| POST | `/api/v1/evidence` | Submit EVIDENCE transaction |
+| GET | `/api/v1/stakes` | All validator stakes |
+| GET | `/api/v1/stakes/:validator` | Specific validator stake info |
+| GET | `/api/v1/epochs/current` | Current epoch info |
+| GET | `/api/v1/slashing-events` | Slashing event history |
 
 Response envelope: `{"data": ..., "error": null}` on success; `{"data": null, "error": {"code": N, "message": "..."}}` on error. Pagination uses 1-based `page` with configurable `limit` (default 20, max 100). CORS middleware supports configurable origins with preflight `204` responses.
 

@@ -163,6 +163,12 @@ tr:hover td { background: var(--bg-card); }
 .tx-type.STORE { background: rgba(187,119,255,0.15); color: var(--purple); }
 .tx-type.SHARE { background: rgba(0,255,136,0.15); color: var(--green); }
 .tx-type.REGISTER_KEY { background: rgba(255,170,51,0.15); color: var(--orange); }
+.tx-type.STAKE { background: rgba(0,255,136,0.15); color: var(--green); }
+.tx-type.DELEGATE { background: rgba(187,119,255,0.15); color: var(--purple); }
+.tx-type.UNSTAKE { background: rgba(255,170,51,0.15); color: var(--orange); }
+.tx-type.EVIDENCE { background: rgba(255,68,102,0.15); color: var(--red); }
+.tx-type.REGISTER_VALIDATOR { background: rgba(0,212,255,0.15); color: var(--accent); }
+.tx-type.REVOKE_KEY { background: rgba(255,68,102,0.15); color: var(--red); }
 
 /* ---- Block Detail ---- */
 .block-detail {
@@ -215,7 +221,32 @@ tr:hover td { background: var(--bg-card); }
   width: 8px; height: 8px; border-radius: 50%; background: var(--green);
   flex-shrink: 0;
 }
-.validator-addr { font-family: var(--mono); color: var(--accent); word-break: break-all; }
+.validator-addr { font-family: var(--mono); color: var(--accent); word-break: break-all; flex: 1; }
+.validator-stake { font-family: var(--mono); font-size: 0.78rem; color: var(--text-dim); white-space: nowrap; }
+.validator-stake b { color: var(--green); }
+.validator-dot.slashed { background: var(--red); }
+.badge-slashed {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+  background: rgba(255,68,102,0.15); color: var(--red); margin-left: 8px;
+}
+.staking-section { margin-bottom: 20px; }
+.staking-section h3 { font-size: 0.9rem; margin-bottom: 10px; color: var(--accent); }
+.staker-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid var(--border); font-size: 0.8rem;
+}
+.staker-row:last-child { border-bottom: none; }
+.staker-addr { font-family: var(--mono); color: var(--text-dim); flex: 1; }
+.staker-amount { font-family: var(--mono); color: var(--green); }
+.slash-item {
+  padding: 10px; border-bottom: 1px solid var(--border); font-size: 0.8rem;
+}
+.slash-item:last-child { border-bottom: none; }
+.epoch-grid {
+  display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px;
+  font-size: 0.82rem;
+}
 
 /* ---- Pool Breakdown ---- */
 .pool-bar {
@@ -315,6 +346,10 @@ tr.new-row { animation: rowFlash 1.5s ease-out; }
       <div class="stat-label">Avg Block Time</div>
       <div class="stat-value" id="statBlockTime">--</div>
     </div>
+    <div class="stat-card">
+      <div class="stat-label">Current Epoch</div>
+      <div class="stat-value" id="statEpoch">--</div>
+    </div>
   </div>
 
   <!-- Tabs -->
@@ -324,6 +359,7 @@ tr.new-row { animation: rowFlash 1.5s ease-out; }
     <button class="tab" data-panel="validators">Validators</button>
     <button class="tab" data-panel="verifier">Document Verifier</button>
     <button class="tab" data-panel="pool">Pool Monitor</button>
+    <button class="tab" data-panel="staking">Staking</button>
   </div>
 
   <!-- Panel: Recent Blocks -->
@@ -374,6 +410,13 @@ tr.new-row { animation: rowFlash 1.5s ease-out; }
   <!-- Panel: Pool Monitor -->
   <div class="panel" id="panel-pool">
     <div id="poolInfo"></div>
+  </div>
+
+  <!-- Panel: Staking -->
+  <div class="panel" id="panel-staking">
+    <div id="stakingEpochInfo"></div>
+    <div id="stakingValidators"></div>
+    <div id="slashingEvents"></div>
   </div>
 
 </div>
@@ -838,9 +881,52 @@ var App = (function() {
   }
 
   // ---- Validators ----
+  var stakesCache = {};
+  var slashedCache = {};
+
   function loadValidators() {
-    apiGet("/validators")
-      .then(function(data) {
+    // Fetch validators, stakes, and slashing events in parallel
+    var validatorsP = apiGet("/validators").catch(function() { return { validators: [] }; });
+    var stakesP = apiGet("/stakes").catch(function() { return {}; });
+    var slashP = apiGet("/slashing-events").catch(function() { return { events: [] }; });
+
+    Promise.all([validatorsP, stakesP, slashP])
+      .then(function(results) {
+        var data = results[0];
+        var stakeData = results[1];
+        var slashData = results[2];
+
+        // Build slashed set
+        slashedCache = {};
+        var events = slashData.events || slashData || [];
+        if (Array.isArray(events)) {
+          for (var s = 0; s < events.length; s++) {
+            if (events[s].validator) slashedCache[events[s].validator] = true;
+          }
+        }
+
+        // Build stakes map
+        stakesCache = {};
+        if (stakeData && typeof stakeData === "object") {
+          // stakeData might be {validators: [{address, total_stake, stakers}]} or direct object
+          var stakeList = stakeData.validators || stakeData.stakes || [];
+          if (Array.isArray(stakeList)) {
+            for (var k = 0; k < stakeList.length; k++) {
+              var sv = stakeList[k];
+              if (sv.address || sv.validator) {
+                stakesCache[sv.address || sv.validator] = sv.total_stake || sv.total || 0;
+              }
+            }
+          } else if (typeof stakeData === "object") {
+            // Direct key-value format
+            for (var key in stakeData) {
+              if (stakeData.hasOwnProperty(key) && key !== "validators" && key !== "stakes") {
+                stakesCache[key] = typeof stakeData[key] === "number" ? stakeData[key] : (stakeData[key].total_stake || 0);
+              }
+            }
+          }
+        }
+
         var list = data.validators || [];
         setText("statValidators", list.length);
         var container = $("validatorList");
@@ -850,9 +936,16 @@ var App = (function() {
         }
         var html = '<div class="result-card"><h3>Registered Validators (' + list.length + ')</h3>';
         for (var i = 0; i < list.length; i++) {
+          var addr = list[i];
+          var isSlashed = slashedCache[addr];
+          var stakeWeight = stakesCache[addr] || 0;
           html += '<div class="validator-item">';
-          html += '<div class="validator-dot"></div>';
-          html += '<div class="validator-addr" title="Click to copy" onclick="App.copyText(\'' + escAttr(list[i]) + '\')">' + esc(truncHashPlain(list[i], 16)) + '</div>';
+          html += '<div class="validator-dot' + (isSlashed ? ' slashed' : '') + '"></div>';
+          html += '<div class="validator-addr" title="Click to copy" onclick="App.copyText(\'' + escAttr(addr) + '\')">' + esc(truncHashPlain(addr, 16)) + '</div>';
+          if (isSlashed) {
+            html += '<span class="badge-slashed">Slashed</span>';
+          }
+          html += '<div class="validator-stake">Stake: <b>' + esc(stakeWeight) + '</b></div>';
           html += '</div>';
         }
         html += '</div>';
@@ -915,8 +1008,8 @@ var App = (function() {
     var html = '<div class="result-card"><h3>Transaction Pool (' + esc(count) + ' pending)</h3>';
 
     // Pool bar
-    var types = ["NOTARIZE", "STORE", "SHARE", "REGISTER_KEY"];
-    var colors = { NOTARIZE: "var(--accent)", STORE: "var(--purple)", SHARE: "var(--green)", REGISTER_KEY: "var(--orange)" };
+    var types = ["NOTARIZE", "STORE", "SHARE", "REGISTER_KEY", "STAKE", "DELEGATE", "UNSTAKE", "EVIDENCE"];
+    var colors = { NOTARIZE: "var(--accent)", STORE: "var(--purple)", SHARE: "var(--green)", REGISTER_KEY: "var(--orange)", STAKE: "var(--green)", DELEGATE: "var(--purple)", UNSTAKE: "var(--orange)", EVIDENCE: "var(--red)" };
 
     if (count > 0) {
       html += '<div class="pool-bar">';
@@ -945,6 +1038,131 @@ var App = (function() {
     container.innerHTML = html;
   }
 
+  // ---- Staking Panel ----
+  function loadStakingPanel() {
+    var epochP = apiGet("/epochs/current").catch(function() { return null; });
+    var stakesP = apiGet("/stakes").catch(function() { return {}; });
+    var slashP = apiGet("/slashing-events").catch(function() { return { events: [] }; });
+
+    Promise.all([epochP, stakesP, slashP]).then(function(results) {
+      var epochData = results[0];
+      var stakeData = results[1];
+      var slashData = results[2];
+
+      // Epoch info
+      var epochContainer = $("stakingEpochInfo");
+      if (epochData) {
+        var epochNum = epochData.epoch_number !== undefined ? epochData.epoch_number : (epochData.epoch || "--");
+        var blockStart = epochData.block_start !== undefined ? epochData.block_start : "--";
+        var epochLen = epochData.epoch_length || 100;
+        var blockEnd = typeof blockStart === "number" ? blockStart + epochLen - 1 : "--";
+        var currentHeight = parseInt($("statHeight").textContent) || 0;
+        var blocksUntilNext = typeof blockEnd === "number" ? Math.max(0, blockEnd - currentHeight + 1) : "--";
+
+        setText("statEpoch", epochNum);
+
+        var ehtml = '<div class="result-card staking-section"><h3>Epoch Information</h3>';
+        ehtml += '<div class="epoch-grid">';
+        ehtml += '<div class="detail-label">Current Epoch</div><div class="detail-value">' + esc(epochNum) + '</div>';
+        ehtml += '<div class="detail-label">Epoch Start Block</div><div class="detail-value">' + esc(blockStart) + '</div>';
+        ehtml += '<div class="detail-label">Epoch End Block</div><div class="detail-value">' + esc(blockEnd) + '</div>';
+        ehtml += '<div class="detail-label">Blocks Until Next</div><div class="detail-value">' + esc(blocksUntilNext) + '</div>';
+        if (epochData.validators && Array.isArray(epochData.validators)) {
+          ehtml += '<div class="detail-label">Epoch Validators</div><div class="detail-value">' + esc(epochData.validators.length) + '</div>';
+        }
+        ehtml += '</div></div>';
+        epochContainer.innerHTML = ehtml;
+      } else {
+        epochContainer.innerHTML = '<div class="result-card staking-section"><h3>Epoch Information</h3><p style="color:var(--text-dim)">Epoch data not available (dPoS may not be active)</p></div>';
+      }
+
+      // Validators with stakes and top stakers
+      var stakingContainer = $("stakingValidators");
+      var stakeList = [];
+      if (stakeData && typeof stakeData === "object") {
+        var arr = stakeData.validators || stakeData.stakes || [];
+        if (Array.isArray(arr)) {
+          stakeList = arr;
+        }
+      }
+
+      if (stakeList.length === 0) {
+        stakingContainer.innerHTML = '<div class="result-card staking-section"><h3>Validator Stakes</h3><p style="color:var(--text-dim)">No staking data available</p></div>';
+      } else {
+        var shtml = '<div class="result-card staking-section"><h3>Validator Stakes (' + stakeList.length + ')</h3>';
+        for (var i = 0; i < stakeList.length; i++) {
+          var v = stakeList[i];
+          var vAddr = v.address || v.validator || "";
+          var vTotal = v.total_stake || v.total || 0;
+          var isSlashed = slashedCache[vAddr];
+          shtml += '<div class="validator-item">';
+          shtml += '<div class="validator-dot' + (isSlashed ? ' slashed' : '') + '"></div>';
+          shtml += '<div class="validator-addr" title="Click to copy" onclick="App.copyText(\'' + escAttr(vAddr) + '\')">' + esc(truncHashPlain(vAddr, 12)) + '</div>';
+          if (isSlashed) shtml += '<span class="badge-slashed">Slashed</span>';
+          shtml += '<div class="validator-stake">Total: <b>' + esc(vTotal) + '</b></div>';
+          shtml += '</div>';
+
+          // Show top stakers/delegators if available
+          var stakers = v.stakers || v.delegators || {};
+          var stakerEntries = [];
+          if (typeof stakers === "object" && !Array.isArray(stakers)) {
+            for (var sk in stakers) {
+              if (stakers.hasOwnProperty(sk)) stakerEntries.push({ addr: sk, amount: stakers[sk] });
+            }
+          } else if (Array.isArray(stakers)) {
+            stakerEntries = stakers;
+          }
+          // Sort by amount descending and show top 5
+          stakerEntries.sort(function(a,b) { return (b.amount || 0) - (a.amount || 0); });
+          var topN = stakerEntries.slice(0, 5);
+          if (topN.length > 0) {
+            for (var j = 0; j < topN.length; j++) {
+              shtml += '<div class="staker-row">';
+              shtml += '<div class="staker-addr">' + esc(truncHashPlain(topN[j].addr || "", 10)) + '</div>';
+              shtml += '<div class="staker-amount">' + esc(topN[j].amount || 0) + '</div>';
+              shtml += '</div>';
+            }
+          }
+        }
+        shtml += '</div>';
+        stakingContainer.innerHTML = shtml;
+      }
+
+      // Slashing events
+      var slashContainer = $("slashingEvents");
+      var events = slashData.events || slashData || [];
+      if (!Array.isArray(events)) events = [];
+
+      if (events.length === 0) {
+        slashContainer.innerHTML = '<div class="result-card staking-section"><h3>Slashing Events</h3><p style="color:var(--text-dim)">No slashing events recorded</p></div>';
+      } else {
+        var shhtml = '<div class="result-card staking-section"><h3>Slashing Events (' + events.length + ')</h3>';
+        for (var e = 0; e < events.length; e++) {
+          var ev = events[e];
+          shhtml += '<div class="slash-item">';
+          shhtml += '<div style="color:var(--red);font-weight:600">Validator: ' + esc(truncHashPlain(ev.validator || "", 12)) + '</div>';
+          shhtml += '<div style="color:var(--text-dim);font-size:0.75rem">';
+          if (ev.amount_slashed !== undefined) shhtml += 'Amount slashed: ' + esc(ev.amount_slashed) + ' | ';
+          if (ev.block_index !== undefined) shhtml += 'Block: #' + esc(ev.block_index) + ' | ';
+          if (ev.evidence_tx_id) shhtml += 'Evidence TX: ' + esc(truncHashPlain(ev.evidence_tx_id, 8));
+          shhtml += '</div></div>';
+        }
+        shhtml += '</div>';
+        slashContainer.innerHTML = shhtml;
+      }
+    });
+  }
+
+  function loadEpochStat() {
+    apiGet("/epochs/current").then(function(data) {
+      if (data && data.epoch_number !== undefined) {
+        setText("statEpoch", data.epoch_number);
+      } else if (data && data.epoch !== undefined) {
+        setText("statEpoch", data.epoch);
+      }
+    }).catch(function() {});
+  }
+
   // ---- Tabs ----
   function initTabs() {
     var tabBar = $("tabBar");
@@ -967,6 +1185,7 @@ var App = (function() {
       // Lazy load data for certain panels
       if (panelId === "validators") loadValidators();
       if (panelId === "pool") loadPool();
+      if (panelId === "staking") loadStakingPanel();
     });
   }
 
@@ -1023,6 +1242,9 @@ var App = (function() {
     apiGet("/pool/count").then(function(data) {
       setText("statPool", data.count || 0);
     }).catch(function() {});
+
+    // Fetch epoch info
+    loadEpochStat();
 
     // Connect WebSocket
     connectWS();

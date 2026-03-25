@@ -7,7 +7,8 @@ PROOF_TYPE = "qbit-notarization-proof"
 
 
 def export_proof(block_dict: dict, tx_index: int, tx_id: str,
-                 document_hash: str, notarizer: str) -> dict:
+                 document_hash: str, notarizer: str,
+                 validator_pubkey: str = "") -> dict:
     """Build a self-contained proof document from block data.
 
     Args:
@@ -16,6 +17,8 @@ def export_proof(block_dict: dict, tx_index: int, tx_id: str,
         tx_id: Transaction ID.
         document_hash: SHA3-256 hex of the original file.
         notarizer: Address that submitted the notarization.
+        validator_pubkey: Hex-encoded ML-DSA-65 public key of the block
+            validator, for offline signature verification.
 
     Returns:
         Proof dict suitable for JSON serialization.
@@ -27,7 +30,7 @@ def export_proof(block_dict: dict, tx_index: int, tx_id: str,
     # Get the tx's sender_pubkey for signature verification
     tx_dict = block_dict["transactions"][tx_index]
 
-    return {
+    result = {
         "version": PROOF_VERSION,
         "type": PROOF_TYPE,
         "document_hash": document_hash,
@@ -46,6 +49,12 @@ def export_proof(block_dict: dict, tx_index: int, tx_id: str,
         "notarizer": notarizer,
         "notarizer_pubkey": tx_dict.get("sender_pubkey", ""),
     }
+
+    # Include validator pubkey for offline block signature verification
+    if validator_pubkey:
+        result["validator_pubkey"] = validator_pubkey
+
+    return result
 
 
 def verify_proof(proof: dict) -> tuple[bool, list[str]]:
@@ -68,7 +77,7 @@ def verify_proof(proof: dict) -> tuple[bool, list[str]]:
     block = proof.get("block", {})
     merkle_path = proof.get("merkle_proof", [])
 
-    # 1. Verify Merkle proof — tx_id is in the block's Merkle root
+    # 1. Verify Merkle proof -- tx_id is in the block's Merkle root
     proof_tuples = [(bytes.fromhex(p["hash"]), p["is_left"]) for p in merkle_path]
     merkle_root_hex = block.get("merkleRoot", "")
     if not verify_merkle_proof(bytes.fromhex(tx_id), proof_tuples,
@@ -90,12 +99,16 @@ def verify_proof(proof: dict) -> tuple[bool, list[str]]:
     if computed_hash != claimed_hash:
         errors.append(f"block hash mismatch: computed {computed_hash[:16]}... != claimed {claimed_hash[:16]}...")
 
-    # 3. Verify block signature (if validator pubkey available via notarizer_pubkey or external)
-    block_sig = block.get("signature", "")
-    if block_sig:
-        # We can verify the validator signed this exact header
-        # Note: In production, the verifier should have the validator's pk from a trusted source
-        # For now, we verify internal consistency only
-        pass  # Signature verification requires validator pk — see note in proof doc
+    # 3. Verify block signature if validator_pubkey is available
+    validator_pubkey_hex = proof.get("validator_pubkey", "")
+    block_sig_hex = block.get("signature", "")
+    if validator_pubkey_hex and block_sig_hex:
+        try:
+            vpk = bytes.fromhex(validator_pubkey_hex)
+            block_sig = bytes.fromhex(block_sig_hex)
+            if not MLDSA.verify(vpk, header_bytes, block_sig):
+                errors.append("block signature invalid: ML-DSA verification failed")
+        except (ValueError, TypeError) as e:
+            errors.append(f"block signature verification error: {e}")
 
     return len(errors) == 0, errors

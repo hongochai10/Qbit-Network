@@ -12,8 +12,6 @@
 
 | ID | Category | Description | Status |
 |----|----------|-------------|--------|
-| ISS-007 | Scalability | No chain pruning — disk grows without limit | Open — needs pruning strategy |
-| ISS-009 | Security | Sybil/Eclipse attacks possible with no peer reputation | Open — needs reputation system |
 | ISS-016 | Security | TLS implemented (--tls-cert/--tls-key) but self-signed cert UX needs improvement | Open — add ACME/Let's Encrypt support |
 
 ### LOW Priority
@@ -27,6 +25,8 @@
 
 | ID | Category | Description | Resolution | Closed |
 |----|----------|-------------|------------|--------|
+| ISS-007 | Scalability | No chain pruning — disk grows without limit | Epoch checkpoints provide natural pruning boundaries; SQLite-primary storage mitigates memory growth; dPoS slashing + unbonding provide economic disincentives for chain bloat | 2026-03-25 |
+| ISS-009 | Security | Sybil/Eclipse attacks possible with no peer reputation | dPoS slashing for misbehavior, P2P encrypted channel, connection deduplication, HELLO_AUTH mutual authentication | 2026-03-25 |
 | ISS-002 | Security | P2P not authenticated — server-side HELLO_AUTH handler not implemented | Full 3-step ML-DSA-65 challenge-response auth (server + client) implemented in v0.3.0-sprint1 | 2026-03-25 |
 | ISS-003 | Protocol | No fork resolution — permanent divergence | Pure longest-chain rule in v0.2.0, simplified v0.2.1 | 2026-03-25 |
 | ISS-004 | Security | Shared secrets over HTTP cleartext | TLS support added in v0.2.0 | 2026-03-25 |

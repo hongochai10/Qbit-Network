@@ -59,6 +59,10 @@ tx_id = hex(SHA3-256(signable_bytes))
 | `REGISTER_KEY` | `encryption_pk` (hex) | - |
 | `REGISTER_VALIDATOR` | `validator_pubkey` (hex, 1952 bytes), `validator_address` (qv1...) | - |
 | `REVOKE_KEY` | `key_type` (`signing`\|`encryption`\|`validator`), `reason` (`compromised`\|`rotation`\|`decommission`) | - |
+| `STAKE` | `validator_address` (qv1...), `amount` (int, 1-1,000,000) | - |
+| `DELEGATE` | `validator_address` (qv1...), `amount` (int, 1-1,000,000) | - |
+| `UNSTAKE` | `validator_address` (qv1...), `amount` (int, 1-1,000,000) | - |
+| `EVIDENCE` | `validator_address` (qv1...), `block_index` (int), `block_hash_1` (hex), `block_hash_2` (hex), `signature_1` (ML-DSA hex), `signature_2` (ML-DSA hex) | - |
 
 No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 
@@ -76,6 +80,34 @@ No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 - `reason` must be one of: `compromised`, `rotation`, `decommission`.
 - Revoking an already-revoked key is rejected (idempotency guard).
 - The genesis validator's signing key cannot be revoked.
+
+#### STAKE Rules
+
+- `validator_address` must be the sender's own address (self-stake only).
+- `amount` must be an integer in [MIN_STAKE (1), MAX_STAKE (1,000,000)].
+- The target validator must be registered in `_validator_registry`.
+- The target validator must not be slashed.
+
+#### DELEGATE Rules
+
+- `validator_address` must be a registered validator.
+- `amount` must be an integer in [MIN_STAKE (1), MAX_STAKE (1,000,000)].
+- The target validator must not be slashed.
+
+#### UNSTAKE Rules
+
+- `validator_address` must be a registered validator.
+- `amount` must be an integer in [MIN_STAKE (1), MAX_STAKE (1,000,000)].
+- The sender must have at least `amount` staked with the target validator.
+- Initiates unbonding; stake returned after UNBONDING_PERIOD (100 blocks).
+
+#### EVIDENCE Rules
+
+- `validator_address` must be a registered validator.
+- `block_hash_1` and `block_hash_2` must be different (proves double-signing).
+- Both `signature_1` and `signature_2` must be valid ML-DSA-65 signatures from the validator's pubkey.
+- The validator must not have been previously slashed (no duplicate evidence processing).
+- EVIDENCE payload uses 32KB size limit (accommodates two ML-DSA-65 signatures).
 
 ### Validation Rules
 
@@ -132,7 +164,10 @@ block_hash = hex(SHA3-256(header_bytes))
    - `timestamp > parent.timestamp`
    - `timestamp <= now + 30s`
    - `validator` must be registered
-   - `validator == sorted_validators[index % n]` (round-robin)
+   - Validator selection (dPoS or PoA fallback):
+     - **dPoS mode** (when validators have stake): stake-weighted deterministic selection using `SHA3-256(parent_hash:block_index)` as seed
+     - **PoA fallback** (no stake): `validator == sorted_validators[index % n]` (round-robin)
+   - Within an epoch, the frozen validator set is used for selection
    - Block signature valid against validator's ML-DSA public key
    - At least 1 transaction (no empty blocks)
    - Max 200 transactions
@@ -142,6 +177,7 @@ block_hash = hex(SHA3-256(header_bytes))
    - All tx payloads valid
    - Nonces sequential per sender within block
    - First nonce per sender matches chain state
+   - EVIDENCE transactions verified: both signatures valid, different block hashes, same index
 
 ## 4. P2P Protocol
 
@@ -189,9 +225,12 @@ Full 3-step mutual authentication using ML-DSA-65 challenge-response:
   "chain_id": "qbit-mainnet",
   "challenge": "<32 bytes hex, os.urandom>",
   "timestamp": 1700000000,
-  "signing_pk": "<ML-DSA-65 public key hex, 1952 bytes>"
+  "signing_pk": "<ML-DSA-65 public key hex, 1952 bytes>",
+  "proof": "<ML-DSA sig over AUTH_DOMAIN || challenge || initiator_address>"
 }
 ```
+
+The `proof` field (added in v0.4.0) resolves SPRINT1-003: the responder verifies the initiator's proof before signing anything, preventing identity confusion attacks.
 
 #### Step 2 — auth_response (Responder → Initiator)
 
@@ -232,6 +271,31 @@ Domain prefix `QBIT_AUTH_v2:` prevents cross-protocol signature reuse. Challenge
 #### Auth Gating
 
 After the grace period expires, `new_block`, `new_tx`, `get_blocks`, and `blocks` messages from unauthenticated v2 peers are rejected. A failed challenge-response triggers disconnect with no v1 fallback (no downgrade to unauthenticated state on auth failure).
+
+### Encrypted Channel (v0.4.0+)
+
+After mutual authentication completes, the initiator establishes an encrypted channel:
+
+1. Initiator sends `session_key` message containing ML-KEM-768 ciphertext (encapsulated using responder's `encryption_pk`) and initiator's `encryption_pk`
+2. Responder decapsulates the ciphertext using its ML-KEM secret key to recover the shared secret
+3. Both sides derive AES-256-GCM key: `key = SHA3-256(shared_secret)`
+4. All subsequent messages are wrapped: `{"type": "encrypted", "data": "<AES-GCM ciphertext hex>"}`
+5. AES-GCM uses random 12-byte nonces per message
+
+```json
+// session_key message (Initiator → Responder)
+{
+  "type": "session_key",
+  "ciphertext": "<ML-KEM-768 ciphertext hex, 1088 bytes>",
+  "encryption_pk": "<initiator ML-KEM public key hex, 1184 bytes>"
+}
+```
+
+Backward compatible: peers without `encryption_pk` or v1 peers communicate in plaintext.
+
+### Connection Deduplication (v0.4.0+)
+
+After authentication, duplicate connections to the same remote address are detected. Deterministic tie-breaker: the node with the lexicographically smaller address keeps its outbound connection; the other side closes its connection.
 
 ### Connection Flow
 
@@ -349,6 +413,14 @@ Base path: `/api/v1/`. All responses use the envelope format:
 | POST | `/store` | `{wallet, document_hash, cid}` |
 | POST | `/share` | `{wallet, recipient, cid, encapsulated_key}` |
 | POST | `/register-validator` | `{wallet, validator_pubkey}` |
+| POST | `/stake` | `{wallet, validator_address, amount}` |
+| POST | `/delegate` | `{wallet, validator_address, amount}` |
+| POST | `/unstake` | `{wallet, validator_address, amount}` |
+| POST | `/evidence` | `{wallet, validator_address, block_index, ...}` |
+| GET | `/stakes` | All validator stakes |
+| GET | `/stakes/:validator` | Specific validator stake info |
+| GET | `/epochs/current` | Current epoch info |
+| GET | `/slashing-events` | Slashing event history |
 
 Pagination: `page` is 1-based, `limit` default 20, max 100. Rate limiting, CORS, and bearer auth reuse the same implementation as the JSON-RPC server.
 

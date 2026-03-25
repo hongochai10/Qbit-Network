@@ -420,6 +420,38 @@ class SQLiteStore:
         if commit:
             self._db.commit()
 
+    def prune_blocks(self, before_index: int) -> int:
+        """Delete block data and associated txs for blocks with idx < before_index.
+
+        Preserves all index tables (notarizations, key_registry, validator_registry,
+        stakes, epochs, slashing_events, meta). Only raw block JSON and the txs
+        table rows are removed for pruned blocks.
+
+        Returns the number of blocks pruned.
+        """
+        if before_index <= 0:
+            return 0
+        c = self._db.cursor()
+        try:
+            # Count blocks to prune
+            row = c.execute(
+                "SELECT COUNT(*) FROM blocks WHERE idx < ?",
+                (before_index,)).fetchone()
+            count = row[0] if row else 0
+            if count == 0:
+                return 0
+
+            # Delete tx rows for pruned blocks
+            c.execute("DELETE FROM txs WHERE block_idx < ?", (before_index,))
+            # Delete block data
+            c.execute("DELETE FROM blocks WHERE idx < ?", (before_index,))
+            self._db.commit()
+            logger.info(f"Pruned {count} blocks (idx < {before_index})")
+            return count
+        except Exception:
+            self._db.rollback()
+            raise
+
     def block_hash_exists(self, h: str) -> bool:
         return self._db.execute(
             "SELECT 1 FROM blocks WHERE hash=?", (h,)).fetchone() is not None

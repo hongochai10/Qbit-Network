@@ -10,7 +10,7 @@
 
 ## Abstract
 
-We present QBit Network, a purpose-built blockchain system that replaces all quantum-vulnerable cryptographic primitives with NIST-standardized post-quantum algorithms. QBit Network utilizes ML-DSA-65 (CRYSTALS-Dilithium) for digital signatures and ML-KEM-768 (CRYSTALS-Kyber) for key encapsulation, providing quantum-resistant document notarization, encrypted vault storage, and secure data sharing. The system implements a dual-keypair identity model, Proof of Authority consensus with round-robin validator selection, and a domain-separated Merkle tree construction. Version 0.3.0 extends the protocol with a 3-step ML-DSA-65 authenticated P2P handshake, on-chain validator key distribution, permanent key revocation, SQLite-primary chain storage, a 26-endpoint REST API gateway, and real-time WebSocket subscriptions. Through thirteen rounds of security auditing encompassing 181+ identified vulnerabilities, we demonstrate that a production-grade PQC blockchain can be realized with acceptable performance overhead. Our implementation achieves 0.29ms per ML-DSA signature, 3.8ms for block production with 50 transactions, and a per-transaction wire overhead of approximately 10.9KB — a 55x increase over ECDSA-based systems, which we argue is an acceptable trade-off for quantum resistance.
+We present QBit Network, a purpose-built blockchain system that replaces all quantum-vulnerable cryptographic primitives with NIST-standardized post-quantum algorithms. QBit Network utilizes ML-DSA-65 (CRYSTALS-Dilithium) for digital signatures and ML-KEM-768 (CRYSTALS-Kyber) for key encapsulation, providing quantum-resistant document notarization, encrypted vault storage, and secure data sharing. The system implements a dual-keypair identity model, Delegated Proof of Stake (dPoS) consensus with epoch rotation and slashing, and a domain-separated Merkle tree construction. Version 0.4.0 introduces dPoS consensus with stake-weighted validator selection, epoch-based rotation, double-sign slashing, ML-KEM-768 encrypted P2P channels, and a web dashboard for chain exploration. Through fourteen rounds of security auditing encompassing 181+ identified vulnerabilities, we demonstrate that a production-grade PQC blockchain can be realized with acceptable performance overhead. Our implementation achieves 0.29ms per ML-DSA signature, 3.8ms for block production with 50 transactions, and a per-transaction wire overhead of approximately 10.9KB — a 55x increase over ECDSA-based systems, which we argue is an acceptable trade-off for quantum resistance.
 
 **Keywords:** post-quantum cryptography, blockchain, ML-DSA, ML-KEM, document notarization, key encapsulation, CRYSTALS-Dilithium, CRYSTALS-Kyber
 
@@ -115,7 +115,7 @@ This separation follows the principle of key-use separation recommended by NIST 
 
 ### 3.3 Transaction Types
 
-QBit Network defines six transaction types:
+QBit Network defines ten transaction types:
 
 **NOTARIZE**: Creates an immutable timestamp proof that a document (identified by its SHA3-256 hash) existed at the transaction's timestamp. The first notarization of a given hash is preserved as the canonical proof; subsequent notarizations by other parties are recorded but do not overwrite the first.
 
@@ -136,6 +136,14 @@ SHARE transactions include an optional `expires` field (Unix timestamp) after wh
 **REGISTER_VALIDATOR**: Distributes an ML-DSA-65 validator public key on-chain, enabling all nodes to verify block signatures without out-of-band key exchange. The payload includes the validator's ML-DSA public key and the derived address (verified to match). Duplicate registrations are rejected. The genesis validator is auto-registered in memory; subsequent validators join via this transaction.
 
 **REVOKE_KEY**: Permanently revokes a signing, encryption, or validator key on-chain. Self-revocation only. Revoking a signing key immediately blocks the address from submitting further transactions. Revoking a validator key removes the validator from the active consensus set. The genesis validator cannot be revoked. Revocations are rolled back during chain reorganization.
+
+**STAKE**: Self-stakes weight on the sender's own validator address. The amount must be between MIN_STAKE (1) and MAX_STAKE (1,000,000). The target validator must be registered and not slashed.
+
+**DELEGATE**: Delegates stake weight from any address to a registered validator. Enables community participation in consensus without running a validator node.
+
+**UNSTAKE**: Initiates unbonding of staked tokens. The stake is returned after UNBONDING_PERIOD (100 blocks), preventing immediate withdrawal after misbehavior.
+
+**EVIDENCE**: Reports validator double-signing by providing two valid ML-DSA-65 signatures over different block hashes at the same block index. Triggers slashing: all stakers' positions reduced by SLASH_PERCENTAGE (50%). Duplicate evidence for the same validator is rejected.
 
 ### 3.4 Transaction Structure
 
@@ -180,24 +188,41 @@ Odd:      Promoted without duplication
 
 Where H = SHA3-256. The domain separation byte (`0x00` for leaves, `0x01` for internal nodes) ensures that a leaf hash can never equal an internal node hash, preventing the well-known vulnerability where `[A, B, C]` and `[A, B, C, C]` produce the same root in naive implementations.
 
-### 3.7 Consensus: Proof of Authority
+### 3.7 Consensus: Delegated Proof of Stake (dPoS)
 
-QBit Network employs Proof of Authority (PoA) with round-robin validator selection:
+QBit Network employs Delegated Proof of Stake with epoch-based rotation:
 
+**Validator Selection (dPoS mode):**
+```
+seed = SHA3-256(parent_hash || ":" || block_index)
+validator = weighted_random_selection(sorted_validators, seed)
+```
+
+When no validators have stake, the system falls back to PoA round-robin:
 ```
 validator(block_index) = sorted_validators[block_index mod n]
 ```
 
+**Epoch Rotation:** Every EPOCH_LENGTH (100) blocks, the active validator set is frozen. Stake changes during an epoch take effect at the next epoch boundary. This prevents mid-epoch validator set manipulation.
+
+**Slashing:** Validators who double-sign (produce two blocks at the same height with different hashes) can be reported via EVIDENCE transactions. Slashing reduces all stakers' positions by SLASH_PERCENTAGE (50%). Validators whose total stake drops below MIN_STAKE are removed from the active set.
+
+**Staking Model:** Three transaction types manage stake:
+- **STAKE**: Self-stake weight on own validator (amount 1 to 1,000,000)
+- **DELEGATE**: Delegate stake weight to any registered validator
+- **UNSTAKE**: Begin unbonding (effective after 100-block UNBONDING_PERIOD)
+
 Block validation enforces:
 - Sequential block indices with valid parent hash linkage
 - Monotonically increasing timestamps with a 30-second future drift limit
-- Correct validator turn assignment
+- Correct validator selection (dPoS weighted or PoA round-robin)
 - Valid ML-DSA block signature
 - All transaction signatures valid
 - Sequential per-sender nonces (both within the block and against chain state)
 - No cross-block transaction replay (maintained via `_chain_tx_ids` set)
 - Block size bounded (estimated from transaction count)
 - No empty non-genesis blocks
+- EVIDENCE transactions: both signatures valid, different block hashes, same index
 
 Self-produced blocks undergo full consensus validation before commitment, preventing chain divergence from same-second timestamp collisions.
 
@@ -225,6 +250,7 @@ The system underwent thirteen rounds of security auditing:
 | 12 | v0.2.1 full audit (P2P auth, Docker, store/share) | 9 |
 | 13 Sprint 1 | v0.3.0 Sprint 1 (HELLO_AUTH, REGISTER_VALIDATOR, rate limiting, CI) | 14 |
 | 13 Sprint 2 | v0.3.0 Sprint 2 (SQLite-primary, REVOKE_KEY, REST API, WebSocket) | 16 |
+| 14 | v0.4.0 (dPoS, epochs, slashing, P2P encryption, connection dedup) | ongoing |
 | **Total** | | **181+** |
 
 ### 4.2 Cryptographic Security
@@ -290,11 +316,9 @@ Both chain and wallet files use atomic writes (tempfile + `os.replace`). Wallet 
 | Limitation | Impact | Mitigation Path |
 |------------|--------|-----------------|
 | Python `bytes` immutability | Secret keys persist in heap after GC | C extension with `mmap` for key storage |
-| Sybil/Eclipse attacks | HELLO_AUTH raises bar; no peer reputation scoring | Peer reputation system (v0.4.0) |
-| No chain pruning | Disk grows without bound | Pruning strategy (v0.4.0) |
-| Responder signs before verifying initiator fields | Protocol correctness gap | Auth protocol redesign (deferred v0.4.0) |
-| Genesis validator not registered via on-chain tx | Minor bootstrapping inconsistency | Low risk; auto-registered in memory |
+| No chain pruning | Disk grows without bound | Pruning strategy (future) |
 | No transaction pool persistence | Pending TXs lost on crash | WAL-based pool persistence |
+| No block finality | No checkpoint mechanism | Future work |
 
 ---
 
@@ -482,22 +506,26 @@ QBit Network demonstrates that a fully post-quantum blockchain system is practic
 4. **Dual-keypair identity enables new capabilities**: The combination of ML-DSA signing with ML-KEM key encapsulation provides a natural framework for authenticated encrypted communication on-chain.
 5. **ML-DSA enables P2P authentication**: The same signing primitive used for transactions and blocks can be applied directly to P2P handshake authentication, enabling post-quantum-secure node identity without additional key material.
 
-### Current Status (v0.3.0, 2026-03-25)
+### Current Status (v0.4.0, 2026-03-25)
 
-- 6 transaction types (NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY)
-- 3-step ML-DSA-65 P2P mutual authentication (HELLO_AUTH)
-- SQLite-primary persistence (no in-memory chain list for disk-backed nodes)
-- 26-endpoint REST API gateway + WebSocket subscriptions
-- 13 audit rounds, 181+ issues found; 331+ tests passing
-- 3 findings deferred to v0.4.0 (responder-signs-before-verify, genesis validator on-chain tx, parameterized SQLite queries)
+- 10 transaction types (NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE)
+- Delegated Proof of Stake with epoch rotation and double-sign slashing
+- ML-KEM-768 encrypted P2P channels with AES-256-GCM transport
+- 3-step ML-DSA-65 P2P mutual authentication with verify-before-sign (SPRINT1-003 resolved)
+- Genesis validator registered via on-chain REGISTER_VALIDATOR tx (SPRINT1-007 resolved)
+- SQLite-primary persistence with staking, epoch, and slashing tables
+- 36-endpoint REST API gateway + WebSocket subscriptions + web dashboard
+- 14 audit rounds, 181+ issues found; 1004 tests passing
+- All v0.3.0 deferred findings resolved
 
 ### Future Work
 
-- **Auth protocol hardening**: Fix responder-signs-before-verify (SPRINT1-003); requires redesign of the handshake ordering.
-- **Consensus evolution**: Migrate from PoA to delegated Proof of Stake with slashing for multi-party operation.
-- **P2P encrypted channel**: Add ML-KEM session key + AES-GCM message encryption to the P2P layer.
+- **Block finality**: Checkpoint mechanism for faster transaction confirmation guarantees.
+- **Chain pruning**: Remove old block data while preserving state proofs via epoch checkpoints.
 - **Light client protocol**: Enable Merkle proof-based verification without full chain download.
 - **Cross-chain anchoring**: Periodic hash commitments to established chains for additional security guarantees.
+- **Key material zeroing**: C extension with mmap for secure secret key storage and explicit zeroing.
+- **ACME/Let's Encrypt**: Automated TLS certificate provisioning.
 
 ---
 

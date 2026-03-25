@@ -103,11 +103,15 @@ class FullNode:
             block = Block.from_dict(data["block"])
             ok, err = self.blockchain.add_block(block)
             if ok:
+                self.p2p.reputation.record(peer.addr, "valid_block")
                 self._lock_genesis_if_needed()
                 await self.p2p.broadcast(
                     MSG_NEW_BLOCK, {"block": block.to_dict()}, exclude=peer.addr)
                 await self._ws_notify_block(block)
+            else:
+                self.p2p.reputation.record(peer.addr, "invalid_block")
         except Exception as e:
+            self.p2p.reputation.record(peer.addr, "invalid_block")
             logger.debug(f"bad block from {peer.addr}: {e}")
 
     async def _p2p_new_tx(self, peer, data):
@@ -115,11 +119,14 @@ class FullNode:
             tx = Transaction.from_dict(data["tx"])
             ok, _ = self.blockchain.submit_tx(tx)
             if ok:
+                self.p2p.reputation.record(peer.addr, "valid_tx")
                 await self.p2p.broadcast(
                     MSG_NEW_TX, {"tx": tx.to_dict()}, exclude=peer.addr)
                 await self._ws_notify_tx(tx)
+            else:
+                self.p2p.reputation.record(peer.addr, "invalid_tx")
         except Exception:
-            pass
+            self.p2p.reputation.record(peer.addr, "invalid_tx")
 
     async def _p2p_get_blocks(self, peer, data):
         try:

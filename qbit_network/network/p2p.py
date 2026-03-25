@@ -12,6 +12,7 @@ from ..crypto.mldsa import MLDSA
 from ..crypto.mlkem import MLKEM, MLKEM_PK_SIZE, MLKEM_CT_SIZE
 from ..crypto.aes import aes_encrypt, aes_decrypt
 from .rate_limiter import RateLimiter
+from .reputation import PeerReputation
 
 logger = logging.getLogger("qbit_network.p2p")
 
@@ -169,6 +170,7 @@ class P2PNode:
         self._validators: dict[str, bytes] = {}  # address -> pk for auth verification
         self._rate_limiter = RateLimiter(P2P_RATE_LIMIT, P2P_RATE_BURST)
         self._auth_attempts: dict[str, list[float]] = {}  # IP -> timestamps of auth attempts
+        self.reputation = PeerReputation()
         self._cleanup_task = None
 
     def _has_signing_keys(self) -> bool:
@@ -822,7 +824,14 @@ class P2PNode:
 
     def _should_disconnect_rate(self, peer: Peer) -> bool:
         """Return True if peer should be disconnected for rate violations."""
-        return self._rate_limiter.violations(peer.host) >= P2P_RATE_VIOLATIONS_MAX
+        if self._rate_limiter.violations(peer.host) >= P2P_RATE_VIOLATIONS_MAX:
+            self.reputation.record(peer.addr, "rate_limited")
+            return True
+        return False
+
+    def _check_reputation(self, peer: Peer) -> bool:
+        """Return True if peer is allowed (not banned). False = should disconnect."""
+        return not self.reputation.is_banned(peer.addr)
 
     async def _rate_cleanup_loop(self):
         """Periodically remove stale rate-limiter entries."""
@@ -840,6 +849,8 @@ class P2PNode:
                     del self._auth_attempts[k]
                 if stale:
                     logger.debug(f"Auth attempts cleanup: removed {len(stale)} stale entries")
+                # Decay peer reputation scores
+                self.reputation.decay()
         except asyncio.CancelledError:
             pass
 
@@ -868,6 +879,13 @@ class P2PNode:
             return
         info = writer.get_extra_info('peername')
         host = info[0] if info else "unknown"
+
+        # Reject connections from banned peers (check by host IP)
+        if self.reputation.is_banned(host):
+            logger.debug(f"Rejected inbound connection from banned peer {host}")
+            writer.close()
+            return
+
         temp_key = f"_inbound_{host}_{id(writer)}"
         peer = Peer(host, 0, reader, writer)
         peer.connected = True
@@ -901,6 +919,7 @@ class P2PNode:
                     if not auth_ok:
                         # Peer sent hello_auth but failed validation — disconnect
                         # instead of silently downgrading to v1 (prevents auth bypass)
+                        self.reputation.record(peer.addr, "auth_failed")
                         logger.warning(f"Inbound {peer.addr}: hello_auth failed, disconnecting")
                         return
 
@@ -955,10 +974,16 @@ class P2PNode:
                 if mt == MSG_AUTH_CONFIRM:
                     auth_ok = await self._handle_auth_confirm(peer, data)
                     if not auth_ok:
+                        self.reputation.record(peer.addr, "auth_failed")
                         logger.warning(f"Auth confirm failed from {peer.addr}, disconnecting")
                         return
                     peer.last_seen = time.time()
                     continue
+
+                # Reputation ban check (mid-session)
+                if not self._check_reputation(peer):
+                    logger.warning(f"Disconnecting banned peer {peer.addr}")
+                    break
 
                 # Gate block/tx messages on authentication for v2 peers
                 if not self._check_auth_gate(mt, peer):
@@ -968,6 +993,7 @@ class P2PNode:
                 peer.last_seen = time.time()
         except asyncio.LimitOverrunError:
             logger.warning(f"Oversized message from {peer.addr}")
+            self.reputation.record(peer.addr, "protocol_error")
         except Exception:
             pass
         finally:
@@ -1019,10 +1045,16 @@ class P2PNode:
                 if mt == MSG_AUTH_RESPONSE:
                     auth_ok = await self._handle_auth_response(peer, data)
                     if not auth_ok:
+                        self.reputation.record(peer.addr, "auth_failed")
                         logger.warning(f"Auth response failed from {peer.addr}, disconnecting")
                         break
                     peer.last_seen = time.time()
                     continue
+
+                # Reputation ban check (mid-session)
+                if not self._check_reputation(peer):
+                    logger.warning(f"Disconnecting banned peer {peer.addr}")
+                    break
 
                 # Gate block/tx messages on authentication for v2 peers
                 if not self._check_auth_gate(mt, peer):
@@ -1032,6 +1064,7 @@ class P2PNode:
                 peer.last_seen = time.time()
         except asyncio.LimitOverrunError:
             logger.warning(f"Oversized message from {peer.addr}")
+            self.reputation.record(peer.addr, "protocol_error")
         except Exception:
             pass
         finally:
