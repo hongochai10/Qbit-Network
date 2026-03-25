@@ -3,12 +3,16 @@ import asyncio
 import ipaddress
 import json
 import logging
+import os
 import time
 from ..config import MAX_PEERS
 
 logger = logging.getLogger("qbit_network.p2p")
 
 MSG_HELLO = "hello"
+MSG_HELLO_AUTH = "hello_auth"
+MSG_AUTH_RESPONSE = "auth_response"
+MSG_AUTH_CONFIRM = "auth_confirm"
 MSG_NEW_BLOCK = "new_block"
 MSG_NEW_TX = "new_tx"
 MSG_GET_BLOCKS = "get_blocks"
@@ -17,8 +21,7 @@ MSG_GET_PEERS = "get_peers"
 MSG_PEERS = "peers"
 MSG_STATUS = "status"
 
-# Pending request IDs for correlated responses
-# Stored as: {request_id: True} — only accept MSG_BLOCKS with known request_id
+_AUTH_DOMAIN = b"QBIT_AUTH_v2:"
 
 _READER_LIMIT = 10 * 1024 * 1024  # 10 MB
 
@@ -48,7 +51,8 @@ def _is_safe_peer(host: str, port: int, own_host: str, own_port: int) -> bool:
 
 class Peer:
     __slots__ = ('host', 'port', 'reader', 'writer', 'node_id',
-                 'connected', 'last_seen', 'height')
+                 'connected', 'last_seen', 'height',
+                 'authenticated', 'protocol_version')
 
     def __init__(self, host: str, port: int, reader=None, writer=None):
         self.host = host
@@ -59,6 +63,8 @@ class Peer:
         self.connected = False
         self.last_seen = time.time()
         self.height = -1
+        self.authenticated = False
+        self.protocol_version = 1
 
     @property
     def addr(self) -> str:
@@ -83,14 +89,20 @@ class Peer:
 class P2PNode:
     """Async TCP P2P node."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 9000, node_id: str = ""):
+    def __init__(self, host: str = "0.0.0.0", port: int = 9000, node_id: str = "",
+                 signing_sk: bytes = b'', signing_pk: bytes = b'',
+                 validator_address: str = ""):
         self.host = host
         self.port = port
         self.node_id = node_id
+        self.signing_sk = signing_sk  # ML-DSA-65 sk for auth handshake
+        self.signing_pk = signing_pk  # ML-DSA-65 pk for auth handshake
+        self.validator_address = validator_address
         self.peers: dict[str, Peer] = {}
         self._handlers: dict[str, object] = {}
         self._server = None
-        self._pending_requests: dict[str, float] = {}  # request_id -> timestamp (bounded, TTL 60s)
+        self._pending_requests: dict[str, float] = {}
+        self._validators: dict[str, bytes] = {}  # address -> pk for auth verification
 
     def on(self, msg_type: str, handler):
         self._handlers[msg_type] = handler
@@ -123,7 +135,22 @@ class P2PNode:
             peer = Peer(host, port, reader, writer)
             peer.connected = True
             self.peers[addr] = peer
-            await peer.send(MSG_HELLO, {"node_id": self.node_id, "port": self.port})
+            # Send authenticated hello if we have signing keys
+            if self.signing_sk and self.signing_pk:
+                from ..config import PROTOCOL_VERSION, CHAIN_ID
+                challenge = os.urandom(32).hex()
+                await peer.send(MSG_HELLO_AUTH, {
+                    "protocol_version": PROTOCOL_VERSION,
+                    "node_id": self.validator_address,
+                    "port": self.port,
+                    "chain_id": CHAIN_ID,
+                    "challenge": challenge,
+                    "timestamp": int(time.time()),
+                    "signing_pk": self.signing_pk.hex(),
+                })
+                peer.protocol_version = PROTOCOL_VERSION
+            else:
+                await peer.send(MSG_HELLO, {"node_id": self.node_id, "port": self.port})
             asyncio.create_task(self._read_loop(peer))
             logger.info(f"Connected to {addr}")
         except Exception as e:

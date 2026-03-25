@@ -152,18 +152,6 @@ class Blockchain:
         )
         return block
 
-    # ---- Authority scoring for fork resolution ----
-
-    def _authority_score(self, block: Block) -> int:
-        """Score 1 if block was produced by correct round-robin validator, else 0."""
-        expected = self.consensus.select_validator(block.index)
-        return 1 if expected and block.validator == expected else 0
-
-    def _chain_score(self, from_index: int = 0) -> int:
-        """Sum of authority scores from from_index to tip."""
-        return sum(self._authority_score(self.chain[i])
-                   for i in range(from_index, len(self.chain)))
-
     # ---- Receive block from network ----
 
     def add_block(self, block: Block) -> tuple[bool, str]:
@@ -211,18 +199,11 @@ class Blockchain:
         if fork_blocks[0].prev_hash != common_ancestor.block_hash:
             return False, "fork doesn't connect to our chain"
 
-        # Compare authority scores BEFORE rollback
-        our_score = sum(self._authority_score(self.chain[i])
-                        for i in range(fork_start, len(self.chain)))
-        fork_score = sum(
-            1 if (self.consensus.select_validator(fb.index) and
-                  fb.validator == self.consensus.select_validator(fb.index)) else 0
-            for fb in fork_blocks)
-
-        if fork_score < our_score:
-            return False, f"fork score {fork_score} <= our score {our_score}"
-        if fork_score == our_score and len(fork_blocks) <= depth:
-            return False, "fork not better (same score, not longer)"
+        # Pure longest-chain: fork must be strictly longer
+        # TODO(dPoS): reintroduce weighted scoring when skip-slots / stake-weight land
+        if len(fork_blocks) <= depth:
+            return False, (f"fork not longer: {len(fork_blocks)} blocks vs "
+                           f"our {depth} blocks (first-seen wins on tie)")
 
         # Rollback to common ancestor, then validate + apply fork
         # Save current chain for rollback-on-failure
@@ -269,50 +250,16 @@ class Blockchain:
                 returned += 1
 
         logger.info(
-            f"REORG: depth={depth}, fork_score={fork_score}, "
-            f"our_score={our_score}, displaced={len(displaced_txs)}, "
+            f"REORG: depth={depth}, displaced={len(displaced_txs)}, "
             f"returned_to_pool={returned}")
         return True, f"reorg complete: {fork_start} → {len(self.chain) - 1}"
 
     def _evaluate_fork(self, block: Block) -> tuple[bool, str]:
-        """Evaluate a single competing block — request full fork if promising."""
-        # For single-block forks, compare authority scores directly
-        our_block = self.chain[block.index]
-        our_score = self._authority_score(our_block)
-        fork_score = (1 if (self.consensus.select_validator(block.index) and
-                           block.validator == self.consensus.select_validator(block.index))
-                     else 0)
-
-        if fork_score <= our_score:
-            return False, "competing block not better than ours"
-
-        # Single-block reorg at the tip
-        if block.index == len(self.chain) - 1:
-            parent = self.chain[block.index - 1]
-            ok, err = self.consensus.validate_block(block, parent)
-            if not ok:
-                return False, f"competing block invalid: {err}"
-            displaced = self._rollback_to(block.index)
-            self._append_block(block)
-            self._drain_pool(block)
-            # Return valid displaced txs to pool — with nonce validation
-            new_tx_ids = {tx.tx_id for tx in block.transactions}
-            displaced.sort(key=lambda t: (t.sender, t.nonce))
-            for tx in displaced:
-                if tx.tx_id in new_tx_ids or tx.tx_id in self._tx_by_id:
-                    continue
-                expected = self.get_nonce(tx.sender) + \
-                    self._pool_sender_count.get(tx.sender, 0)
-                if tx.nonce == expected:
-                    self.tx_pool.append(tx)
-                    self._pool_ids.add(tx.tx_id)
-                    self._pool_sender_count[tx.sender] = \
-                        self._pool_sender_count.get(tx.sender, 0) + 1
-            logger.info(f"TIP REORG: replaced block #{block.index}, "
-                        f"{len(displaced)} displaced")
-            return True, "tip replaced"
-
-        return False, "multi-block fork needs try_reorg()"
+        """Evaluate a single competing block at same height.
+        First-seen wins — a single block cannot replace an existing block.
+        Use try_reorg() with a strictly longer chain to trigger reorganization."""
+        return False, (f"first-seen wins: already have block at index {block.index}, "
+                       f"use try_reorg() with a longer fork chain")
 
     def _rollback_to(self, target_index: int) -> list[Transaction]:
         """Pop blocks from tip down to target_index (exclusive). Returns displaced txs."""

@@ -503,6 +503,10 @@ class FullNode:
             self.wallets[validator_wallet.address] = validator_wallet
             self.blockchain.consensus.add_validator(
                 validator_wallet.address, validator_wallet.signing_pk)
+            # Enable P2P authentication with validator keys
+            self.p2p.signing_sk = validator_wallet.signing_sk
+            self.p2p.signing_pk = validator_wallet.signing_pk
+            self.p2p.validator_address = validator_wallet.address
 
         # Load chain (validators are now known → block signatures are verified)
         loaded = self.blockchain.load()

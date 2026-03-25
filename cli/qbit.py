@@ -80,7 +80,7 @@ def _rpc_call(url: str, method: str, params: dict = None,
 # ---- Commands ----
 
 def cmd_wallet_create(args):
-    """Create a new wallet."""
+    """Create a new wallet, optionally register encryption key on-chain."""
     w = Wallet.generate()
     password = ""
     if not args.no_password:
@@ -89,13 +89,31 @@ def cmd_wallet_create(args):
     path = os.path.join(_wallets_dir(), f"{w.address}.json")
     w.save(path, password=password)
 
+    registered = False
+    if getattr(args, 'register', False):
+        token = args.token or os.environ.get("QBIT_RPC_TOKEN", "")
+        if not token:
+            token = getpass.getpass("RPC auth token: ")
+        try:
+            result = _rpc_call(
+                args.rpc, "qv_registerKey",
+                {"wallet_address": w.address},
+                token=token, verify_ssl=not args.insecure)
+            if "error" not in result:
+                registered = True
+        except Exception as e:
+            print(f"Warning: key registration failed ({e}). "
+                  f"Run later: qbit wallet register {w.address}", file=sys.stderr)
+
     if args.json:
-        print(json.dumps({"address": w.address, "path": path}))
+        print(json.dumps({"address": w.address, "path": path, "registered": registered}))
     else:
         print(f"Wallet created: {w.address}")
         print(f"Saved to: {path}")
         if password:
             print("(encrypted with password)")
+        if registered:
+            print("Encryption key registered on-chain. Others can now share with you.")
 
 
 def cmd_wallet_list(args):
@@ -260,16 +278,40 @@ def cmd_proof_export(args):
         "notarizer": info["sender"],
     }
 
-    output = args.output or args.file + ".proof.json"
-    with open(output, "w") as f:
-        json.dump(proof_doc, f, indent=2)
+    fmt = getattr(args, 'format', 'json') or 'json'
+
+    if fmt == 'html':
+        import datetime
+        ts = datetime.datetime.fromtimestamp(block["timestamp"]).isoformat()
+        template_path = os.path.join(os.path.dirname(__file__), "templates", "proof_certificate.html")
+        with open(template_path) as tf:
+            html = tf.read()
+        html = (html
+                .replace("{{DOCUMENT_HASH}}", doc_hash)
+                .replace("{{NOTARIZER}}", info["sender"])
+                .replace("{{BLOCK_INDEX}}", str(block["index"]))
+                .replace("{{BLOCK_HASH}}", block["hash"])
+                .replace("{{TIMESTAMP}}", ts)
+                .replace("{{TX_ID}}", info["tx_id"])
+                .replace("{{VALIDATOR}}", block["validator"])
+                .replace("{{PROOF_JSON}}", json.dumps(proof_doc, indent=2)))
+        output = args.output or args.file + ".proof.html"
+        with open(output, "w") as f:
+            f.write(html)
+    else:
+        output = args.output or args.file + ".proof.json"
+        with open(output, "w") as f:
+            json.dump(proof_doc, f, indent=2)
 
     if args.json:
-        print(json.dumps({"proof_file": output, "document_hash": doc_hash}))
+        print(json.dumps({"proof_file": output, "document_hash": doc_hash, "format": fmt}))
     else:
         print(f"Proof exported: {output}")
         print(f"Share this file for independent verification:")
-        print(f"  qbit verify-proof {output}")
+        if fmt == 'html':
+            print(f"  Open {output} in any web browser")
+        else:
+            print(f"  qbit verify-proof {output}")
 
 
 def cmd_verify_proof(args):
@@ -351,6 +393,9 @@ def main():
     wsub = wp.add_subparsers(dest="wallet_cmd")
     wc = wsub.add_parser("create", help="Create a new wallet")
     wc.add_argument("--no-password", action="store_true")
+    wc.add_argument("--register", action="store_true",
+                    help="Register encryption key on-chain (requires running node)")
+    wc.add_argument("--token", default="", help="RPC auth token")
     wl = wsub.add_parser("list", help="List wallets")
 
     # notarize
@@ -368,6 +413,8 @@ def main():
     pp = sub.add_parser("proof", help="Export notarization proof")
     pp.add_argument("file", help="Notarized file")
     pp.add_argument("--output", "-o", default="", help="Output proof file")
+    pp.add_argument("--format", "-f", choices=["json", "html"], default="json",
+                    help="Output format (default: json)")
 
     # verify-proof (offline)
     vpp = sub.add_parser("verify-proof", help="Verify proof offline (no node needed)")

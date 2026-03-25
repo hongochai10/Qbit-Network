@@ -16,6 +16,9 @@ ADDRESS_PREFIX = "qv1"
 CHAIN_ID = "qbit-mainnet"
 MAX_REORG_DEPTH = 32              # max blocks to reorganize
 
+# Protocol
+PROTOCOL_VERSION = 2
+
 # Network
 DEFAULT_P2P_PORT = 9000
 DEFAULT_RPC_PORT = 8545
