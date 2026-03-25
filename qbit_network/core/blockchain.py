@@ -562,6 +562,16 @@ class Blockchain:
             if block is None:
                 logger.error(f"SQLite block #{i} missing")
                 return False
+            # Verify chain hash linkage (fast integrity check)
+            if i == 0:
+                if block.index != 0:
+                    logger.error(f"SQLite genesis has wrong index: {block.index}")
+                    return False
+            else:
+                parent = self.chain[i - 1]
+                if block.prev_hash != parent.block_hash:
+                    logger.error(f"SQLite block #{i} prev_hash mismatch")
+                    return False
             # Rebuild in-memory indices (without re-writing to SQLite)
             idx = len(self.chain)
             self.chain.append(block)

@@ -7,6 +7,7 @@
 | ID | Category | Description | Status |
 |----|----------|-------------|--------|
 | ISS-001 | Security | Python `bytes` immutable — secret keys persist in heap after GC | Open — needs C extension |
+| ISS-002 | Security | P2P not authenticated — server-side HELLO_AUTH handler not implemented | Open — v0.3.0 (client-side scaffolding ready) |
 
 ### MEDIUM Priority
 
@@ -17,7 +18,7 @@
 | ISS-009 | Security | Sybil/Eclipse attacks possible with no peer reputation | Open — needs reputation system |
 | ISS-010 | UX | No key revocation mechanism — compromised keys can't be invalidated | Open — needs governance |
 | ISS-015 | CI/CD | CI pipeline does not run adversarial or integration tests — only unit suite | Open — expand test matrix |
-| ISS-016 | Security | TLS termination is external (reverse proxy) — RPC server itself still plaintext | Open — accepted for v0.2.0; full in-process TLS deferred to v0.3.0 |
+| ISS-016 | Security | TLS implemented (--tls-cert/--tls-key) but self-signed cert UX needs improvement | Open — add ACME/Let's Encrypt support |
 
 ### LOW Priority
 
@@ -30,7 +31,6 @@
 
 | ID | Category | Description | Resolution | Closed |
 |----|----------|-------------|------------|--------|
-| ISS-002 | Security | P2P not authenticated — MITM possible | HELLO_AUTH client-side implemented v0.2.1; server-side handler + verification pending v0.3.0 | In progress |
 | ISS-003 | Protocol | No fork resolution — permanent divergence | Pure longest-chain rule in v0.2.0, simplified v0.2.1 | 2026-03-25 |
 | ISS-004 | Security | Shared secrets over HTTP cleartext | TLS support added in v0.2.0 | 2026-03-25 |
 | ISS-017 | Client | CLI missing STORE/SHARE | CLI store/share commands added in v0.2.1 | 2026-03-25 |

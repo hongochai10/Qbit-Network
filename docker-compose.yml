@@ -1,7 +1,9 @@
 version: "3.8"
 
 # QBit Network 3-validator testnet
-# Usage: docker-compose up -d
+# Usage:
+#   cp .env.example .env   # set your own tokens
+#   docker-compose up -d
 # RPC: http://localhost:8545 (node1), :8546 (node2), :8547 (node3)
 
 services:
@@ -12,7 +14,7 @@ services:
       --data-dir /data
       --p2p-port 9000 --rpc-port 8545
       --peers node2:9000 node3:9000
-      --rpc-token testnet-token-1
+      --rpc-token ${RPC_TOKEN_1:?Set RPC_TOKEN_1 in .env}
     ports:
       - "8545:8545"
       - "9000:9000"
@@ -30,9 +32,10 @@ services:
       --data-dir /data
       --p2p-port 9000 --rpc-port 8545
       --peers node1:9000 node3:9000
-      --rpc-token testnet-token-2
+      --rpc-token ${RPC_TOKEN_2:?Set RPC_TOKEN_2 in .env}
     ports:
       - "8546:8545"
+      - "9001:9000"
     volumes:
       - node2-data:/data
     environment:
@@ -47,9 +50,10 @@ services:
       --data-dir /data
       --p2p-port 9000 --rpc-port 8545
       --peers node1:9000 node2:9000
-      --rpc-token testnet-token-3
+      --rpc-token ${RPC_TOKEN_3:?Set RPC_TOKEN_3 in .env}
     ports:
       - "8547:8545"
+      - "9002:9000"
     volumes:
       - node3-data:/data
     environment:

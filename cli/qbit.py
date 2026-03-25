@@ -69,6 +69,8 @@ def _rpc_call(url: str, method: str, params: dict = None,
 
     ctx = None
     if not verify_ssl:
+        print("WARNING: TLS certificate verification disabled. "
+              "Connection vulnerable to MITM attacks.", file=sys.stderr)
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -286,15 +288,18 @@ def cmd_proof_export(args):
         template_path = os.path.join(os.path.dirname(__file__), "templates", "proof_certificate.html")
         with open(template_path) as tf:
             html = tf.read()
+        from html import escape as html_escape
+        # Escape all substitutions to prevent XSS
+        proof_json_safe = json.dumps(proof_doc, indent=2, ensure_ascii=True).replace("</", "<\\/")
         html = (html
-                .replace("{{DOCUMENT_HASH}}", doc_hash)
-                .replace("{{NOTARIZER}}", info["sender"])
-                .replace("{{BLOCK_INDEX}}", str(block["index"]))
-                .replace("{{BLOCK_HASH}}", block["hash"])
-                .replace("{{TIMESTAMP}}", ts)
-                .replace("{{TX_ID}}", info["tx_id"])
-                .replace("{{VALIDATOR}}", block["validator"])
-                .replace("{{PROOF_JSON}}", json.dumps(proof_doc, indent=2)))
+                .replace("{{DOCUMENT_HASH}}", html_escape(doc_hash))
+                .replace("{{NOTARIZER}}", html_escape(info["sender"]))
+                .replace("{{BLOCK_INDEX}}", html_escape(str(block["index"])))
+                .replace("{{BLOCK_HASH}}", html_escape(block["hash"]))
+                .replace("{{TIMESTAMP}}", html_escape(ts))
+                .replace("{{TX_ID}}", html_escape(info["tx_id"]))
+                .replace("{{VALIDATOR}}", html_escape(block["validator"]))
+                .replace("{{PROOF_JSON}}", proof_json_safe))
         output = args.output or args.file + ".proof.html"
         with open(output, "w") as f:
             f.write(html)

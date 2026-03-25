@@ -135,22 +135,9 @@ class P2PNode:
             peer = Peer(host, port, reader, writer)
             peer.connected = True
             self.peers[addr] = peer
-            # Send authenticated hello if we have signing keys
-            if self.signing_sk and self.signing_pk:
-                from ..config import PROTOCOL_VERSION, CHAIN_ID
-                challenge = os.urandom(32).hex()
-                await peer.send(MSG_HELLO_AUTH, {
-                    "protocol_version": PROTOCOL_VERSION,
-                    "node_id": self.validator_address,
-                    "port": self.port,
-                    "chain_id": CHAIN_ID,
-                    "challenge": challenge,
-                    "timestamp": int(time.time()),
-                    "signing_pk": self.signing_pk.hex(),
-                })
-                peer.protocol_version = PROTOCOL_VERSION
-            else:
-                await peer.send(MSG_HELLO, {"node_id": self.node_id, "port": self.port})
+            # TODO(v0.3.0): implement full HELLO_AUTH 3-step handshake with server-side verification
+            # For now, use plain HELLO — auth constants and Peer fields are ready for v0.3.0
+            await peer.send(MSG_HELLO, {"node_id": self.node_id, "port": self.port})
             asyncio.create_task(self._read_loop(peer))
             logger.info(f"Connected to {addr}")
         except Exception as e:

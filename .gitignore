@@ -4,5 +4,6 @@ __pycache__/
 .DS_Store
 *.tmp
 *.db
+.env
 .pytest_cache/
 .claude/settings.local.json
