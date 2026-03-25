@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 10
-- **Total issues found**: 104
-- **Total fixed**: 101
-- **Accepted risks**: 3
-- **Round 10 status**: Pending — scheduled post-v0.2.0 release
+- **Total rounds**: 12
+- **Total issues found**: 128+
+- **Total fixed**: 124+
+- **Accepted risks**: 4
+- **Latest**: Round 12 (v0.2.1 full audit) — in progress
 
 ## Round 1 — Basic Correctness (14 issues)
 

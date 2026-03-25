@@ -1,5 +1,40 @@
 # Feature Tracker
 
+## Implemented (v0.2.1)
+
+### Protocol (v0.2.1)
+- [x] HELLO_AUTH P2P handshake (ML-DSA-65 challenge-response)
+- [x] Protocol versioning (PROTOCOL_VERSION=2)
+- [x] Pure longest-chain fork resolution (authority scoring removed)
+- [x] Peer authenticated/protocol_version classification
+
+### Client (v0.2.1)
+- [x] HTML proof certificate export (`--format html`)
+- [x] Auto key registration (`--register` flag on wallet create)
+- [x] CLI store command (document hash on-chain)
+- [x] CLI share command (ML-KEM encrypted sharing)
+- [x] Full CLI: 7 commands (wallet, notarize, verify, proof, store, share, verify-proof)
+
+### Infrastructure (v0.2.1)
+- [x] Dockerfile (multi-stage, python:3.11-slim + liboqs)
+- [x] docker-compose.yml (3-validator testnet)
+
+### Protocol (v0.2.0)
+- [x] Fork resolution with try_reorg(), MAX_REORG_DEPTH=32
+- [x] Request-ID correlation for P2P block sync (ISS-005)
+- [x] SQLite ChainStore dual-write backend
+- [x] TLS support for RPC (`--tls-cert/--tls-key`, `--tls-self-signed`)
+- [x] O(1) nonce validation (sender_first_nonce)
+- [x] O(1) pool scan (_pool_sender_count)
+- [x] Notarizations reverse index (_notarizations_by_hash)
+
+### Client (v0.2.0)
+- [x] CLI wallet create/list + notarize + verify + proof + verify-proof
+- [x] Proof export with Merkle path for offline verification
+
+### Infrastructure (v0.2.0)
+- [x] GitHub Actions CI (Python 3.11/3.12, liboqs, pytest)
+
 ## Implemented (v0.1.0)
 
 ### Core

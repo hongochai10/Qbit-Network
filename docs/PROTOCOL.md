@@ -134,22 +134,46 @@ TCP with newline-delimited JSON messages. Reader limit: 10 MB.
 
 ### Message Types
 
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `hello` | Bidirectional | Handshake with node_id and port |
-| `new_block` | Broadcast | New block announcement |
-| `new_tx` | Broadcast | New transaction announcement |
-| `get_blocks` | Request | Request blocks from index |
-| `blocks` | Response | Block data response |
-| `get_peers` | Request | Request peer list |
-| `peers` | Response | Peer address list |
-| `status` | Broadcast | Chain height announcement |
+| Type | Direction | Description | Since |
+|------|-----------|-------------|-------|
+| `hello` | Bidirectional | Unauthenticated handshake (v1 peers) | v0.1.0 |
+| `hello_auth` | Initiator→Responder | Authenticated handshake step 1 (ML-DSA challenge) | v0.2.1 |
+| `auth_response` | Responder→Initiator | Authenticated handshake step 2 (signed challenge + counter-challenge) | v0.2.1 |
+| `auth_confirm` | Initiator→Responder | Authenticated handshake step 3 (signed counter-challenge) | v0.2.1 |
+| `new_block` | Broadcast | New block announcement | v0.1.0 |
+| `new_tx` | Broadcast | New transaction announcement | v0.1.0 |
+| `get_blocks` | Request | Request blocks (with request_id) | v0.2.0 |
+| `blocks` | Response | Block data response (with request_id) | v0.2.0 |
+| `get_peers` | Request | Request peer list | v0.1.0 |
+| `peers` | Response | Peer address list | v0.1.0 |
+| `status` | Broadcast | Chain height announcement | v0.2.0 |
+
+### Protocol Versioning
+
+| Version | Release | Features |
+|---------|---------|----------|
+| 1 | v0.1.0-v0.2.0 | Plain hello, no auth, no request-ID |
+| 2 | v0.2.1+ | hello_auth challenge-response, request-ID correlation |
+
+Negotiation: `min(initiator_version, responder_version)`.
+
+### Authenticated Handshake (v0.2.1+)
+
+```
+Initiator → Responder: hello_auth { protocol_version, node_id, port, chain_id, challenge, timestamp, signing_pk }
+Responder → Initiator: auth_response { ..., challenge_sig, counter_challenge }
+Initiator → Responder: auth_confirm { challenge_sig }
+
+Signature: ML-DSA.Sign(sk, "QBIT_AUTH_v2:" || peer_challenge || own_address)
+```
+
+Domain prefix `QBIT_AUTH_v2:` prevents cross-protocol signature reuse. Timestamp validated within MAX_BLOCK_DRIFT (30s).
 
 ### Connection Flow
 
-1. Outbound: `connect()` -> send `hello` -> start `_read_loop`
-2. Inbound: `_on_connect()` -> wait for `hello` (10s timeout) -> migrate to real address -> read loop
-3. Inbound without HELLO within 10s: disconnected (prevents idle socket DoS)
+1. **Authenticated (v2)**: `connect()` → send `hello_auth` with challenge → await `auth_response` → verify → send `auth_confirm` → `peer.authenticated = True`
+2. **Unauthenticated (v1 fallback)**: `connect()` → send `hello` → `peer.authenticated = False`
+3. Inbound without HELLO/HELLO_AUTH within 10s: disconnected
 
 ### Peer Validation
 

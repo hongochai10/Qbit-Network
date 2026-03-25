@@ -50,6 +50,34 @@ This generates a fresh validator wallet, creates a genesis block, and starts:
 
 The RPC auth token is printed at startup. Save it for authenticated calls.
 
+### Docker Quickstart (3-validator testnet)
+
+```bash
+docker-compose up -d
+# Nodes: http://localhost:8545, :8546, :8547
+curl http://localhost:8545 -d '{"jsonrpc":"2.0","method":"qv_nodeInfo","id":1}'
+```
+
+### CLI Tool
+
+```bash
+# Wallet
+python3 cli/qbit.py wallet create [--register --token TOKEN]
+python3 cli/qbit.py wallet list
+
+# Notarize & verify
+python3 cli/qbit.py notarize contract.pdf --token TOKEN
+python3 cli/qbit.py verify contract.pdf
+
+# Export proof (JSON or HTML certificate)
+python3 cli/qbit.py proof contract.pdf --format html
+python3 cli/qbit.py verify-proof contract.pdf.proof.json
+
+# Store & share (encrypted)
+python3 cli/qbit.py store document.pdf --token TOKEN
+python3 cli/qbit.py share document.pdf --to qv1recipient... --token TOKEN
+```
+
 ### Run with Options
 
 ```bash

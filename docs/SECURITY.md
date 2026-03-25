@@ -16,15 +16,20 @@
 | Risk | Status | Mitigation Path |
 |------|--------|-----------------|
 | Python `bytes` key material in heap | Accepted | Requires C extension / mmap for zeroing |
-| P2P messages not authenticated | Accepted | Needs Noise Protocol or mutual TLS |
-| No fork resolution | Accepted | PoA single-validator sufficient for MVP |
-| In-memory chain | Accepted | Needs LevelDB/RocksDB for production scale |
-| Shared secrets over HTTP | Accepted | Deploy behind TLS reverse proxy |
-| Sybil/Eclipse attacks | Accepted | Needs peer reputation system |
+| Sybil/Eclipse attacks | Accepted | HELLO_AUTH raises bar; needs peer reputation |
+
+### Resolved in v0.2.0-v0.2.1
+
+| Risk | Resolution |
+|------|-----------|
+| P2P not authenticated | HELLO_AUTH ML-DSA challenge-response (v0.2.1) |
+| No fork resolution | Pure longest-chain with try_reorg (v0.2.0) |
+| In-memory only | SQLite dual-write persistence (v0.2.0) |
+| Secrets over HTTP | TLS support with --tls-cert/--tls-key (v0.2.0) |
 
 ## Audit History
 
-9 rounds of security audit, 104 issues found and resolved:
+12 rounds of security audit, 128+ issues found and resolved:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -37,6 +42,9 @@
 | 7 | Fix regression + edge cases | 11 |
 | 8 | Module consistency | 4 |
 | 9 | Semantic + protocol correctness | 5 |
+| 10 | v0.2.0 feature audit (fork, TLS, CLI, store) | 11 |
+| 11 | Fix verification + regression check | 7 |
+| 12 | v0.2.1 full audit (P2P auth, Docker, store/share) | In progress |
 
 ## Key Security Controls
 

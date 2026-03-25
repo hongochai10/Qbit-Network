@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.2.1 (2026-03-25)
+
+### Protocol
+- HELLO_AUTH 3-step challenge-response P2P handshake using ML-DSA-65 (ISS-002)
+- Protocol versioning: PROTOCOL_VERSION=2, negotiated via min(initiator, responder)
+- Peer.authenticated + Peer.protocol_version fields for trust classification
+- Drop authority scoring — pure longest-chain fork resolution (first-seen wins on tie)
+- Domain-separated auth signatures (QBIT_AUTH_v2: prefix)
+
+### Client
+- HTML proof certificate export: `qbit proof <file> --format html`
+- Auto key registration: `qbit wallet create --register --token TOKEN`
+- CLI store command: `qbit store <file>` — record document hash on-chain
+- CLI share command: `qbit share <file> --to <addr>` — ML-KEM encrypted sharing
+- Full CLI: 7 commands (wallet, notarize, verify, proof, store, share, verify-proof)
+
+### Infrastructure
+- Dockerfile: multi-stage build (python:3.11-slim + liboqs 0.12.0)
+- docker-compose.yml: 3-validator testnet with bridge network
+- Exposed RPC ports 8545-8547 for external access
+
+### Tests
+- 166 tests passing across 7 test files
+- 12 audit rounds, 116+ issues found and fixed
+
 ## v0.2.0 (2026-03-25)
 
 ### Protocol
