@@ -1,10 +1,10 @@
-"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR."""
+"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, STAKE, DELEGATE, UNSTAKE."""
 import json
 import re
 import time
 from enum import Enum
 from ..crypto import MLDSA, sha3_256
-from ..config import MAX_TX_PAYLOAD_SIZE, CHAIN_ID
+from ..config import MAX_TX_PAYLOAD_SIZE, CHAIN_ID, MIN_STAKE, MAX_STAKE
 
 
 class TxType(str, Enum):
@@ -14,6 +14,9 @@ class TxType(str, Enum):
     NOTARIZE = "NOTARIZE"
     STORE = "STORE"
     SHARE = "SHARE"
+    STAKE = "STAKE"
+    DELEGATE = "DELEGATE"
+    UNSTAKE = "UNSTAKE"
 
 
 _HEX_RE = re.compile(r'^[0-9a-fA-F]+$')
@@ -84,6 +87,9 @@ class Transaction:
         TxType.NOTARIZE: {"documentHash", "metadata"},
         TxType.STORE: {"documentHash", "cid", "metadata"},
         TxType.SHARE: {"cid", "encapsulatedKey", "expires"},
+        TxType.STAKE: {"amount", "validator_address"},
+        TxType.DELEGATE: {"amount", "validator_address"},
+        TxType.UNSTAKE: {"amount", "validator_address"},
     }
 
     def validate_payload(self) -> tuple[bool, str]:
@@ -166,6 +172,16 @@ class Transaction:
             if not isinstance(reason, str) or reason not in _VALID_REASONS:
                 return False, (f"reason must be one of {sorted(_VALID_REASONS)}, "
                                f"got {reason!r}")
+
+        elif self.tx_type in (TxType.STAKE, TxType.DELEGATE, TxType.UNSTAKE):
+            amount = self.payload.get("amount")
+            if not isinstance(amount, int) or amount < MIN_STAKE:
+                return False, f"amount must be integer >= {MIN_STAKE}"
+            if amount > MAX_STAKE:
+                return False, f"amount must be <= {MAX_STAKE}"
+            vaddr = self.payload.get("validator_address", "")
+            if not isinstance(vaddr, str) or not vaddr:
+                return False, "validator_address must be non-empty string"
 
         return True, ""
 
@@ -274,4 +290,28 @@ class Transaction:
                 "encapsulatedKey": encapsulated_key.hex(),
                 "expires": expires,
             },
+        )
+
+    @classmethod
+    def stake(cls, sender: str, validator_address: str,
+              amount: int, nonce: int = 0) -> 'Transaction':
+        return cls(
+            tx_type=TxType.STAKE, sender=sender, nonce=nonce,
+            payload={"amount": amount, "validator_address": validator_address},
+        )
+
+    @classmethod
+    def delegate(cls, sender: str, validator_address: str,
+                 amount: int, nonce: int = 0) -> 'Transaction':
+        return cls(
+            tx_type=TxType.DELEGATE, sender=sender, nonce=nonce,
+            payload={"amount": amount, "validator_address": validator_address},
+        )
+
+    @classmethod
+    def unstake(cls, sender: str, validator_address: str,
+                amount: int, nonce: int = 0) -> 'Transaction':
+        return cls(
+            tx_type=TxType.UNSTAKE, sender=sender, nonce=nonce,
+            payload={"amount": amount, "validator_address": validator_address},
         )

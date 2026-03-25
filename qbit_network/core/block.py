@@ -99,10 +99,11 @@ class Block:
         return block
 
     @classmethod
-    def genesis(cls, validator: str) -> 'Block':
+    def genesis(cls, validator: str,
+                transactions: list['Transaction'] | None = None) -> 'Block':
         return cls(
             index=0,
             prev_hash="0" * 64,
-            transactions=[],
+            transactions=transactions or [],
             validator=validator,
         )

@@ -38,8 +38,14 @@ P2P_RATE_VIOLATIONS_MAX = 3  # disconnects after this many violations
 RPC_RATE_LIMIT = 10       # requests/second sustained
 RPC_RATE_BURST = 50       # max burst capacity
 
+# Staking / dPoS
+MIN_STAKE = 1
+MAX_STAKE = 1_000_000
+UNBONDING_PERIOD = 100       # blocks until unstaked weight is released
+EPOCH_LENGTH = 100           # blocks per epoch (placeholder for Sprint 2)
+
 # Version
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # Storage
 DATA_DIR = os.environ.get("QBIT_DATA_DIR", os.path.expanduser("~/.qbit"))

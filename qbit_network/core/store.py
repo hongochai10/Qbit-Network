@@ -51,9 +51,23 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS stakes (
+    staker TEXT NOT NULL,
+    validator TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    PRIMARY KEY (staker, validator)
+);
+CREATE TABLE IF NOT EXISTS unbonding (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    staker TEXT NOT NULL,
+    validator TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    release_block INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_txs_sender ON txs(sender, nonce);
 CREATE INDEX IF NOT EXISTS idx_txs_recipient ON txs(recipient);
 CREATE INDEX IF NOT EXISTS idx_notarizations_first ON notarizations(doc_hash, is_first);
+CREATE INDEX IF NOT EXISTS idx_unbonding_release ON unbonding(release_block);
 """
 
 
@@ -214,6 +228,76 @@ class SQLiteStore:
         if commit:
             self._db.commit()
 
+    # ---- Staking registry ----
+
+    def put_stake(self, staker: str, validator: str, amount: int,
+                  commit: bool = True):
+        """Insert or update a stake entry."""
+        self._db.execute(
+            "INSERT OR REPLACE INTO stakes (staker, validator, amount) "
+            "VALUES (?, ?, ?)", (staker, validator, amount))
+        if commit:
+            self._db.commit()
+
+    def get_stake(self, staker: str, validator: str) -> int:
+        """Get stake amount for a staker/validator pair."""
+        row = self._db.execute(
+            "SELECT amount FROM stakes WHERE staker=? AND validator=?",
+            (staker, validator)).fetchone()
+        return row[0] if row else 0
+
+    def delete_stake(self, staker: str, validator: str, commit: bool = True):
+        """Remove a stake entry."""
+        self._db.execute(
+            "DELETE FROM stakes WHERE staker=? AND validator=?",
+            (staker, validator))
+        if commit:
+            self._db.commit()
+
+    def get_all_stakes(self) -> list[tuple[str, str, int]]:
+        """Return all stakes as (staker, validator, amount) tuples."""
+        rows = self._db.execute(
+            "SELECT staker, validator, amount FROM stakes").fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def put_unbonding(self, staker: str, validator: str, amount: int,
+                      release_block: int, commit: bool = True):
+        """Record an unbonding entry."""
+        self._db.execute(
+            "INSERT INTO unbonding (staker, validator, amount, release_block) "
+            "VALUES (?, ?, ?, ?)", (staker, validator, amount, release_block))
+        if commit:
+            self._db.commit()
+
+    def get_mature_unbondings(self, current_block: int) -> list[dict]:
+        """Get unbonding entries that have matured (release_block <= current)."""
+        rows = self._db.execute(
+            "SELECT id, staker, validator, amount, release_block "
+            "FROM unbonding WHERE release_block <= ?",
+            (current_block,)).fetchall()
+        return [{"id": r[0], "staker": r[1], "validator": r[2],
+                 "amount": r[3], "release_block": r[4]} for r in rows]
+
+    def delete_unbonding(self, staker: str, validator: str,
+                         amount: int, release_block: int, commit: bool = True):
+        """Remove an unbonding entry by matching fields."""
+        self._db.execute(
+            "DELETE FROM unbonding WHERE staker=? AND validator=? "
+            "AND amount=? AND release_block=?",
+            (staker, validator, amount, release_block))
+        if commit:
+            self._db.commit()
+
+    def delete_unbondings_from_block(self, from_block: int, commit: bool = True):
+        """Remove unbonding entries created at or after from_block."""
+        # release_block = block_index + UNBONDING_PERIOD, so we remove
+        # entries whose originating block is >= from_block
+        self._db.execute(
+            "DELETE FROM unbonding WHERE release_block >= ?",
+            (from_block,))
+        if commit:
+            self._db.commit()
+
     # ---- Revocation registry ----
 
     def put_revocation(self, address: str, key_type: str, tx_id: str,
@@ -320,6 +404,39 @@ class SQLiteStore:
                 c.execute(
                     "DELETE FROM revoked_keys WHERE address=? AND key_type=?",
                     (addr, kt))
+
+            # Rebuild stakes table from remaining chain data
+            # (simpler and more correct than incremental rollback)
+            c.execute("DELETE FROM stakes")
+            c.execute("DELETE FROM unbonding")
+            # Re-scan remaining blocks for STAKE/DELEGATE/UNSTAKE
+            remaining = c.execute(
+                "SELECT idx, data FROM blocks WHERE idx < ? ORDER BY idx",
+                (from_index,)).fetchall()
+            stake_state: dict[tuple[str, str], int] = {}  # (staker, validator) -> amount
+            for row_idx, row_data in remaining:
+                bd = json.loads(row_data)
+                for tx_data in bd.get("transactions", []):
+                    tt = tx_data.get("type", "")
+                    payload = tx_data.get("payload", {})
+                    sender = tx_data.get("from", "")
+                    if tt in ("STAKE", "DELEGATE"):
+                        vaddr = payload.get("validator_address", "")
+                        amt = payload.get("amount", 0)
+                        if vaddr and amt > 0:
+                            key = (sender, vaddr)
+                            stake_state[key] = stake_state.get(key, 0) + amt
+                    elif tt == "UNSTAKE":
+                        vaddr = payload.get("validator_address", "")
+                        amt = payload.get("amount", 0)
+                        if vaddr and amt > 0:
+                            key = (sender, vaddr)
+                            stake_state[key] = max(0, stake_state.get(key, 0) - amt)
+            for (staker, validator), amount in stake_state.items():
+                if amount > 0:
+                    c.execute(
+                        "INSERT INTO stakes (staker, validator, amount) VALUES (?, ?, ?)",
+                        (staker, validator, amount))
 
             self._db.commit()
             row = self._db.execute("SELECT MAX(idx) FROM blocks").fetchone()

@@ -248,6 +248,8 @@ class FullNode:
         m("qv_validators", self._rpc_validators)
         m("qv_getTxsBySender", self._rpc_txs_by_sender)
         m("qv_getTxsByRecipient", self._rpc_txs_by_recipient)
+        m("qv_getStake", self._rpc_get_stake)
+        m("qv_getValidatorStakes", self._rpc_get_validator_stakes)
 
         # Protected (require auth token)
         m("qv_notarize", self._rpc_notarize)
@@ -256,6 +258,9 @@ class FullNode:
         m("qv_registerKey", self._rpc_register_key)
         m("qv_registerValidator", self._rpc_register_validator)
         m("qv_revokeKey", self._rpc_revoke_key)
+        m("qv_stake", self._rpc_stake)
+        m("qv_delegate", self._rpc_delegate)
+        m("qv_unstake", self._rpc_unstake)
         m("qv_getSharedWithMe", self._rpc_shared_with_me)
         m("qv_getSharedSecret", self._rpc_get_shared_secret)
         m("qv_decapsulateShared", self._rpc_decapsulate_shared)
@@ -413,6 +418,89 @@ class FullNode:
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
         await self._ws_notify_tx(tx)
         return {"tx_id": result, "key_type": key_type, "reason": reason}
+
+    async def _rpc_stake(self, wallet_address="", validator_address="", amount=0):
+        """Stake weight on a validator (self-stake)."""
+        if not isinstance(validator_address, str) or not validator_address:
+            raise ValueError("validator_address must be non-empty string")
+        if not isinstance(amount, int) or amount < 1:
+            raise ValueError("amount must be positive integer")
+        w = self._get_wallet(wallet_address)
+        async with self._lock_for(w.address):
+            tx = Transaction.stake(
+                sender=w.address,
+                validator_address=validator_address,
+                amount=amount,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
+        return {"tx_id": result, "validator_address": validator_address, "amount": amount}
+
+    async def _rpc_delegate(self, wallet_address="", validator_address="", amount=0):
+        """Delegate stake weight to a validator."""
+        if not isinstance(validator_address, str) or not validator_address:
+            raise ValueError("validator_address must be non-empty string")
+        if not isinstance(amount, int) or amount < 1:
+            raise ValueError("amount must be positive integer")
+        w = self._get_wallet(wallet_address)
+        async with self._lock_for(w.address):
+            tx = Transaction.delegate(
+                sender=w.address,
+                validator_address=validator_address,
+                amount=amount,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
+        return {"tx_id": result, "validator_address": validator_address, "amount": amount}
+
+    async def _rpc_unstake(self, wallet_address="", validator_address="", amount=0):
+        """Begin unstaking weight from a validator."""
+        if not isinstance(validator_address, str) or not validator_address:
+            raise ValueError("validator_address must be non-empty string")
+        if not isinstance(amount, int) or amount < 1:
+            raise ValueError("amount must be positive integer")
+        w = self._get_wallet(wallet_address)
+        async with self._lock_for(w.address):
+            tx = Transaction.unstake(
+                sender=w.address,
+                validator_address=validator_address,
+                amount=amount,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
+        return {"tx_id": result, "validator_address": validator_address, "amount": amount}
+
+    async def _rpc_get_stake(self, validator_address=""):
+        """Get total stake for a validator (public)."""
+        if not isinstance(validator_address, str):
+            raise ValueError("validator_address must be string")
+        total = self.blockchain.get_validator_stake(validator_address)
+        stakers = self.blockchain._stakes.get(validator_address, {})
+        return {
+            "validator_address": validator_address,
+            "total_stake": total,
+            "stakers": dict(stakers),
+        }
+
+    async def _rpc_get_validator_stakes(self):
+        """Get all validators with their stake info (public)."""
+        active = self.blockchain.get_active_validators()
+        return [{"validator": addr, "total_stake": total} for addr, total in active]
 
     async def _rpc_notarize(self, wallet_address="", document_hash="", metadata=""):
         w = self._get_wallet(wallet_address)

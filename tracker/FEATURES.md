@@ -2,6 +2,29 @@
 
 ## Implemented
 
+### v0.4.0-sprint1 (2026-03-25)
+- [x] Genesis validator on-chain transaction (SPRINT1-007)
+  - Genesis validator registered via REGISTER_VALIDATOR tx in genesis block
+  - Replaces direct \_validator_registry write in init_chain()
+  - Block.genesis() accepts optional transactions parameter
+  - Genesis block txs do not consume user-facing nonce slots
+  - Rollback/reload work uniformly through \_append_block code path
+  - Auto-stake MIN_STAKE preserved for production use (explicit validator_pk)
+  - Pre-existing dPoS \_select_dpos sha3_256().digest() bug fixed
+- [x] Delegated Proof of Stake (dPoS) consensus
+  - 3 new transaction types: STAKE, DELEGATE, UNSTAKE
+  - Stake-weighted deterministic validator selection (SHA3-256 seed from parent_hash + block_index)
+  - Backward-compatible PoA round-robin fallback when no validators are staked
+  - Unbonding period (100 blocks) for unstaking operations
+  - In-memory staking state: `_stakes`, `_total_stake`, `_unbonding`
+  - SQLite persistence: `stakes` and `unbonding` tables with full rollback support
+  - Staking validation: registered validator check, sufficient stake check for unstake
+  - Rollback support for STAKE/DELEGATE/UNSTAKE in `_rollback_block`
+  - JSON-RPC: `qv_stake`, `qv_delegate`, `qv_unstake` (protected), `qv_getStake`, `qv_getValidatorStakes` (public)
+  - REST API: `GET /stakes`, `GET /stakes/:validator`, `POST /stake`, `POST /delegate`, `POST /unstake`
+  - Config constants: MIN_STAKE=1, MAX_STAKE=1,000,000, UNBONDING_PERIOD=100, EPOCH_LENGTH=100
+  - 58 new tests in `tests/test_dpos.py`
+
 ### v0.3.0-sprint3 (2026-03-25)
 - [x] IPFS integration for CLI store/share/retrieve commands
   - `cli/ipfs_client.py` — lightweight IPFS HTTP API client (stdlib-only, no pip deps)

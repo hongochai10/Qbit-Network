@@ -1,7 +1,8 @@
-"""Proof of Authority consensus."""
+"""Proof of Authority consensus with dPoS stake-weighted validator selection."""
 import logging
 import time
-from ..crypto import MLDSA
+from typing import Callable
+from ..crypto import MLDSA, sha3_256
 from ..config import MAX_BLOCK_DRIFT, MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK, MAX_TX_PAYLOAD_SIZE, BLOCK_INTERVAL
 from .block import Block
 
@@ -13,7 +14,11 @@ _MAX_TX_WIRE_SIZE = _TX_OVERHEAD + MAX_TX_PAYLOAD_SIZE + 3309 * 2 + 1952 * 2  # 
 
 
 class ProofOfAuthority:
-    """PoA consensus - only authorized validators can produce blocks."""
+    """PoA consensus with dPoS stake-weighted validator selection.
+
+    When staked validators exist, uses stake-proportional deterministic
+    selection. Falls back to PoA round-robin when no stakes are present.
+    """
 
     def __init__(self):
         self.validators: dict[str, bytes] = {}
@@ -21,6 +26,7 @@ class ProofOfAuthority:
         self._chain_nonces: dict[str, int] | None = None  # injected by blockchain
         self._chain_tx_ids: set[str] | None = None       # injected by blockchain
         self._revoked_keys: dict[str, dict] | None = None  # injected by blockchain
+        self._get_active_validators: Callable[[], list[tuple[str, int]]] | None = None  # injected by blockchain
 
     def add_validator(self, address: str, signing_pk: bytes):
         self.validators[address] = signing_pk
@@ -39,7 +45,20 @@ class ProofOfAuthority:
         self._genesis_hash = h
 
     def select_validator(self, block_index: int,
-                         parent_timestamp: float | None = None) -> str | None:
+                         parent_timestamp: float | None = None,
+                         parent_hash: str = "") -> str | None:
+        # Try dPoS stake-weighted selection first
+        if self._get_active_validators is not None and parent_hash:
+            active = self._get_active_validators()
+            if active:
+                return self._select_dpos(block_index, parent_hash, active)
+
+        # Fallback to PoA round-robin
+        return self._select_poa(block_index, parent_timestamp)
+
+    def _select_poa(self, block_index: int,
+                    parent_timestamp: float | None = None) -> str | None:
+        """Original PoA round-robin selection."""
         if not self.validators:
             return None
         addresses = sorted(self.validators.keys())
@@ -48,6 +67,25 @@ class ProofOfAuthority:
         if parent_timestamp is not None:
             return self._select_with_skip(addresses, base, n, parent_timestamp)
         return addresses[base]
+
+    @staticmethod
+    def _select_dpos(block_index: int, parent_hash: str,
+                     active: list[tuple[str, int]]) -> str:
+        """Deterministic stake-weighted validator selection.
+
+        Seed is derived from parent_hash + block_index so validators
+        cannot predict future selections.
+        """
+        seed = sha3_256(f"{parent_hash}:{block_index}".encode())
+        seed_int = int.from_bytes(seed[:8], 'big')
+        total = sum(s for _, s in active)
+        point = seed_int % total
+        cumulative = 0
+        for addr, stake in active:
+            cumulative += stake
+            if point < cumulative:
+                return addr
+        return active[-1][0]  # fallback
 
     def select_validator_with_skip(self, block_index: int,
                                    parent_timestamp: float) -> str | None:
@@ -103,7 +141,8 @@ class ProofOfAuthority:
                 return False, "validator signing key revoked"
 
         expected = self.select_validator(block.index,
-                                        parent_timestamp=parent.timestamp)
+                                        parent_timestamp=parent.timestamp,
+                                        parent_hash=parent.block_hash)
         if expected and block.validator != expected:
             return False, (f"wrong validator turn: expected {expected[:16]}..., "
                            f"got {block.validator[:16]}...")

@@ -12,7 +12,7 @@ import logging
 from .block import Block
 from .transaction import Transaction, TxType
 from .consensus import ProofOfAuthority
-from ..config import MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH, CHAIN_ID
+from ..config import MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH, CHAIN_ID, MIN_STAKE, UNBONDING_PERIOD
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -95,12 +95,19 @@ class Blockchain:
         self._notarization_count: dict[str, int] = {}  # sender_address -> count of NOTARIZE txs
         self._validator_registry: dict[str, bytes] = {}  # validator_address -> signing pubkey
         self._revoked_keys: dict[str, dict] = {}  # "address:key_type" -> {tx_id, timestamp, reason}
+
+        # Staking / dPoS state
+        self._stakes: dict[str, dict[str, int]] = {}      # validator_addr -> {staker_addr: amount}
+        self._total_stake: dict[str, int] = {}             # validator_addr -> total stake
+        self._unbonding: list[dict] = []                   # [{staker, validator, amount, release_block}]
+
         self._db_lock = threading.Lock()  # protects SQLite mutations (_append_block, _rollback_to)
 
         self.consensus = ProofOfAuthority()
         self.consensus._chain_nonces = self._sender_nonce
         self.consensus._chain_tx_ids = set()  # fed by _append_block
         self.consensus._revoked_keys = self._revoked_keys
+        self.consensus._get_active_validators = self.get_active_validators
 
     # --- Backward-compatible chain property ---
 
@@ -165,23 +172,61 @@ class Blockchain:
         """O(1) notarization count for an address."""
         return self._notarization_count.get(address, 0)
 
+    # ---- Staking queries ----
+
+    def get_validator_stake(self, validator_addr: str) -> int:
+        """Total stake weight for a validator."""
+        return self._total_stake.get(validator_addr, 0)
+
+    def get_staker_info(self, staker: str, validator: str) -> int:
+        """Specific stake amount from staker to validator."""
+        return self._stakes.get(validator, {}).get(staker, 0)
+
+    def get_active_validators(self) -> list[tuple[str, int]]:
+        """Validators with stake > 0, sorted by address for determinism."""
+        result = [(addr, total) for addr, total in self._total_stake.items() if total > 0]
+        result.sort(key=lambda x: x[0])
+        return result
+
+    def get_all_stakes(self) -> dict[str, dict[str, int]]:
+        """Return full stakes mapping (validator -> {staker: amount})."""
+        return dict(self._stakes)
+
     # ---- Genesis ----
 
     def init_chain(self, validator_address: str, validator_sk: bytes,
                    validator_pk: bytes = b''):
         if self._height >= 0:
             return
-        genesis = Block.genesis(validator_address)
+
+        # Resolve validator public key: explicit param > consensus registry
+        pk = validator_pk or self.consensus.validators.get(
+            validator_address, b'')
+
+        # Build genesis transactions -- register the genesis validator on-chain
+        genesis_txs: list[Transaction] = []
+        if pk:
+            reg_tx = Transaction.register_validator(
+                sender=validator_address,
+                validator_pubkey=pk,
+                validator_address=validator_address,
+                nonce=0,
+            )
+            reg_tx.sign(validator_sk, pk)
+            genesis_txs.append(reg_tx)
+
+        genesis = Block.genesis(
+            validator_address, transactions=genesis_txs)
         genesis.sign(validator_sk)
+        # _append_block handles validator registration and persistence
         self._append_block(genesis)
-        # Auto-register genesis validator in on-chain registry
+        # Auto-stake MIN_STAKE so genesis validator can produce blocks under dPoS
+        # Only when validator_pk was explicitly provided (production use)
         if validator_pk:
-            self._validator_registry[validator_address] = validator_pk
-            self.consensus.add_validator(validator_address, validator_pk)
-            # Persist to SQLite if available
+            self._stakes.setdefault(validator_address, {})[validator_address] = MIN_STAKE
+            self._total_stake[validator_address] = MIN_STAKE
             if self._store is not None:
-                self._store.put_validator(validator_address, validator_pk.hex())
-            logger.info(f"Genesis validator registered: {validator_address[:16]}...")
+                self._store.put_stake(validator_address, validator_address, MIN_STAKE)
         logger.info(f"Genesis: {genesis.block_hash[:16]}...")
 
     # ---- Transaction pool ----
@@ -216,6 +261,23 @@ class Blockchain:
 
         if tx.tx_type == TxType.SHARE and not tx.recipient:
             return False, "SHARE tx requires recipient"
+
+        # STAKE / DELEGATE: target validator must be registered
+        if tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+            vaddr = tx.payload.get("validator_address", "")
+            if not self.is_registered_validator(vaddr):
+                return False, f"validator not registered: {vaddr[:16]}..."
+
+        # UNSTAKE: target must be registered, sender must have enough stake
+        if tx.tx_type == TxType.UNSTAKE:
+            vaddr = tx.payload.get("validator_address", "")
+            if not self.is_registered_validator(vaddr):
+                return False, f"validator not registered: {vaddr[:16]}..."
+            amount = tx.payload.get("amount", 0)
+            current = self.get_staker_info(tx.sender, vaddr)
+            if amount > current:
+                return False, (f"insufficient stake: want to unstake {amount}, "
+                               f"have {current}")
 
         # REVOKE_KEY: idempotency + genesis validator safety
         if tx.tx_type == TxType.REVOKE_KEY:
@@ -256,7 +318,8 @@ class Blockchain:
 
         # Early turn check (C-02) — skip expensive work if not our turn
         parent = self._latest_block
-        expected = self.consensus.select_validator(parent.index + 1)
+        expected = self.consensus.select_validator(
+            parent.index + 1, parent_hash=parent.block_hash)
         if expected and expected != validator_address:
             return None  # not our turn
 
@@ -536,15 +599,48 @@ class Blockchain:
                         self.consensus.add_validator(tx.sender, vpk)
                 # SQLite revocation cleanup handled by delete_blocks_from()
 
+            # Revert staking operations
+            elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+                vaddr = tx.payload.get("validator_address", "")
+                amount = tx.payload.get("amount", 0)
+                if vaddr and amount > 0:
+                    staker = tx.sender
+                    if vaddr in self._stakes and staker in self._stakes[vaddr]:
+                        self._stakes[vaddr][staker] -= amount
+                        if self._stakes[vaddr][staker] <= 0:
+                            self._stakes[vaddr].pop(staker, None)
+                    self._total_stake[vaddr] = max(0, self._total_stake.get(vaddr, 0) - amount)
+                    if self._total_stake.get(vaddr, 0) == 0:
+                        self._total_stake.pop(vaddr, None)
+
+            elif tx.tx_type == TxType.UNSTAKE:
+                vaddr = tx.payload.get("validator_address", "")
+                amount = tx.payload.get("amount", 0)
+                if vaddr and amount > 0:
+                    staker = tx.sender
+                    # Restore stake that was removed by unstake
+                    self._stakes.setdefault(vaddr, {})
+                    self._stakes[vaddr][staker] = self._stakes[vaddr].get(staker, 0) + amount
+                    self._total_stake[vaddr] = self._total_stake.get(vaddr, 0) + amount
+                    # Remove the unbonding entry created by this tx
+                    release_block = block.index + UNBONDING_PERIOD
+                    self._unbonding = [
+                        e for e in self._unbonding
+                        if not (e["staker"] == staker and e["validator"] == vaddr
+                                and e["amount"] == amount and e["release_block"] == release_block)
+                    ]
+
             displaced.append(tx)
 
         # Recompute sender nonces after rollback
+        # Genesis block (index 0) txs do not consume user-facing nonces,
+        # so exclude them from the max-nonce scan.
         for tx in block.transactions:
             remaining = self._txs_by_sender.get(tx.sender, [])
             if remaining:
                 max_nonce = max(
                     (self.get_tx(tid).nonce for tid in remaining
-                     if self.get_tx(tid)),
+                     if self.get_tx(tid) and self.get_tx_block(tid) != 0),
                     default=-1)
                 self._sender_nonce[tx.sender] = max_nonce
             else:
@@ -605,9 +701,12 @@ class Blockchain:
             if tx.recipient:
                 self._txs_by_recipient.setdefault(tx.recipient, []).append(tx.tx_id)
 
-            current = self._sender_nonce.get(tx.sender, -1)
-            if tx.nonce > current:
-                self._sender_nonce[tx.sender] = tx.nonce
+            # Genesis block (idx==0) transactions are bootstrapping ops;
+            # they do not consume a user-facing nonce slot.
+            if idx > 0:
+                current = self._sender_nonce.get(tx.sender, -1)
+                if tx.nonce > current:
+                    self._sender_nonce[tx.sender] = tx.nonce
 
             if tx.tx_type == TxType.NOTARIZE:
                 doc_hash = tx.payload.get("documentHash", "")
@@ -686,6 +785,71 @@ class Blockchain:
                     self._store.put_revocation(
                         tx.sender, key_type, tx.tx_id,
                         float(tx.timestamp), reason)
+
+            elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+                vaddr = tx.payload.get("validator_address", "")
+                amount = tx.payload.get("amount", 0)
+                if vaddr and amount > 0:
+                    staker = tx.sender
+                    self._stakes.setdefault(vaddr, {})
+                    self._stakes[vaddr][staker] = self._stakes[vaddr].get(staker, 0) + amount
+                    self._total_stake[vaddr] = self._total_stake.get(vaddr, 0) + amount
+                    if self._store is not None:
+                        self._store.put_stake(staker, vaddr, self._stakes[vaddr][staker])
+                    logger.info(
+                        f"{'Stake' if tx.tx_type == TxType.STAKE else 'Delegate'}: "
+                        f"{staker[:16]}... -> {vaddr[:16]}... amount={amount} "
+                        f"(block #{block.index})")
+
+            elif tx.tx_type == TxType.UNSTAKE:
+                vaddr = tx.payload.get("validator_address", "")
+                amount = tx.payload.get("amount", 0)
+                if vaddr and amount > 0:
+                    staker = tx.sender
+                    current = self._stakes.get(vaddr, {}).get(staker, 0)
+                    new_amount = max(0, current - amount)
+                    if vaddr in self._stakes:
+                        if new_amount == 0:
+                            self._stakes[vaddr].pop(staker, None)
+                        else:
+                            self._stakes[vaddr][staker] = new_amount
+                    self._total_stake[vaddr] = max(0, self._total_stake.get(vaddr, 0) - amount)
+                    # Create unbonding entry
+                    release_block = idx + UNBONDING_PERIOD
+                    unbonding_entry = {
+                        "staker": staker,
+                        "validator": vaddr,
+                        "amount": amount,
+                        "release_block": release_block,
+                    }
+                    self._unbonding.append(unbonding_entry)
+                    if self._store is not None:
+                        if new_amount == 0:
+                            self._store.delete_stake(staker, vaddr)
+                        else:
+                            self._store.put_stake(staker, vaddr, new_amount)
+                        self._store.put_unbonding(staker, vaddr, amount, release_block)
+                    logger.info(
+                        f"Unstake: {staker[:16]}... from {vaddr[:16]}... "
+                        f"amount={amount}, release_block={release_block} "
+                        f"(block #{block.index})")
+
+        # Process mature unbondings (release_block <= current block index)
+        self._process_mature_unbondings(idx)
+
+    def _process_mature_unbondings(self, current_index: int):
+        """Remove unbonding entries whose release_block has been reached."""
+        remaining = []
+        for entry in self._unbonding:
+            if entry["release_block"] <= current_index:
+                # Unbonding complete -- remove from store
+                if self._store is not None:
+                    self._store.delete_unbonding(
+                        entry["staker"], entry["validator"],
+                        entry["amount"], entry["release_block"])
+            else:
+                remaining.append(entry)
+        self._unbonding = remaining
 
     # ---- Queries ----
 
@@ -921,9 +1085,11 @@ class Blockchain:
                 self._txs_by_sender.setdefault(tx.sender, []).append(tx.tx_id)
                 if tx.recipient:
                     self._txs_by_recipient.setdefault(tx.recipient, []).append(tx.tx_id)
-                current = self._sender_nonce.get(tx.sender, -1)
-                if tx.nonce > current:
-                    self._sender_nonce[tx.sender] = tx.nonce
+                # Genesis block txs do not consume a user-facing nonce slot
+                if i > 0:
+                    current = self._sender_nonce.get(tx.sender, -1)
+                    if tx.nonce > current:
+                        self._sender_nonce[tx.sender] = tx.nonce
                 if tx.tx_type == TxType.NOTARIZE:
                     dh = tx.payload.get("documentHash", "")
                     if dh:
@@ -956,6 +1122,35 @@ class Blockchain:
                     if key_type == "validator":
                         self._validator_registry.pop(tx.sender, None)
                         self.consensus.remove_validator(tx.sender)
+                elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+                    vaddr = tx.payload.get("validator_address", "")
+                    amount = tx.payload.get("amount", 0)
+                    if vaddr and amount > 0:
+                        staker = tx.sender
+                        self._stakes.setdefault(vaddr, {})
+                        self._stakes[vaddr][staker] = self._stakes[vaddr].get(staker, 0) + amount
+                        self._total_stake[vaddr] = self._total_stake.get(vaddr, 0) + amount
+                elif tx.tx_type == TxType.UNSTAKE:
+                    vaddr = tx.payload.get("validator_address", "")
+                    amount = tx.payload.get("amount", 0)
+                    if vaddr and amount > 0:
+                        staker = tx.sender
+                        current = self._stakes.get(vaddr, {}).get(staker, 0)
+                        new_amount = max(0, current - amount)
+                        if vaddr in self._stakes:
+                            if new_amount == 0:
+                                self._stakes[vaddr].pop(staker, None)
+                            else:
+                                self._stakes[vaddr][staker] = new_amount
+                        self._total_stake[vaddr] = max(0, self._total_stake.get(vaddr, 0) - amount)
+                        release_block = i + UNBONDING_PERIOD
+                        if release_block > store_height:
+                            self._unbonding.append({
+                                "staker": staker,
+                                "validator": vaddr,
+                                "amount": amount,
+                                "release_block": release_block,
+                            })
 
         # Also load genesis validator from SQLite validator_registry table
         if self._store is not None:
@@ -964,6 +1159,11 @@ class Blockchain:
                     vpk_bytes = bytes.fromhex(vpk_hex)
                     self._validator_registry[vaddr] = vpk_bytes
                     self.consensus.add_validator(vaddr, vpk_bytes)
+            # Load stakes from SQLite (covers stakes persisted but not yet replayed from txs)
+            for staker, validator, amount in self._store.get_all_stakes():
+                if validator not in self._stakes or staker not in self._stakes.get(validator, {}):
+                    self._stakes.setdefault(validator, {})[staker] = amount
+                    self._total_stake[validator] = self._total_stake.get(validator, 0) + amount
 
         logger.info(f"Loaded {self._height + 1} blocks from SQLite")
         return True

@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.4.0-sprint1 (2026-03-25)
+
+### Genesis Validator On-Chain Transaction (SPRINT1-007)
+- Genesis validator now registered via REGISTER_VALIDATOR tx in genesis block
+  - Removes direct \_validator_registry / consensus.add_validator() writes from init_chain()
+  - \_append_block processes the genesis REGISTER_VALIDATOR tx uniformly
+  - Rollback and chain reload work correctly with the new genesis structure
+- Block.genesis() accepts optional transactions parameter
+- Genesis block transactions do not consume user-facing nonce slots
+  - Nonce tracking skipped for block index 0 in \_append_block_inner and \_load_from_sqlite
+  - Rollback nonce recomputation excludes genesis block txs
+- Fixed pre-existing dPoS bug: sha3_256() returns bytes, not hashlib object (.digest() removed)
+
+### Delegated Proof of Stake (dPoS) Consensus
+- New transaction types: `STAKE`, `DELEGATE`, `UNSTAKE`
+  - `STAKE`: self-stake weight on own validator (amount 1 - 1,000,000)
+  - `DELEGATE`: delegate stake weight to any registered validator
+  - `UNSTAKE`: begin unbonding (effective after 100-block UNBONDING_PERIOD)
+  - Factory classmethods: `Transaction.stake()`, `.delegate()`, `.unstake()`
+  - Payload validation: integer amount in [MIN_STAKE, MAX_STAKE], non-empty validator_address
+  - Allowed keys enforcement prevents dedup bypass
+- Stake-weighted validator selection in `consensus.py`
+  - Deterministic seed: `SHA3-256(parent_hash:block_index)` for unpredictable selection
+  - Weighted random: cumulative distribution over sorted validators by address
+  - Automatic PoA round-robin fallback when no validators have stake
+  - `_select_dpos()` static method for testability
+- Blockchain staking state (`blockchain.py`)
+  - `_stakes`: validator_addr -> {staker_addr: amount}
+  - `_total_stake`: validator_addr -> total stake weight
+  - `_unbonding`: list of pending unbonding entries with release_block
+  - Query methods: `get_validator_stake()`, `get_staker_info()`, `get_active_validators()`, `get_all_stakes()`
+  - STAKE/DELEGATE processing in `_append_block_inner`
+  - UNSTAKE processing with unbonding entry creation
+  - Mature unbonding cleanup in `_process_mature_unbondings()`
+  - Full rollback support in `_rollback_block` for all staking tx types
+  - State rebuild in `_load_from_sqlite` for chain reload
+  - submit_tx validation: registered validator check, insufficient stake check
+- SQLite persistence (`store.py`)
+  - New tables: `stakes (staker, validator, amount)`, `unbonding (staker, validator, amount, release_block)`
+  - Methods: `put_stake()`, `get_stake()`, `delete_stake()`, `get_all_stakes()`
+  - Methods: `put_unbonding()`, `get_mature_unbondings()`, `delete_unbonding()`
+  - `delete_blocks_from()` rebuilds stake state from remaining chain on rollback
+- JSON-RPC endpoints (`node.py`)
+  - Protected: `qv_stake`, `qv_delegate`, `qv_unstake`
+  - Public: `qv_getStake`, `qv_getValidatorStakes`
+- REST API endpoints (`rest_api.py`)
+  - `GET /api/v1/stakes` — all validator stakes
+  - `GET /api/v1/stakes/:validator` — specific validator stake info
+  - `POST /api/v1/stake` — stake (protected)
+  - `POST /api/v1/delegate` — delegate (protected)
+  - `POST /api/v1/unstake` — unstake (protected)
+- Configuration (`config.py`)
+  - `MIN_STAKE = 1`, `MAX_STAKE = 1_000_000`
+  - `UNBONDING_PERIOD = 100` blocks
+  - `EPOCH_LENGTH = 100` blocks (placeholder for Sprint 2)
+  - Version bumped to 0.4.0
+- 58 new tests in `tests/test_dpos.py`
+  - Transaction factory and serialization roundtrip tests
+  - Payload validation (bounds, types, missing fields, extra keys)
+  - Staking state management (stake, delegate, unstake, accumulation)
+  - Consensus selection (PoA fallback, determinism, weighted distribution)
+  - Rollback correctness (stake, delegate, unstake reversal)
+  - Unbonding period mechanics
+  - SQLite store unit tests
+  - Integration tests (block production, backward compatibility)
+  - Edge cases (zero amount, float amount, self-delegation, combined stakes)
+
 ## v0.3.0-sprint3 (2026-03-25)
 
 ### IPFS Integration for CLI (store/share/retrieve)

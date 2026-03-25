@@ -479,7 +479,9 @@ class TestForkAttacks:
         # Build 2-block main chain
         nonces = {}
         for _ in range(2):
-            expected = bc.consensus.select_validator(len(bc.chain))
+            parent = bc.chain[-1]
+            expected = bc.consensus.select_validator(
+                len(bc.chain), parent_hash=parent.block_hash)
             w = v1 if expected == v1.address else v2
             n = nonces.get(w.address, 0)
             tx = Transaction.notarize(w.address, f"{n:064x}", nonce=n)
@@ -494,7 +496,8 @@ class TestForkAttacks:
         fork_parent = bc.chain[0].block_hash
         fork_nonces = {}
         for i in range(1, 4):
-            expected = bc.consensus.select_validator(i)
+            expected = bc.consensus.select_validator(
+                i, parent_hash=fork_parent)
             w = v1 if expected == v1.address else v2
             n = fork_nonces.get(w.address, 0)
             tx = Transaction.notarize(w.address, f"ff{n:062x}", nonce=n)

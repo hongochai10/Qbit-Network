@@ -404,7 +404,8 @@ class TestChainPersistence:
         assert bc2.get_nonce(alice.address) == 3
         assert bc2.get_encryption_pk(alice.address) == alice.encryption_pk.hex()
         assert bc2.verify_document("ff" * 32) is not None
-        assert len(bc2.get_txs_by_sender(alice.address)) == 3
+        # 3 user txs + 1 genesis REGISTER_VALIDATOR tx
+        assert len(bc2.get_txs_by_sender(alice.address)) == 4
         assert len(bc2.get_txs_by_recipient(bob.address)) == 1
 
     def test_corrupt_db_block_detected(self, tmp_dir):
@@ -746,7 +747,8 @@ class TestQueryIntegration:
         wallet = Wallet.generate()
         bc, tx_ids = _build_chain(wallet, 5)
         sender_txs = bc.get_txs_by_sender(wallet.address)
-        assert len(sender_txs) == 5
+        # 5 notarize txs + 1 genesis REGISTER_VALIDATOR tx
+        assert len(sender_txs) == 6
 
     def test_nonexistent_queries_return_none(self):
         """Queries for nonexistent data return None/empty."""

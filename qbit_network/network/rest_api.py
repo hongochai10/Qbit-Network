@@ -128,6 +128,8 @@ class RESTApi:
         r.add_get("/address/{addr}", self._address_info)
         r.add_get("/notarizations/{hash}", self._notarization_proof)
         r.add_get("/validators", self._validators)
+        r.add_get("/stakes", self._all_stakes)
+        r.add_get("/stakes/{validator}", self._validator_stake)
         r.add_get("/pool", self._pool_summary)
         r.add_get("/pool/count", self._pool_count)
         r.add_post("/verify", self._verify)  # public -- no auth needed
@@ -140,6 +142,9 @@ class RESTApi:
         r.add_post("/store", self._store)
         r.add_post("/share", self._share)
         r.add_post("/register-validator", self._register_validator)
+        r.add_post("/stake", self._stake_rest)
+        r.add_post("/delegate", self._delegate_rest)
+        r.add_post("/unstake", self._unstake_rest)
 
     # ------------------------------------------------------------------
     # Public handlers
@@ -532,4 +537,131 @@ class RESTApi:
             return _err(400, str(e))
         except Exception as e:
             logger.error(f"REST register_validator: {e}")
+            return _err(500, "internal server error", status=500)
+
+    # ------------------------------------------------------------------
+    # Staking endpoints (public reads + protected writes)
+    # ------------------------------------------------------------------
+
+    async def _all_stakes(self, request: web.Request) -> web.Response:
+        try:
+            result = await self._node._rpc_get_validator_stakes()
+            return _ok({"validators": result, "total": len(result)})
+        except Exception as e:
+            logger.error(f"REST all_stakes: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _validator_stake(self, request: web.Request) -> web.Response:
+        validator = request.match_info.get("validator", "")
+        if not validator:
+            return _err(400, "validator address required")
+        try:
+            result = await self._node._rpc_get_stake(validator_address=validator)
+            return _ok(result)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST validator_stake: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _stake_rest(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return _err(400, "invalid JSON body")
+        if not isinstance(body, dict):
+            return _err(400, "request body must be a JSON object")
+
+        wallet_address = body.get("wallet_address", "")
+        validator_address = body.get("validator_address", "")
+        amount = body.get("amount", 0)
+
+        if not isinstance(wallet_address, str) or not wallet_address:
+            return _err(400, "wallet_address is required and must be a string")
+        if not isinstance(validator_address, str) or not validator_address:
+            return _err(400, "validator_address is required and must be a string")
+        if not isinstance(amount, int) or amount < 1:
+            return _err(400, "amount must be a positive integer")
+
+        try:
+            result = await self._node._rpc_stake(
+                wallet_address=wallet_address,
+                validator_address=validator_address,
+                amount=amount,
+            )
+            return _ok(result, status=201)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST stake: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _delegate_rest(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return _err(400, "invalid JSON body")
+        if not isinstance(body, dict):
+            return _err(400, "request body must be a JSON object")
+
+        wallet_address = body.get("wallet_address", "")
+        validator_address = body.get("validator_address", "")
+        amount = body.get("amount", 0)
+
+        if not isinstance(wallet_address, str) or not wallet_address:
+            return _err(400, "wallet_address is required and must be a string")
+        if not isinstance(validator_address, str) or not validator_address:
+            return _err(400, "validator_address is required and must be a string")
+        if not isinstance(amount, int) or amount < 1:
+            return _err(400, "amount must be a positive integer")
+
+        try:
+            result = await self._node._rpc_delegate(
+                wallet_address=wallet_address,
+                validator_address=validator_address,
+                amount=amount,
+            )
+            return _ok(result, status=201)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST delegate: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _unstake_rest(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return _err(400, "invalid JSON body")
+        if not isinstance(body, dict):
+            return _err(400, "request body must be a JSON object")
+
+        wallet_address = body.get("wallet_address", "")
+        validator_address = body.get("validator_address", "")
+        amount = body.get("amount", 0)
+
+        if not isinstance(wallet_address, str) or not wallet_address:
+            return _err(400, "wallet_address is required and must be a string")
+        if not isinstance(validator_address, str) or not validator_address:
+            return _err(400, "validator_address is required and must be a string")
+        if not isinstance(amount, int) or amount < 1:
+            return _err(400, "amount must be a positive integer")
+
+        try:
+            result = await self._node._rpc_unstake(
+                wallet_address=wallet_address,
+                validator_address=validator_address,
+                amount=amount,
+            )
+            return _ok(result, status=201)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST unstake: {e}")
             return _err(500, "internal server error", status=500)
