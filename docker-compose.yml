@@ -1,0 +1,67 @@
+version: "3.8"
+
+# QBit Network 3-validator testnet
+# Usage: docker-compose up -d
+# RPC: http://localhost:8545 (node1), :8546 (node2), :8547 (node3)
+
+services:
+  node1:
+    build: .
+    container_name: qbit-node1
+    command: >
+      --data-dir /data
+      --p2p-port 9000 --rpc-port 8545
+      --peers node2:9000 node3:9000
+      --rpc-token testnet-token-1
+    ports:
+      - "8545:8545"
+      - "9000:9000"
+    volumes:
+      - node1-data:/data
+    environment:
+      - QBIT_ALLOW_PRIVATE_PEERS=1
+    networks:
+      - qbit-net
+
+  node2:
+    build: .
+    container_name: qbit-node2
+    command: >
+      --data-dir /data
+      --p2p-port 9000 --rpc-port 8545
+      --peers node1:9000 node3:9000
+      --rpc-token testnet-token-2
+    ports:
+      - "8546:8545"
+    volumes:
+      - node2-data:/data
+    environment:
+      - QBIT_ALLOW_PRIVATE_PEERS=1
+    networks:
+      - qbit-net
+
+  node3:
+    build: .
+    container_name: qbit-node3
+    command: >
+      --data-dir /data
+      --p2p-port 9000 --rpc-port 8545
+      --peers node1:9000 node2:9000
+      --rpc-token testnet-token-3
+    ports:
+      - "8547:8545"
+    volumes:
+      - node3-data:/data
+    environment:
+      - QBIT_ALLOW_PRIVATE_PEERS=1
+    networks:
+      - qbit-net
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+
+networks:
+  qbit-net:
+    driver: bridge

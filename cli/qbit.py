@@ -377,6 +377,98 @@ def cmd_verify_proof(args):
             print(f"  Notarizer:  {proof['notarizer']}")
 
 
+def cmd_store(args):
+    """Store a document reference on-chain."""
+    if not os.path.isfile(args.file):
+        print(f"Error: file not found: {args.file}", file=sys.stderr)
+        sys.exit(1)
+
+    doc_hash = _file_hash(args.file)
+    token = args.token or os.environ.get("QBIT_RPC_TOKEN", "")
+    if not token:
+        token = getpass.getpass("RPC auth token: ")
+
+    wallet_addr = args.wallet
+    if not wallet_addr:
+        wallets = _load_all_wallets()
+        if len(wallets) == 1:
+            wallet_addr = list(wallets.keys())[0]
+        else:
+            print("Specify wallet with --wallet ADDRESS", file=sys.stderr)
+            sys.exit(1)
+
+    cid = args.cid or f"local:{doc_hash}"
+    metadata = args.metadata or os.path.basename(args.file)
+
+    result = _rpc_call(
+        args.rpc, "qv_store",
+        {"wallet_address": wallet_addr, "document_hash": doc_hash,
+         "cid": cid, "metadata": metadata},
+        token=token, verify_ssl=not args.insecure)
+
+    if "error" in result:
+        print(f"Error: {result['error']['message']}", file=sys.stderr)
+        sys.exit(1)
+
+    tx_id = result["result"]["tx_id"]
+    if args.json:
+        print(json.dumps({"tx_id": tx_id, "document_hash": doc_hash, "cid": cid}))
+    else:
+        print(f"Stored: {os.path.basename(args.file)}")
+        print(f"  SHA3-256: {doc_hash}")
+        print(f"  CID:      {cid}")
+        print(f"  TX ID:    {tx_id}")
+        print(f"  Note: Document hash recorded on-chain. File itself is NOT uploaded.")
+
+
+def cmd_share(args):
+    """Share a document with another user via ML-KEM encryption."""
+    if not os.path.isfile(args.file):
+        print(f"Error: file not found: {args.file}", file=sys.stderr)
+        sys.exit(1)
+
+    doc_hash = _file_hash(args.file)
+    token = args.token or os.environ.get("QBIT_RPC_TOKEN", "")
+    if not token:
+        token = getpass.getpass("RPC auth token: ")
+
+    wallet_addr = args.wallet
+    if not wallet_addr:
+        wallets = _load_all_wallets()
+        if len(wallets) == 1:
+            wallet_addr = list(wallets.keys())[0]
+        else:
+            print("Specify wallet with --wallet ADDRESS", file=sys.stderr)
+            sys.exit(1)
+
+    recipient = args.to
+    if not recipient:
+        print("Error: --to RECIPIENT_ADDRESS required", file=sys.stderr)
+        sys.exit(1)
+
+    cid = args.cid or f"local:{doc_hash}"
+
+    result = _rpc_call(
+        args.rpc, "qv_share",
+        {"wallet_address": wallet_addr, "recipient_address": recipient,
+         "cid": cid, "expires": args.expires},
+        token=token, verify_ssl=not args.insecure)
+
+    if "error" in result:
+        print(f"Error: {result['error']['message']}", file=sys.stderr)
+        sys.exit(1)
+
+    tx_id = result["result"]["tx_id"]
+    if args.json:
+        print(json.dumps({"tx_id": tx_id, "cid": cid, "recipient": recipient}))
+    else:
+        print(f"Shared: {os.path.basename(args.file)}")
+        print(f"  To:       {recipient}")
+        print(f"  CID:      {cid}")
+        print(f"  TX ID:    {tx_id}")
+        print(f"  Encrypted with ML-KEM-768 (quantum-resistant)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="qbit",
@@ -416,6 +508,23 @@ def main():
     pp.add_argument("--format", "-f", choices=["json", "html"], default="json",
                     help="Output format (default: json)")
 
+    # store
+    sp = sub.add_parser("store", help="Store a document reference on-chain")
+    sp.add_argument("file", help="File to store")
+    sp.add_argument("--wallet", default="", help="Wallet address")
+    sp.add_argument("--token", default="", help="RPC auth token")
+    sp.add_argument("--cid", default="", help="IPFS CID (optional, auto-generates local ref)")
+    sp.add_argument("--metadata", default="", help="Optional metadata")
+
+    # share
+    shp = sub.add_parser("share", help="Share a document with ML-KEM encryption")
+    shp.add_argument("file", help="File to share")
+    shp.add_argument("--to", default="", help="Recipient address (required)")
+    shp.add_argument("--wallet", default="", help="Wallet address")
+    shp.add_argument("--token", default="", help="RPC auth token")
+    shp.add_argument("--cid", default="", help="IPFS CID (optional)")
+    shp.add_argument("--expires", type=int, default=0, help="Expiry timestamp (0=never)")
+
     # verify-proof (offline)
     vpp = sub.add_parser("verify-proof", help="Verify proof offline (no node needed)")
     vpp.add_argument("proof_file", help="Proof JSON file")
@@ -435,6 +544,10 @@ def main():
         cmd_verify(args)
     elif args.command == "proof":
         cmd_proof_export(args)
+    elif args.command == "store":
+        cmd_store(args)
+    elif args.command == "share":
+        cmd_share(args)
     elif args.command == "verify-proof":
         cmd_verify_proof(args)
     else:
