@@ -49,8 +49,41 @@ SLASH_PERCENTAGE = 50        # percentage of total stake slashed for misbehaviou
 TLS_CERT_VALIDITY_DAYS = 365
 TLS_RENEWAL_THRESHOLD_DAYS = 30
 
+# Token economics
+TOKEN_NAME = "QBit"
+TOKEN_SYMBOL = "QBIT"
+TOKEN_DECIMALS = 8
+QUBIT_PER_QBIT = 10 ** TOKEN_DECIMALS  # 100_000_000
+MAX_SUPPLY = 1_000_000_000 * QUBIT_PER_QBIT  # 10^17
+
+# Block rewards
+INITIAL_BLOCK_REWARD = 5 * QUBIT_PER_QBIT  # 500_000_000 qubits
+HALVING_INTERVAL = 2_100_000
+
+# Fees (in qubits)
+TX_FEES = {
+    "TRANSFER": 100_000,
+    "NOTARIZE": 1_000_000,
+    "STORE": 2_000_000,
+    "SHARE": 1_000_000,
+    "REGISTER_KEY": 10_000_000,
+    "REGISTER_VALIDATOR": 100_000_000,
+    "STAKE": 1_000_000,
+    "DELEGATE": 1_000_000,
+    "UNSTAKE": 1_000_000,
+    "REVOKE_KEY": 0,
+    "EVIDENCE": 0,
+}
+FEE_BURN_PERCENT = 50
+
+# Financial activation
+FINANCIAL_ACTIVATION_HEIGHT = 0  # Active from genesis for new chains
+
+# Genesis allocation (in QBIT tokens, will be multiplied by QUBIT_PER_QBIT)
+GENESIS_BALANCE_QBIT = 20_000_000  # 20M QBIT
+
 # Version
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 # Pruning
 PRUNING_RETENTION = 10000     # blocks to keep during chain pruning

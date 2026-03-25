@@ -14,7 +14,10 @@ from .transaction import Transaction, TxType
 from .consensus import ProofOfAuthority
 from ..config import (MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH,
                       CHAIN_ID, MIN_STAKE, UNBONDING_PERIOD, EPOCH_LENGTH,
-                      SLASH_PERCENTAGE, PRUNING_RETENTION)
+                      SLASH_PERCENTAGE, PRUNING_RETENTION,
+                      TX_FEES, FEE_BURN_PERCENT, INITIAL_BLOCK_REWARD,
+                      HALVING_INTERVAL, MAX_SUPPLY, QUBIT_PER_QBIT,
+                      GENESIS_BALANCE_QBIT, FINANCIAL_ACTIVATION_HEIGHT)
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -112,6 +115,12 @@ class Blockchain:
         self._slashed_validators: set[str] = set()         # validators that have been slashed
         self._slashing_events: list[dict] = []             # [{validator, evidence_tx_id, amount_slashed, block_index}]
         self._processed_evidence: set[str] = set()         # validator_address values already slashed (dedup)
+
+        # Balance ledger (integer arithmetic only -- amounts in qubits)
+        self._balances: dict[str, int] = {}       # address -> balance in qubits
+        self._total_minted: int = 0
+        self._total_burned: int = 0
+        self._financial_active: bool = False      # set by init_chain or load when genesis balance exists
 
         # threading.Lock (not asyncio.Lock) is intentional here: SQLite operations
         # protected by this lock are synchronous and fast (sub-ms), so blocking the
@@ -238,6 +247,86 @@ class Blockchain:
         """Check if a validator has been slashed."""
         return address in self._slashed_validators
 
+    # ---- Balance ledger ----
+
+    def _credit(self, address: str, amount: int):
+        """Credit amount to address. Amount must be >= 0."""
+        if amount < 0:
+            raise ValueError("credit amount must be non-negative")
+        if amount == 0:
+            return
+        self._balances[address] = self._balances.get(address, 0) + amount
+
+    def _debit(self, address: str, amount: int):
+        """Debit amount from address. Raises ValueError if insufficient."""
+        if amount < 0:
+            raise ValueError("debit amount must be non-negative")
+        if amount == 0:
+            return
+        current = self._balances.get(address, 0)
+        if current < amount:
+            raise ValueError(f"insufficient balance: {current} < {amount}")
+        new_balance = current - amount
+        if new_balance == 0:
+            self._balances.pop(address, None)
+        else:
+            self._balances[address] = new_balance
+
+    def get_balance(self, address: str) -> int:
+        """Return balance in qubits for an address."""
+        return self._balances.get(address, 0)
+
+    def get_total_supply(self) -> dict:
+        """Return supply statistics."""
+        return {
+            "total_minted": self._total_minted,
+            "total_burned": self._total_burned,
+            "circulating": self._total_minted - self._total_burned,
+        }
+
+    def _calc_block_reward(self, block_index: int) -> int:
+        """Deterministic block reward with halving. Genesis (index 0) gets no reward."""
+        if block_index <= 0:
+            return 0
+        reward = INITIAL_BLOCK_REWARD >> (block_index // HALVING_INTERVAL)
+        remaining = MAX_SUPPLY - self._total_minted
+        return min(reward, max(0, remaining))
+
+    def activate_financial_layer(self, validator_address: str = ""):
+        """Activate the financial layer with genesis balance allocation.
+
+        Must be called after init_chain(). Idempotent -- safe to call multiple times.
+        When validator_address is provided, allocates GENESIS_BALANCE_QBIT to that address.
+        """
+        if self._financial_active:
+            return
+        self._financial_active = True
+        if validator_address and self.get_balance(validator_address) == 0:
+            genesis_balance = GENESIS_BALANCE_QBIT * QUBIT_PER_QBIT
+            self._credit(validator_address, genesis_balance)
+            self._total_minted += genesis_balance
+            if self._store is not None:
+                self._store.put_balance(validator_address, self.get_balance(validator_address))
+                self._store.put_supply("total_minted", self._total_minted)
+                self._store.put_supply("total_burned", self._total_burned)
+            logger.info(
+                f"Financial layer activated: {validator_address[:16]}... "
+                f"allocated {genesis_balance} qubits")
+
+    def _pending_debits(self, address: str) -> int:
+        """Sum of pending transfers + fees in the pool for an address."""
+        total = 0
+        for tx in self.tx_pool:
+            if tx.sender != address:
+                continue
+            fee = TX_FEES.get(tx.tx_type.value, 0)
+            total += fee
+            if tx.tx_type == TxType.TRANSFER:
+                total += tx.payload.get("amount", 0)
+            elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+                total += tx.payload.get("amount", 0)
+        return total
+
     # ---- Genesis ----
 
     def init_chain(self, validator_address: str, validator_sk: bytes,
@@ -273,6 +362,11 @@ class Blockchain:
             self._total_stake[validator_address] = MIN_STAKE
             if self._store is not None:
                 self._store.put_stake(validator_address, validator_address, MIN_STAKE)
+
+        # Genesis balance allocation -- only when explicitly requested
+        # (production code calls activate_financial_layer after init_chain)
+        # This keeps existing tests backward-compatible.
+
         logger.info(f"Genesis: {genesis.block_hash[:16]}...")
 
     # ---- Transaction pool ----
@@ -326,6 +420,33 @@ class Blockchain:
             if amount > current:
                 return False, (f"insufficient stake: want to unstake {amount}, "
                                f"have {current}")
+
+        # Financial layer balance checks (only when financial layer is active)
+        if self._financial_active:
+            # TRANSFER: balance check (fee + amount)
+            if tx.tx_type == TxType.TRANSFER:
+                if not tx.recipient:
+                    return False, "TRANSFER requires a recipient"
+                amount = tx.payload.get("amount", 0)
+                fee = TX_FEES.get("TRANSFER", 0)
+                pending = self._pending_debits(tx.sender)
+                available = self.get_balance(tx.sender) - pending
+                if available < amount + fee:
+                    return False, (f"insufficient balance: need {amount + fee}, "
+                                   f"available {available}")
+
+            # Balance check for fee-bearing types (except TRANSFER handled above)
+            if tx.tx_type != TxType.TRANSFER:
+                fee = TX_FEES.get(tx.tx_type.value, 0)
+                if fee > 0:
+                    extra_debit = 0
+                    if tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+                        extra_debit = tx.payload.get("amount", 0)
+                    pending = self._pending_debits(tx.sender)
+                    available = self.get_balance(tx.sender) - pending
+                    if available < fee + extra_debit:
+                        return False, (f"insufficient balance for fee: need {fee + extra_debit}, "
+                                       f"available {available}")
 
         # EVIDENCE: validator must be registered and not already slashed
         if tx.tx_type == TxType.EVIDENCE:
@@ -588,6 +709,59 @@ class Blockchain:
 
     def _rollback_block(self, block: Block, displaced: list[Transaction]):
         """Rollback a single block's indices and collect displaced transactions."""
+        idx = block.index
+
+        # --- Reverse balance changes (financial layer) ---
+        if idx > 0 and self._financial_active:
+            # Reverse mature unbonding credits that happened at this block
+            # (unbonding entries with release_block == idx would have been
+            #  credited and removed; we can't recover them here because they
+            #  are already gone from _unbonding. The full stake rebuild in
+            #  delete_blocks_from handles this, and _load_from_sqlite
+            #  recomputes balances. For in-memory rollbacks during reorg,
+            #  we re-scan to find unbonding entries that would have matured.)
+
+            # Reverse block reward
+            reward = self._calc_block_reward(idx)
+            if reward > 0:
+                bal = self._balances.get(block.validator, 0)
+                debit_amt = min(reward, bal)
+                if debit_amt > 0:
+                    self._debit(block.validator, debit_amt)
+                self._total_minted -= reward
+
+            # Reverse tx balance changes in reverse order
+            for tx in reversed(block.transactions):
+                fee = TX_FEES.get(tx.tx_type.value, 0)
+
+                # Reverse type-specific balance changes
+                if tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+                    amount = tx.payload.get("amount", 0)
+                    if amount > 0:
+                        self._credit(tx.sender, amount)
+                elif tx.tx_type == TxType.TRANSFER:
+                    amount = tx.payload["amount"]
+                    # Reverse: debit recipient, credit sender
+                    bal = self._balances.get(tx.recipient, 0)
+                    debit_amt = min(amount, bal)
+                    if debit_amt > 0:
+                        self._debit(tx.recipient, debit_amt)
+                    self._credit(tx.sender, amount)
+
+                # Reverse fee
+                if fee > 0:
+                    validator_share = fee // 2
+                    burn = fee - validator_share
+                    # Reverse validator fee credit
+                    bal = self._balances.get(block.validator, 0)
+                    debit_amt = min(validator_share, bal)
+                    if debit_amt > 0:
+                        self._debit(block.validator, debit_amt)
+                    # Reverse burn
+                    self._total_burned -= burn
+                    # Reverse sender fee debit
+                    self._credit(tx.sender, fee)
+
         self._block_by_hash.pop(block.block_hash, None)
         for tx in block.transactions:
             self._tx_by_id.pop(tx.tx_id, None)
@@ -787,6 +961,29 @@ class Blockchain:
                 if tx.nonce > current:
                     self._sender_nonce[tx.sender] = tx.nonce
 
+            # --- Fee deduction (sequential, checked against running balance) ---
+            # Genesis block txs are fee-exempt (bootstrapping).
+            # Financial layer only active when chain has minted supply.
+            if idx > 0 and self._financial_active:
+                fee = TX_FEES.get(tx.tx_type.value, 0)
+                if fee > 0:
+                    self._debit(tx.sender, fee)
+                    # Split fee: validator share (floor division), remainder burned
+                    validator_share = fee // 2
+                    burn = fee - validator_share
+                    self._credit(block.validator, validator_share)
+                    self._total_burned += burn
+
+                # Type-specific balance changes
+                if tx.tx_type == TxType.TRANSFER:
+                    amount = tx.payload["amount"]
+                    self._debit(tx.sender, amount)
+                    self._credit(tx.recipient, amount)
+                elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+                    amount = tx.payload.get("amount", 0)
+                    if amount > 0:
+                        self._debit(tx.sender, amount)
+
             if tx.tx_type == TxType.NOTARIZE:
                 doc_hash = tx.payload.get("documentHash", "")
                 if doc_hash:
@@ -916,8 +1113,20 @@ class Blockchain:
             elif tx.tx_type == TxType.EVIDENCE:
                 self._process_evidence_tx(tx, idx)
 
+        # Apply block reward (MINT is implicit -- not a user tx)
+        # Only active when chain has minted supply (financial layer active)
+        if idx > 0 and self._financial_active:
+            reward = self._calc_block_reward(idx)
+            if reward > 0:
+                self._credit(block.validator, reward)
+                self._total_minted += reward
+
         # Process mature unbondings (release_block <= current block index)
         self._process_mature_unbondings(idx)
+
+        # Persist balance changes to SQLite
+        if self._store is not None and self._financial_active:
+            self._persist_balances_after_block(block, idx)
 
         # Epoch transition: snapshot validators at epoch boundaries
         self._check_epoch_transition(idx)
@@ -927,6 +1136,9 @@ class Blockchain:
         remaining = []
         for entry in self._unbonding:
             if entry["release_block"] <= current_index:
+                # Credit balance back to staker on maturity
+                if self._financial_active:
+                    self._credit(entry["staker"], entry["amount"])
                 # Unbonding complete -- remove from store
                 if self._store is not None:
                     self._store.delete_unbonding(
@@ -935,6 +1147,26 @@ class Blockchain:
             else:
                 remaining.append(entry)
         self._unbonding = remaining
+
+    def _persist_balances_after_block(self, block: Block, idx: int):
+        """Persist balance changes to SQLite after processing a block."""
+        if self._store is None:
+            return
+        # Collect all addresses affected by this block
+        affected: set[str] = set()
+        affected.add(block.validator)  # receives fees + reward
+        for tx in block.transactions:
+            affected.add(tx.sender)
+            if tx.recipient:
+                affected.add(tx.recipient)
+        # Also include matured unbonding stakers (already processed)
+        for entry in self._unbonding:
+            if entry["release_block"] <= idx:
+                affected.add(entry["staker"])
+        for addr in affected:
+            self._store.put_balance(addr, self.get_balance(addr))
+        self._store.put_supply("total_minted", self._total_minted)
+        self._store.put_supply("total_burned", self._total_burned)
 
     def _process_evidence_tx(self, tx: Transaction, block_index: int):
         """Process an EVIDENCE transaction: verify double-sign proof and slash."""
@@ -1437,6 +1669,14 @@ class Blockchain:
                 self._slashing_events.append(event)
                 self._slashed_validators.add(event["validator"])
                 self._processed_evidence.add(event["validator"])
+
+            # Load balances from SQLite
+            for addr, amount in self._store.get_all_balances():
+                self._balances[addr] = amount
+            self._total_minted = self._store.get_supply("total_minted")
+            self._total_burned = self._store.get_supply("total_burned")
+            if self._total_minted > 0:
+                self._financial_active = True
 
         logger.info(f"Loaded {self._height + 1} blocks from SQLite")
         return True

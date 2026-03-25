@@ -130,6 +130,8 @@ class RESTApi:
         r.add_get("/validators", self._validators)
         r.add_get("/stakes", self._all_stakes)
         r.add_get("/stakes/{validator}", self._validator_stake)
+        r.add_get("/balance/{addr}", self._get_balance)
+        r.add_get("/supply", self._get_supply)
         r.add_get("/pool", self._pool_summary)
         r.add_get("/pool/count", self._pool_count)
         r.add_post("/verify", self._verify)  # public -- no auth needed
@@ -137,6 +139,7 @@ class RESTApi:
         r.add_get("/slashing-events", self._slashing_events)
 
         # Protected endpoints
+        r.add_post("/transfer", self._transfer_rest)
         r.add_post("/txs", self._submit_tx)
         r.add_post("/evidence", self._submit_evidence)
         r.add_post("/wallets", self._create_wallet)
@@ -277,9 +280,11 @@ class RESTApi:
         notarization_count = bc.get_notarization_count(addr)
 
         is_validator = bc.is_registered_validator(addr)
+        balance = bc.get_balance(addr)
 
         return _ok({
             "address": addr,
+            "balance": balance,
             "next_nonce": nonce,
             "encryption_pk": encryption_pk,
             "sent_tx_count": len(sent_tx_ids),
@@ -335,9 +340,68 @@ class RESTApi:
         result = await self._node._rpc_get_slashing_events(validator)
         return _ok(result)
 
+    async def _get_balance(self, request: web.Request) -> web.Response:
+        addr = request.match_info.get("addr", "")
+        if not addr:
+            return _err(400, "address is required")
+        try:
+            result = await self._node._rpc_get_balance(address=addr)
+            return _ok(result)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST get_balance: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _get_supply(self, request: web.Request) -> web.Response:
+        try:
+            result = await self._node._rpc_get_supply()
+            return _ok(result)
+        except Exception as e:
+            logger.error(f"REST get_supply: {e}")
+            return _err(500, "internal server error", status=500)
+
     # ------------------------------------------------------------------
     # Protected handlers
     # ------------------------------------------------------------------
+
+    async def _transfer_rest(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return _err(400, "invalid JSON body")
+        if not isinstance(body, dict):
+            return _err(400, "request body must be a JSON object")
+
+        wallet_address = body.get("wallet_address", "")
+        to_address = body.get("to_address", "")
+        amount = body.get("amount", 0)
+        memo = body.get("memo", "")
+
+        if not isinstance(wallet_address, str) or not wallet_address:
+            return _err(400, "wallet_address is required and must be a string")
+        if not isinstance(to_address, str) or not to_address:
+            return _err(400, "to_address is required and must be a string")
+        if not isinstance(amount, int) or amount <= 0:
+            return _err(400, "amount must be a positive integer")
+        if not isinstance(memo, str):
+            return _err(400, "memo must be a string")
+
+        try:
+            result = await self._node._rpc_transfer(
+                wallet_address=wallet_address,
+                to_address=to_address,
+                amount=amount,
+                memo=memo,
+            )
+            return _ok(result, status=201)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST transfer: {e}")
+            return _err(500, "internal server error", status=500)
 
     async def _submit_evidence(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):

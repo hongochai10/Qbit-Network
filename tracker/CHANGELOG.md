@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.5.0-sprint1: Core Balance Ledger + TRANSFER + Fees (2026-03-26)
+
+### New Features
+- **Balance Ledger**: Unified balance tracking with `_credit()` / `_debit()` as sole
+  mutation primitives. Integer arithmetic only. Sequential intra-block validation.
+- **TRANSFER Transaction**: New `TxType.TRANSFER` for token transfers between addresses.
+  Factory method, payload validation (amount, memo, recipient), balance checks.
+- **Transaction Fees**: Per-type fee schedule (`TX_FEES` config). 50% burned, 50% to
+  block validator. Enforced sequentially in `_append_block_inner()`.
+- **Block Rewards**: Implicit MINT (not a user tx). Initial 5 QBIT/block with halving
+  every 2,100,000 blocks. Supply capped at 1B QBIT.
+- **Genesis Balance**: 20M QBIT allocated to genesis validator via
+  `activate_financial_layer()`.
+- **Token Economics**: `TOKEN_NAME`, `TOKEN_SYMBOL`, `TOKEN_DECIMALS`, `QUBIT_PER_QBIT`,
+  `MAX_SUPPLY`, fee schedule, halving parameters.
+- **SQLite Persistence**: `balances` and `supply` tables for balance state persistence.
+- **Mature Unbonding Credits**: Unbonded stake credited back to balance on maturity.
+- **STAKE/DELEGATE Balance Deduction**: Staked amounts debited from sender balance.
+- **RPC**: `qv_getBalance`, `qv_transfer`, `qv_getSupply`.
+- **REST API**: `GET /balance/:addr`, `POST /transfer`, `GET /supply`.
+  `GET /address/:addr` now includes `balance` field.
+- **Rollback**: Full balance reversal on block rollback (fees, transfers, rewards).
+
+### Backward Compatibility
+- Financial layer is opt-in via `activate_financial_layer()`. Existing chains without
+  genesis balance allocation continue to work without fee enforcement.
+- All 1107 existing tests pass unchanged. 63 new financial tests added.
+
+### Version Bump
+- `VERSION` bumped from `0.4.0` to `0.5.0`.
+
 ## Round 15 Security Audit Fixes (2026-03-25)
 
 ### MEDIUM Fixes

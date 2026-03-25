@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS slashing_events (
     amount_slashed INTEGER NOT NULL,
     block_index INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS balances (
+    address TEXT PRIMARY KEY,
+    amount INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS supply (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_txs_sender ON txs(sender, nonce);
 CREATE INDEX IF NOT EXISTS idx_txs_recipient ON txs(recipient);
 CREATE INDEX IF NOT EXISTS idx_notarizations_first ON notarizations(doc_hash, is_first);
@@ -420,6 +428,44 @@ class SQLiteStore:
         if commit:
             self._db.commit()
 
+    # ---- Balance ledger ----
+
+    def put_balance(self, address: str, amount: int, commit: bool = True):
+        """Insert or update an address balance."""
+        self._db.execute(
+            "INSERT OR REPLACE INTO balances (address, amount) VALUES (?, ?)",
+            (address, amount))
+        if commit:
+            self._db.commit()
+
+    def get_balance(self, address: str) -> int:
+        """Get balance for an address."""
+        row = self._db.execute(
+            "SELECT amount FROM balances WHERE address=?",
+            (address,)).fetchone()
+        return row[0] if row else 0
+
+    def get_all_balances(self) -> list[tuple[str, int]]:
+        """Return all balances as (address, amount) pairs."""
+        rows = self._db.execute(
+            "SELECT address, amount FROM balances").fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def put_supply(self, key: str, value: int, commit: bool = True):
+        """Insert or update a supply counter."""
+        self._db.execute(
+            "INSERT OR REPLACE INTO supply (key, value) VALUES (?, ?)",
+            (key, value))
+        if commit:
+            self._db.commit()
+
+    def get_supply(self, key: str) -> int:
+        """Get a supply counter value."""
+        row = self._db.execute(
+            "SELECT value FROM supply WHERE key=?",
+            (key,)).fetchone()
+        return row[0] if row else 0
+
     def prune_blocks(self, before_index: int) -> int:
         """Delete block data and associated txs for blocks with idx < before_index.
 
@@ -582,6 +628,10 @@ class SQLiteStore:
                 c.execute("DELETE FROM epochs")
             c.execute("DELETE FROM slashing_events WHERE block_index >= ?",
                        (from_index,))
+
+            # Clear balances and supply -- will be rebuilt from chain on reload
+            c.execute("DELETE FROM balances")
+            c.execute("DELETE FROM supply")
 
             self._db.commit()
             row = self._db.execute("SELECT MAX(idx) FROM blocks").fetchone()

@@ -261,6 +261,8 @@ class FullNode:
         m("qv_getValidatorStakes", self._rpc_get_validator_stakes)
         m("qv_getEpoch", self._rpc_get_epoch)
         m("qv_getSlashingEvents", self._rpc_get_slashing_events)
+        m("qv_getBalance", self._rpc_get_balance)
+        m("qv_getSupply", self._rpc_get_supply)
 
         # Protected (require auth token)
         m("qv_notarize", self._rpc_notarize)
@@ -273,6 +275,7 @@ class FullNode:
         m("qv_delegate", self._rpc_delegate)
         m("qv_unstake", self._rpc_unstake)
         m("qv_submitEvidence", self._rpc_submit_evidence)
+        m("qv_transfer", self._rpc_transfer)
         m("qv_getSharedWithMe", self._rpc_shared_with_me)
         m("qv_getSharedSecret", self._rpc_get_shared_secret)
         m("qv_decapsulateShared", self._rpc_decapsulate_shared)
@@ -633,6 +636,64 @@ class FullNode:
             "encryption_pk": w.encryption_pk.hex(),
         }
 
+    # ---- Balance & Transfer RPC ----
+
+    async def _rpc_get_balance(self, address=""):
+        """Get balance for an address (public)."""
+        if not isinstance(address, str) or not address:
+            raise ValueError("address must be non-empty string")
+        from .config import QUBIT_PER_QBIT, TOKEN_SYMBOL
+        balance = self.blockchain.get_balance(address)
+        return {
+            "address": address,
+            "balance": balance,
+            "formatted": f"{balance / QUBIT_PER_QBIT:.8f} {TOKEN_SYMBOL}",
+        }
+
+    async def _rpc_get_supply(self):
+        """Get total supply info (public)."""
+        from .config import QUBIT_PER_QBIT, TOKEN_SYMBOL, MAX_SUPPLY
+        supply = self.blockchain.get_total_supply()
+        return {
+            "total_minted": supply["total_minted"],
+            "total_burned": supply["total_burned"],
+            "circulating": supply["circulating"],
+            "max_supply": MAX_SUPPLY,
+            "formatted_circulating": f"{supply['circulating'] / QUBIT_PER_QBIT:.8f} {TOKEN_SYMBOL}",
+        }
+
+    async def _rpc_transfer(self, wallet_address="", to_address="",
+                            amount=0, memo=""):
+        """Transfer QBIT tokens (protected)."""
+        if not isinstance(wallet_address, str) or not wallet_address:
+            raise ValueError("wallet_address must be non-empty string")
+        if not isinstance(to_address, str) or not to_address:
+            raise ValueError("to_address must be non-empty string")
+        if not isinstance(amount, int) or amount <= 0:
+            raise ValueError("amount must be a positive integer")
+        if not isinstance(memo, str):
+            raise ValueError("memo must be a string")
+        if len(memo) > 256:
+            raise ValueError("memo exceeds 256 characters")
+        w = self._get_wallet(wallet_address)
+        if w.address == to_address:
+            raise ValueError("cannot transfer to self")
+        async with self._lock_for(w.address):
+            tx = Transaction.transfer(
+                sender=w.address,
+                recipient=to_address,
+                amount=amount,
+                memo=memo,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
+        return {"tx_id": result, "amount": amount, "to": to_address}
+
     # ---- Epoch & Slashing RPC ----
 
     async def _rpc_get_epoch(self):
@@ -786,6 +847,9 @@ class FullNode:
             self.blockchain.init_chain(
                 validator_wallet.address, validator_wallet.signing_sk,
                 validator_pk=validator_wallet.signing_pk)
+
+            # Activate financial layer with genesis balance allocation
+            self.blockchain.activate_financial_layer(validator_wallet.address)
 
             # Auto-register validator's encryption_pk on-chain
             reg_tx = Transaction.register_key(

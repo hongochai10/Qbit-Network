@@ -2,6 +2,64 @@
 
 ## Implemented
 
+### v0.5.0-sprint1 (2026-03-26)
+- [x] Core Balance Ledger
+  - `_balances` dict with `_credit()` / `_debit()` as SOLE mutation primitives
+  - `_debit()` raises ValueError on insufficient balance (never clamps)
+  - Integer arithmetic only -- no floats anywhere in the financial layer
+  - `get_balance(address)` and `get_total_supply()` query methods
+  - `_total_minted` / `_total_burned` supply counters
+  - Financial layer activated via `activate_financial_layer()` (backward-compatible)
+- [x] TRANSFER Transaction Type
+  - `TxType.TRANSFER` with payload: `{amount: int, memo?: str}`
+  - `Transaction.transfer()` factory method
+  - Payload validation: positive int amount, non-empty recipient, no self-transfer, memo <= 256 chars
+  - Balance check on submit: amount + fee <= available (minus pending debits)
+  - Double-spend prevention via sequential intra-block balance validation
+- [x] Transaction Fees
+  - Per-type fee schedule in `TX_FEES` config dict (qubits)
+  - Fee split: 50% to block validator, 50% burned
+  - Fee deduction sequential within block (running balance, not pre-block snapshot)
+  - Fee-free types: REVOKE_KEY, EVIDENCE
+  - Pre-admission balance check in `submit_tx()` (with pending debit tracking)
+- [x] Block Rewards (Implicit MINT)
+  - `_calc_block_reward()` with halving every 2,100,000 blocks
+  - Initial reward: 5 QBIT (500,000,000 qubits) per block
+  - Supply cap: MAX_SUPPLY = 1B QBIT, reward capped at remaining supply
+  - Applied after all tx processing in `_append_block_inner()` (system-implicit, NOT a user tx)
+  - Genesis block (index 0) gets no reward
+- [x] Genesis Balance Allocation
+  - 20M QBIT allocated to genesis validator on `activate_financial_layer()`
+  - Idempotent -- safe to call multiple times
+- [x] Balance Rollback
+  - `_rollback_block()` reverses all balance changes (fees, transfers, rewards)
+  - Reverse order processing: reward first, then txs in reverse
+- [x] SQLite Persistence
+  - `balances` and `supply` tables in SQLite schema
+  - `put_balance()`, `get_balance()`, `get_all_balances()`, `put_supply()`, `get_supply()`
+  - Balances and supply counters cleared on rollback (`delete_blocks_from`)
+  - Balances rebuilt from SQLite on `_load_from_sqlite()`
+- [x] Mature Unbonding Credits Balance
+  - `_process_mature_unbondings()` credits staker balance when unbonding completes
+- [x] STAKE/DELEGATE Balance Deduction
+  - Staked amount debited from sender balance on-chain
+- [x] RPC Methods
+  - `qv_getBalance(address)` -- public
+  - `qv_transfer(wallet_address, to_address, amount, memo)` -- protected
+  - `qv_getSupply()` -- public
+- [x] REST API Endpoints
+  - `GET /api/v1/balance/:addr` -- balance in qubits + formatted
+  - `POST /api/v1/transfer` -- submit transfer (protected)
+  - `GET /api/v1/supply` -- total minted, burned, circulating
+  - `GET /api/v1/address/:addr` now includes `balance` field
+- [x] Token Economics Config
+  - TOKEN_NAME="QBit", TOKEN_SYMBOL="QBIT", TOKEN_DECIMALS=8
+  - QUBIT_PER_QBIT = 100,000,000 (smallest unit)
+  - MAX_SUPPLY = 1,000,000,000 QBIT (10^17 qubits)
+  - INITIAL_BLOCK_REWARD = 5 QBIT, HALVING_INTERVAL = 2,100,000
+  - GENESIS_BALANCE_QBIT = 20,000,000 QBIT
+- [x] 63 new tests covering all financial layer features
+
 ### v0.4.0-sprint3 (2026-03-25)
 - [x] TLS Auto-Provisioning (ISS-016)
   - `TLSManager` class in `qbit_network/network/tls_manager.py`

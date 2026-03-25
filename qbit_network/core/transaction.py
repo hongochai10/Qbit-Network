@@ -1,4 +1,4 @@
-"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, STAKE, DELEGATE, UNSTAKE, EVIDENCE."""
+"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER."""
 import json
 import re
 import time
@@ -18,6 +18,7 @@ class TxType(str, Enum):
     DELEGATE = "DELEGATE"
     UNSTAKE = "UNSTAKE"
     EVIDENCE = "EVIDENCE"
+    TRANSFER = "TRANSFER"
 
 
 _HEX_RE = re.compile(r'^[0-9a-fA-F]+$')
@@ -95,6 +96,7 @@ class Transaction:
                           "block_a_sig", "block_b_sig", "block_index",
                           "validator_address",
                           "block_a_header", "block_b_header"},
+        TxType.TRANSFER: {"amount", "memo"},
     }
 
     # EVIDENCE payloads contain two ML-DSA-65 signatures (3309 bytes each = 6618 hex chars)
@@ -196,6 +198,21 @@ class Transaction:
             vaddr = self.payload.get("validator_address", "")
             if not isinstance(vaddr, str) or not vaddr:
                 return False, "validator_address must be non-empty string"
+
+        elif self.tx_type == TxType.TRANSFER:
+            amount = self.payload.get("amount")
+            if not isinstance(amount, int) or amount <= 0:
+                return False, "amount must be a positive integer"
+            memo = self.payload.get("memo")
+            if memo is not None:
+                if not isinstance(memo, str):
+                    return False, "memo must be a string"
+                if len(memo) > 256:
+                    return False, "memo exceeds 256 characters"
+            if not self.recipient:
+                return False, "TRANSFER requires a recipient"
+            if self.recipient == self.sender:
+                return False, "cannot transfer to self"
 
         elif self.tx_type == TxType.EVIDENCE:
             et = self.payload.get("evidence_type", "")
@@ -360,6 +377,17 @@ class Transaction:
         return cls(
             tx_type=TxType.UNSTAKE, sender=sender, nonce=nonce,
             payload={"amount": amount, "validator_address": validator_address},
+        )
+
+    @classmethod
+    def transfer(cls, sender: str, recipient: str, amount: int,
+                 memo: str = "", nonce: int = 0) -> 'Transaction':
+        payload = {"amount": amount}
+        if memo:
+            payload["memo"] = memo
+        return cls(
+            tx_type=TxType.TRANSFER, sender=sender,
+            recipient=recipient, nonce=nonce, payload=payload,
         )
 
     @classmethod
