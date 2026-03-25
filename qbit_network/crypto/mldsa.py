@@ -18,12 +18,16 @@ class MLDSA:
         return secret_key, public_key
 
     @staticmethod
-    def sign(secret_key: bytes, message: bytes) -> bytes:
+    def sign(secret_key, message: bytes) -> bytes:
         """Sign message with ML-DSA secret key.
+
+        ``secret_key`` may be ``bytes`` or ``SecureBytes``.
         Raises RuntimeError on failure (e.g. corrupted key).
         """
+        # Support SecureBytes transparently
+        sk_bytes = bytes(secret_key) if not isinstance(secret_key, bytes) else secret_key
         try:
-            with oqs.Signature(MLDSA_ALGORITHM, secret_key=secret_key) as signer:
+            with oqs.Signature(MLDSA_ALGORITHM, secret_key=sk_bytes) as signer:
                 return signer.sign(message)
         except Exception as e:
             raise RuntimeError(f"ML-DSA signing failed: {e}") from e

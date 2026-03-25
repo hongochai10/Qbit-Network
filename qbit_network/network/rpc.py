@@ -9,8 +9,12 @@ import secrets
 import ssl
 import tempfile
 from aiohttp import web
-from ..config import MAX_RPC_BODY, MAX_RPC_BATCH, RPC_RATE_LIMIT, RPC_RATE_BURST
+from ..config import (
+    MAX_RPC_BODY, MAX_RPC_BATCH, RPC_RATE_LIMIT, RPC_RATE_BURST,
+    TLS_CERT_VALIDITY_DAYS, TLS_RENEWAL_THRESHOLD_DAYS,
+)
 from .rate_limiter import RateLimiter
+from .tls_manager import TLSManager
 
 logger = logging.getLogger("qbit_network.rpc")
 
@@ -92,15 +96,19 @@ class RPCServer:
 
     def __init__(self, host: str = "0.0.0.0", port: int = 8545,
                  auth_token: str = "", tls_cert: str = "", tls_key: str = "",
-                 tls_self_signed: bool = False, data_dir: str = ""):
+                 tls_self_signed: bool = False, data_dir: str = "",
+                 tls_auto: bool = False, tls_hostname: str = "localhost"):
         self.host = host
         self.port = port
         self.auth_token = auth_token or secrets.token_hex(32)
         self.tls_cert = tls_cert
         self.tls_key = tls_key
         self.tls_self_signed = tls_self_signed
+        self.tls_auto = tls_auto
+        self.tls_hostname = tls_hostname
         self.data_dir = data_dir
         self._tls_active = False
+        self._tls_manager: TLSManager | None = None
         self._methods: dict[str, object] = {}
         self._rate_limiter = RateLimiter(RPC_RATE_LIMIT, RPC_RATE_BURST)
         self._cleanup_task = None
@@ -170,19 +178,39 @@ class RPCServer:
 
         ssl_ctx = None
         if self.tls_cert and self.tls_key:
+            # External cert mode — use TLSManager for watching/reload
+            self._tls_manager = TLSManager(
+                data_dir=self.data_dir or tempfile.gettempdir(),
+                hostname=self.tls_hostname,
+            )
+            # Point manager paths at the user-supplied files
+            self._tls_manager.cert_path = self.tls_cert
+            self._tls_manager.key_path = self.tls_key
             # Check key file permissions
             key_mode = os.stat(self.tls_key).st_mode & 0o777
             if key_mode & 0o077:
                 logger.warning(
                     f"TLS key file {self.tls_key} has permissive permissions "
                     f"({oct(key_mode)}), recommend 0o600")
-            ssl_ctx = _create_ssl_context(self.tls_cert, self.tls_key)
+            ssl_ctx = self._tls_manager.get_ssl_context()
             self._tls_active = True
-        elif self.tls_self_signed:
-            cert, key = _generate_self_signed(self.data_dir)
-            ssl_ctx = _create_ssl_context(cert, key)
+            # Start watcher for external cert hot-reload
+            await self._tls_manager.start_watcher()
+            self._tls_manager.install_sighup_handler()
+        elif self.tls_auto or self.tls_self_signed:
+            # Auto-managed self-signed cert mode
+            self._tls_manager = TLSManager(
+                data_dir=self.data_dir or tempfile.gettempdir(),
+                hostname=self.tls_hostname,
+                validity_days=TLS_CERT_VALIDITY_DAYS,
+                renewal_threshold_days=TLS_RENEWAL_THRESHOLD_DAYS,
+            )
+            self._tls_manager.ensure_certificate()
+            ssl_ctx = self._tls_manager.get_ssl_context()
             self._tls_active = True
-            logger.warning("Using self-signed TLS certificate (development only)")
+            # Start watcher for auto-renewal checking
+            await self._tls_manager.start_watcher()
+            logger.warning("Using auto-managed self-signed TLS certificate")
 
         site = web.TCPSite(self._runner, self.host, self.port, ssl_context=ssl_ctx)
         await site.start()
@@ -197,6 +225,8 @@ class RPCServer:
     async def stop(self):
         if self._cleanup_task and not self._cleanup_task.done():
             self._cleanup_task.cancel()
+        if self._tls_manager:
+            await self._tls_manager.stop_watcher()
         if self._runner:
             await self._runner.cleanup()
 

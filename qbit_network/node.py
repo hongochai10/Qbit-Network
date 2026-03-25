@@ -32,7 +32,8 @@ class FullNode:
                  rpc_port: int = DEFAULT_RPC_PORT, data_dir: str = "",
                  bootstrap: list[str] | None = None, rpc_token: str = "",
                  tls_cert: str = "", tls_key: str = "",
-                 tls_self_signed: bool = False):
+                 tls_self_signed: bool = False, tls_auto: bool = False,
+                 tls_hostname: str = "localhost"):
         self.data_dir = data_dir
         self.blockchain = Blockchain(data_dir=data_dir)
         self.wallets: dict[str, Wallet] = {}
@@ -41,7 +42,8 @@ class FullNode:
         self.p2p = P2PNode(host, p2p_port, node_id=secrets.token_hex(16))
         self.rpc = RPCServer(host, rpc_port, auth_token=rpc_token,
                              tls_cert=tls_cert, tls_key=tls_key,
-                             tls_self_signed=tls_self_signed, data_dir=data_dir)
+                             tls_self_signed=tls_self_signed, data_dir=data_dir,
+                             tls_auto=tls_auto, tls_hostname=tls_hostname)
         self.ws_manager = WebSocketManager()
         self.bootstrap = bootstrap or []
         self._running = False
@@ -844,6 +846,10 @@ class FullNode:
         await self.rpc.stop()
         self.blockchain.save()
         self._save_wallets()
+        # Zero all wallet secret key material
+        for w in self.wallets.values():
+            if hasattr(w, 'close'):
+                w.close()
         logger.info("Node stopped")
 
     async def _block_loop(self):

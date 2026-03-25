@@ -3,6 +3,30 @@
 ## Implemented
 
 ### v0.4.0-sprint3 (2026-03-25)
+- [x] TLS Auto-Provisioning (ISS-016)
+  - `TLSManager` class in `qbit_network/network/tls_manager.py`
+  - Auto-generated self-signed certs with proper X.509 fields (CN, SAN, BasicConstraints)
+  - Certificate file management: auto-renew self-signed certs before expiry
+  - External cert support: watches cert files for changes, hot-reload SSL context
+  - SIGHUP handler for manual TLS context reload (Unix)
+  - Atomic writes (tempfile + os.replace) for cert and key files
+  - CLI flags: `--tls-auto`, `--tls-hostname`; `--tls-self-signed` preserved as alias
+  - Config: `TLS_CERT_VALIDITY_DAYS = 365`, `TLS_RENEWAL_THRESHOLD_DAYS = 30`
+  - Integrated into RPCServer and FullNode startup
+  - 34 new tests (generation, expiry, renewal, SSL context, watcher, validation, helpers)
+- [x] Secure Key Material Zeroing (ISS-001)
+  - `SecureBytes` class in `qbit_network/crypto/secure_bytes.py`
+  - ctypes-backed mutable buffer with explicit `zero()` method
+  - `__bytes__`, `__len__`, `hex()`, `__eq__`, `__hash__` for bytes-like API
+  - Context manager and `__del__` for automatic zeroing
+  - Wallet wraps `signing_sk` and `encryption_sk` in SecureBytes
+  - `Wallet.close()` / context manager zeros all secret key material
+  - `MLDSA.sign()` and `MLKEM.decapsulate()` accept SecureBytes transparently
+  - AES-derived keys (scrypt dk) zeroed after encrypt/decrypt in wallet
+  - Decrypted plaintext buffer zeroed after key extraction
+  - Node `stop()` zeros all wallet keys on shutdown
+  - Graceful fallback to bytearray if ctypes unavailable
+  - 42 new tests (unit, integration, GC, wallet lifecycle)
 - [x] Peer Reputation Scoring (ISS-009)
   - `PeerReputation` class in `qbit_network/network/reputation.py`
   - 8 event types: valid_block (+10), valid_tx (+1), invalid_block (-50), invalid_tx (-10), auth_failed (-100), timeout (-5), rate_limited (-20), protocol_error (-30)

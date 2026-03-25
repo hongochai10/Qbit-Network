@@ -2,6 +2,35 @@
 
 ## v0.4.0-sprint3 (2026-03-25)
 
+### TLS Auto-Provisioning (ISS-016)
+- New `TLSManager` class in `qbit_network/network/tls_manager.py`
+- Auto-generates self-signed ECC (P-256) certificates with proper X.509 fields
+- Certificate CN set to configured hostname; SAN includes hostname, localhost, 127.0.0.1, ::1
+- BasicConstraints(ca=False) extension for correct self-signed cert behavior
+- Auto-renewal: checks cert expiry against configurable threshold (default 30 days)
+- External cert hot-reload: watches file modification times, reloads SSL context on change
+- SIGHUP signal handler triggers manual TLS context reload (Unix platforms)
+- Atomic file writes for cert and key using tempfile + os.replace
+- Key files written with 0o600 permissions
+- New CLI flags: `--tls-auto` (auto-manage certs), `--tls-hostname` (cert CN/SAN)
+- `--tls-self-signed` preserved as backward-compatible alias for `--tls-auto`
+- Background async watcher task for periodic cert change detection
+- Config constants: `TLS_CERT_VALIDITY_DAYS`, `TLS_RENEWAL_THRESHOLD_DAYS`
+
+### Secure Key Material Zeroing (ISS-001)
+- New `SecureBytes` class in `qbit_network/crypto/secure_bytes.py`
+- ctypes-backed mutable byte buffer with explicit `zero()` to scrub key material
+- Full bytes-like interface: `__bytes__`, `__len__`, `hex()`, `__eq__`, `__hash__`
+- Context manager and destructor auto-zero for defense in depth
+- `Wallet.__init__` wraps `signing_sk` / `encryption_sk` in SecureBytes
+- `Wallet.close()` and `Wallet.__exit__` zero all secret keys
+- `MLDSA.sign()` and `MLKEM.decapsulate()` transparently accept SecureBytes
+- scrypt-derived keys zeroed after wallet encrypt/decrypt operations
+- Decrypted plaintext buffer zeroed after key extraction in `_decrypt()`
+- `FullNode.stop()` calls `wallet.close()` for all loaded wallets
+- Fallback to bytearray with best-effort zeroing if ctypes is unavailable
+- 42 new tests covering unit, crypto integration, wallet lifecycle, and GC
+
 ### Peer Reputation Scoring (ISS-009)
 - New `PeerReputation` class in `qbit_network/network/reputation.py`
 - Score-based tracking with 8 event types (valid_block, invalid_block, auth_failed, etc.)

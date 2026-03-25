@@ -45,6 +45,10 @@ UNBONDING_PERIOD = 100       # blocks until unstaked weight is released
 EPOCH_LENGTH = 100           # blocks per epoch
 SLASH_PERCENTAGE = 50        # percentage of total stake slashed for misbehaviour
 
+# TLS
+TLS_CERT_VALIDITY_DAYS = 365
+TLS_RENEWAL_THRESHOLD_DAYS = 30
+
 # Version
 VERSION = "0.4.0"
 

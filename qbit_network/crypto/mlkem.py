@@ -41,21 +41,24 @@ class MLKEM:
             raise ValueError(f"ML-KEM encapsulation failed: {e}") from e
 
     @staticmethod
-    def decapsulate(secret_key: bytes, ciphertext: bytes) -> bytes:
+    def decapsulate(secret_key, ciphertext: bytes) -> bytes:
         """Decapsulate to recover shared secret.
 
+        ``secret_key`` may be ``bytes`` or ``SecureBytes``.
         Raises ValueError on invalid inputs.
         """
-        if len(secret_key) != MLKEM_SK_SIZE:
+        # Support SecureBytes transparently
+        sk_bytes = bytes(secret_key) if not isinstance(secret_key, bytes) else secret_key
+        if len(sk_bytes) != MLKEM_SK_SIZE:
             raise ValueError(
-                f"invalid ML-KEM secret key length: {len(secret_key)}, "
+                f"invalid ML-KEM secret key length: {len(sk_bytes)}, "
                 f"expected {MLKEM_SK_SIZE}")
         if len(ciphertext) != MLKEM_CT_SIZE:
             raise ValueError(
                 f"invalid ML-KEM ciphertext length: {len(ciphertext)}, "
                 f"expected {MLKEM_CT_SIZE}")
         try:
-            with oqs.KeyEncapsulation(MLKEM_ALGORITHM, secret_key=secret_key) as kem:
+            with oqs.KeyEncapsulation(MLKEM_ALGORITHM, secret_key=sk_bytes) as kem:
                 return kem.decap_secret(ciphertext)
         except Exception as e:
             raise ValueError(f"ML-KEM decapsulation failed: {e}") from e

@@ -32,6 +32,10 @@ async def main():
     parser.add_argument("--tls-key", default="", help="Path to TLS private key PEM file")
     parser.add_argument("--tls-self-signed", action="store_true",
                         help="Generate self-signed TLS cert (development only)")
+    parser.add_argument("--tls-auto", action="store_true",
+                        help="Auto-generate and manage self-signed TLS cert in data_dir/tls/")
+    parser.add_argument("--tls-hostname", default="localhost",
+                        help="Hostname for TLS cert CN/SAN (default: localhost)")
     args = parser.parse_args()
 
     validator = None
@@ -53,6 +57,8 @@ async def main():
         tls_cert=args.tls_cert,
         tls_key=args.tls_key,
         tls_self_signed=args.tls_self_signed,
+        tls_auto=args.tls_auto,
+        tls_hostname=args.tls_hostname,
     )
 
     await node.start(validator_wallet=validator)
