@@ -1033,14 +1033,12 @@ var App = (function() {
     initTabs();
     loadSettings();
 
-    // If we have a saved URL, auto-connect
-    if (apiBase) {
-      $("apiUrl").value = apiBase;
-      connect();
-    } else {
-      // Default URL
-      $("apiUrl").value = window.location.protocol + "//" + window.location.host;
+    // Auto-connect: use saved URL or default to same origin
+    if (!apiBase) {
+      apiBase = window.location.protocol + "//" + window.location.host;
     }
+    $("apiUrl").value = apiBase;
+    connect();
 
     // Handle Enter key in search fields
     $("txSearchInput").addEventListener("keydown", function(e) {
