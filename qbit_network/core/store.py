@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS validator_registry (
     address TEXT PRIMARY KEY,
     pubkey TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS revoked_keys (
+    address TEXT NOT NULL,
+    key_type TEXT NOT NULL,
+    tx_id TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (address, key_type)
+);
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -206,6 +214,44 @@ class SQLiteStore:
         if commit:
             self._db.commit()
 
+    # ---- Revocation registry ----
+
+    def put_revocation(self, address: str, key_type: str, tx_id: str,
+                       timestamp: float, reason: str, commit: bool = True):
+        """Record a key revocation."""
+        self._db.execute(
+            "INSERT OR REPLACE INTO revoked_keys "
+            "(address, key_type, tx_id, timestamp, reason) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (address, key_type, tx_id, timestamp, reason))
+        if commit:
+            self._db.commit()
+
+    def get_revocation(self, address: str, key_type: str) -> dict | None:
+        """Get revocation info, or None."""
+        row = self._db.execute(
+            "SELECT tx_id, timestamp, reason FROM revoked_keys "
+            "WHERE address=? AND key_type=?",
+            (address, key_type)).fetchone()
+        if row:
+            return {"tx_id": row[0], "timestamp": row[1], "reason": row[2]}
+        return None
+
+    def delete_revocation(self, address: str, key_type: str, commit: bool = True):
+        """Remove a revocation (for rollback)."""
+        self._db.execute(
+            "DELETE FROM revoked_keys WHERE address=? AND key_type=?",
+            (address, key_type))
+        if commit:
+            self._db.commit()
+
+    def get_all_revocations(self) -> list[tuple[str, str, str, float, str]]:
+        """Return all revocations as (address, key_type, tx_id, timestamp, reason)."""
+        rows = self._db.execute(
+            "SELECT address, key_type, tx_id, timestamp, reason "
+            "FROM revoked_keys").fetchall()
+        return [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
+
     def block_hash_exists(self, h: str) -> bool:
         return self._db.execute(
             "SELECT 1 FROM blocks WHERE hash=?", (h,)).fetchone() is not None
@@ -213,6 +259,17 @@ class SQLiteStore:
     def tx_exists(self, tx_id: str) -> bool:
         return self._db.execute(
             "SELECT 1 FROM txs WHERE tx_id=?", (tx_id,)).fetchone() is not None
+
+    def get_blocks_range(self, start: int, end: int) -> list[Block]:
+        """Return blocks with start <= idx < end, in order."""
+        rows = self._db.execute(
+            "SELECT data FROM blocks WHERE idx >= ? AND idx < ? ORDER BY idx",
+            (start, end)).fetchall()
+        return [Block.from_dict(json.loads(r[0])) for r in rows]
+
+    def get_blocks_count(self) -> int:
+        """Return total number of blocks stored."""
+        return self._height + 1 if self._height >= 0 else 0
 
     def latest_block(self) -> Block | None:
         return self.get_block(self._height) if self._height >= 0 else None
@@ -225,12 +282,13 @@ class SQLiteStore:
         """
         c = self._db.cursor()
         try:
-            # Collect validator addresses from REGISTER_VALIDATOR txs being rolled back
+            # Collect validator addresses and revocations from rolled-back blocks
             # so we can clean them up atomically within this transaction
             rows = c.execute(
                 "SELECT data FROM blocks WHERE idx >= ? ORDER BY idx", (from_index,)
             ).fetchall()
             validator_addrs_to_remove = []
+            revocations_to_remove = []  # (address, key_type)
             for row in rows:
                 block_data = json.loads(row[0])
                 for tx_data in block_data.get("transactions", []):
@@ -238,6 +296,12 @@ class SQLiteStore:
                         vaddr = tx_data.get("payload", {}).get("validator_address", "")
                         if vaddr:
                             validator_addrs_to_remove.append(vaddr)
+                    elif tx_data.get("type") == "REVOKE_KEY":
+                        payload = tx_data.get("payload", {})
+                        sender = tx_data.get("from", "")
+                        kt = payload.get("key_type", "")
+                        if sender and kt:
+                            revocations_to_remove.append((sender, kt))
 
             # Delete block data and cascading indices
             c.execute("DELETE FROM txs WHERE block_idx >= ?", (from_index,))
@@ -250,6 +314,12 @@ class SQLiteStore:
             # Remove validators registered in the rolled-back blocks
             for vaddr in validator_addrs_to_remove:
                 c.execute("DELETE FROM validator_registry WHERE address=?", (vaddr,))
+
+            # Remove revocations from rolled-back blocks
+            for addr, kt in revocations_to_remove:
+                c.execute(
+                    "DELETE FROM revoked_keys WHERE address=? AND key_type=?",
+                    (addr, kt))
 
             self._db.commit()
             row = self._db.execute("SELECT MAX(idx) FROM blocks").fetchone()

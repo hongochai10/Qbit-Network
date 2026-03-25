@@ -355,5 +355,5 @@ class TestPersistence:
         loaded = bc2.load()
         assert loaded is True  # loads structurally
         # The tampered tx will fail verify()
-        tampered_tx = bc2.chain[1].transactions[0]
+        tampered_tx = bc2.get_block(1).transactions[0]
         assert tampered_tx.verify() is False  # signature invalid

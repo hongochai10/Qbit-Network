@@ -1,7 +1,12 @@
-"""QBit Network blockchain - chain management, block production, fork resolution, persistence."""
+"""QBit Network blockchain - chain management, block production, fork resolution, persistence.
+
+Sprint 2: SQLite-primary storage. In-memory chain list removed for SQLite-backed
+blockchains. In-memory mode (no data_dir) retains a list for tests/ephemeral use.
+"""
 import json
 import os
 import tempfile
+import threading
 import time
 import logging
 from .block import Block
@@ -12,23 +17,72 @@ from ..config import MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH
 logger = logging.getLogger("qbit_network.chain")
 
 
+class _ChainProxy:
+    """Read-only proxy that makes SQLite-backed chains behave like a list.
+
+    Supports ``len()``, ``bool()``, indexing (``[0]``, ``[-1]``), and
+    iteration so that existing callers (tests, node.py, migration code)
+    keep working without holding every block in memory.
+    """
+
+    __slots__ = ('_bc',)
+
+    def __init__(self, blockchain: 'Blockchain'):
+        self._bc = blockchain
+
+    def __len__(self) -> int:
+        h = self._bc._height
+        return h + 1 if h >= 0 else 0
+
+    def __bool__(self) -> bool:
+        return self._bc._height >= 0
+
+    def __getitem__(self, key):
+        length = len(self)
+        if isinstance(key, slice):
+            start, stop, step = key.indices(length)
+            return [self[i] for i in range(start, stop, step or 1)]
+        if isinstance(key, int):
+            if key < 0:
+                key = length + key
+            if 0 <= key < length:
+                block = self._bc._get_block_by_index(key)
+                if block is not None:
+                    return block
+            raise IndexError(f"block index {key} out of range")
+        raise TypeError(f"indices must be integers or slices, not {type(key).__name__}")
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+
 class Blockchain:
     """The QBit Network blockchain."""
 
     def __init__(self, data_dir: str = ""):
         self.data_dir = data_dir
-        self.chain: list[Block] = []
         self._store = None
-        # Initialize SQLite store if data_dir provided
+
+        # --- Storage mode ---
+        # In-memory mode (no data_dir): blocks kept in _chain_list
+        # SQLite mode (data_dir set): blocks only in SQLite, cached latest
+        self._chain_list: list[Block] | None = None  # only used in memory mode
+        self._latest_block: Block | None = None
+        self._height: int = -1
+
         if data_dir:
             from .store import SQLiteStore
             os.makedirs(data_dir, exist_ok=True)
             self._store = SQLiteStore(data_dir)
+        else:
+            self._chain_list = []
+
         self.tx_pool: list[Transaction] = []
         self._pool_ids: set[str] = set()
         self._pool_sender_count: dict[str, int] = {}  # sender -> pending tx count (O(1) nonce calc)
 
-        # Indices
+        # Indices (always in-memory for fast validation)
         self._block_by_hash: dict[str, int] = {}
         self._tx_by_id: dict[str, tuple[int, int]] = {}
         self._txs_by_sender: dict[str, list[str]] = {}
@@ -38,22 +92,54 @@ class Blockchain:
         self._key_registry: dict[str, str] = {}       # current key
         self._key_history: dict[str, list[str]] = {}  # address -> [pk_hex, ...]
         self._notarizations_by_hash: dict[str, list[str]] = {}  # doc_hash -> [tx_id, ...] (all notarizations)
+        self._notarization_count: dict[str, int] = {}  # sender_address -> count of NOTARIZE txs
         self._validator_registry: dict[str, bytes] = {}  # validator_address -> signing pubkey
+        self._revoked_keys: dict[str, dict] = {}  # "address:key_type" -> {tx_id, timestamp, reason}
+        self._db_lock = threading.Lock()  # protects SQLite mutations (_append_block, _rollback_to)
 
         self.consensus = ProofOfAuthority()
         self.consensus._chain_nonces = self._sender_nonce
         self.consensus._chain_tx_ids = set()  # fed by _append_block
+        self.consensus._revoked_keys = self._revoked_keys
+
+    # --- Backward-compatible chain property ---
+
+    @property
+    def chain(self):
+        """Backward-compatible access to the chain as a list-like object.
+
+        In-memory mode: returns the actual list.
+        SQLite mode: returns a read-only proxy that fetches blocks on demand.
+        """
+        if self._chain_list is not None:
+            return self._chain_list
+        return _ChainProxy(self)
 
     @property
     def height(self) -> int:
-        return len(self.chain) - 1 if self.chain else -1
+        return self._height
 
     @property
     def latest_block(self) -> Block | None:
-        return self.chain[-1] if self.chain else None
+        return self._latest_block
+
+    def _get_block_by_index(self, index: int) -> Block | None:
+        """Internal: fetch block by index from the appropriate backend."""
+        if self._chain_list is not None:
+            if 0 <= index < len(self._chain_list):
+                return self._chain_list[index]
+            return None
+        if self._store is not None:
+            return self._store.get_block(index)
+        return None
+
+    def get_next_nonce(self, address: str) -> int:
+        """Return the next expected nonce for an address (renamed from get_nonce, ISS-012)."""
+        return self._sender_nonce.get(address, -1) + 1
 
     def get_nonce(self, address: str) -> int:
-        return self._sender_nonce.get(address, -1) + 1
+        """Return the next expected nonce for an address."""
+        return self.get_next_nonce(address)
 
     def get_encryption_pk(self, address: str) -> str | None:
         """Lookup on-chain registered encryption public key."""
@@ -67,11 +153,23 @@ class Blockchain:
         """Check if an address has registered as a validator on-chain."""
         return address in self._validator_registry
 
+    def is_key_revoked(self, address: str, key_type: str) -> bool:
+        """Check if a key has been revoked on-chain."""
+        return f"{address}:{key_type}" in self._revoked_keys
+
+    def get_revocation_info(self, address: str, key_type: str) -> dict | None:
+        """Get revocation details, or None if not revoked."""
+        return self._revoked_keys.get(f"{address}:{key_type}")
+
+    def get_notarization_count(self, address: str) -> int:
+        """O(1) notarization count for an address."""
+        return self._notarization_count.get(address, 0)
+
     # ---- Genesis ----
 
     def init_chain(self, validator_address: str, validator_sk: bytes,
                    validator_pk: bytes = b''):
-        if self.chain:
+        if self._height >= 0:
             return
         genesis = Block.genesis(validator_address)
         genesis.sign(validator_sk)
@@ -94,6 +192,10 @@ class Blockchain:
         if len(self.tx_pool) >= MAX_TX_POOL_SIZE:
             return False, "tx pool full"
 
+        # Revoked signing key cannot submit any transactions
+        if self.is_key_revoked(tx.sender, "signing"):
+            return False, "sender signing key has been revoked"
+
         if not tx.verify():
             return False, "invalid signature"
 
@@ -111,7 +213,18 @@ class Blockchain:
         if tx.tx_type == TxType.SHARE and not tx.recipient:
             return False, "SHARE tx requires recipient"
 
-        # Nonce check — O(1) via _pool_sender_count
+        # REVOKE_KEY: idempotency + genesis validator safety
+        if tx.tx_type == TxType.REVOKE_KEY:
+            key_type = tx.payload.get("key_type", "")
+            if self.is_key_revoked(tx.sender, key_type):
+                return False, f"{key_type} key already revoked for this address"
+            # Genesis validator cannot revoke any of their own keys
+            if key_type in ("validator", "signing", "encryption") and self._height >= 0:
+                genesis_block = self._get_block_by_index(0)
+                if genesis_block and tx.sender == genesis_block.validator:
+                    return False, "cannot revoke genesis validator keys"
+
+        # Nonce check -- O(1) via _pool_sender_count
         expected_nonce = self.get_nonce(tx.sender)
         pending_from_sender = self._pool_sender_count.get(tx.sender, 0)
         if tx.nonce != expected_nonce + pending_from_sender:
@@ -134,10 +247,15 @@ class Blockchain:
 
     def produce_block(self, validator_address: str,
                       validator_sk: bytes) -> Block | None:
-        if not self.chain:
+        if self._height < 0:
             return None
 
-        parent = self.latest_block
+        # Revoked signing key cannot produce blocks (SPRINT2-014)
+        if self.is_key_revoked(validator_address, "signing"):
+            logger.error(f"Cannot produce block: signing key revoked for {validator_address[:16]}...")
+            return None
+
+        parent = self._latest_block
         txs = self.tx_pool[:MAX_TX_PER_BLOCK]
 
         if not txs:
@@ -176,11 +294,11 @@ class Blockchain:
         if block.block_hash in self._block_by_hash:
             return False, "already have this block"
 
-        expected_index = len(self.chain)
+        expected_index = self._height + 1
 
         # Normal case: extends tip
         if block.index == expected_index:
-            parent = self.chain[block.index - 1] if block.index > 0 else None
+            parent = self._latest_block if block.index > 0 else None
             ok, err = self.consensus.validate_block(block, parent)
             if not ok:
                 return False, err
@@ -205,31 +323,33 @@ class Blockchain:
             return False, "empty fork"
 
         fork_start = fork_blocks[0].index
-        if fork_start == 0 or fork_start > len(self.chain):
+        chain_len = self._height + 1
+        if fork_start == 0 or fork_start > chain_len:
             return False, "invalid fork start"
 
-        depth = len(self.chain) - fork_start
+        depth = chain_len - fork_start
         if depth > MAX_REORG_DEPTH:
             return False, f"reorg too deep: {depth} > {MAX_REORG_DEPTH}"
 
         # Validate fork chain links to our chain at fork_start - 1
-        common_ancestor = self.chain[fork_start - 1]
+        common_ancestor = self._get_block_by_index(fork_start - 1)
+        if common_ancestor is None:
+            return False, "common ancestor not found"
         if fork_blocks[0].prev_hash != common_ancestor.block_hash:
             return False, "fork doesn't connect to our chain"
 
         # Pure longest-chain: fork must be strictly longer
-        # TODO(dPoS): reintroduce weighted scoring when skip-slots / stake-weight land
         if len(fork_blocks) <= depth:
             return False, (f"fork not longer: {len(fork_blocks)} blocks vs "
                            f"our {depth} blocks (first-seen wins on tie)")
 
         # Rollback to common ancestor, then validate + apply fork
-        # Save current chain for rollback-on-failure
-        saved_chain = list(self.chain[fork_start:])
+        # Save current blocks for rollback-on-failure
+        saved_chain = self._get_blocks_range(fork_start, chain_len)
         displaced_txs = self._rollback_to(fork_start)
 
         # Validate and append fork blocks against the rolled-back state
-        parent = self.chain[-1] if self.chain else None
+        parent = self._latest_block
         applied = []
         for fb in fork_blocks:
             ok, err = self.consensus.validate_block(fb, parent)
@@ -251,7 +371,7 @@ class Blockchain:
             for tx in fb.transactions:
                 mined_in_fork.add(tx.tx_id)
 
-        # Return displaced txs to pool — sort by (sender, nonce) so lower nonces process first
+        # Return displaced txs to pool -- sort by (sender, nonce) so lower nonces process first
         returned = 0
         displaced_txs.sort(key=lambda t: (t.sender, t.nonce))
         for tx in displaced_txs:
@@ -270,86 +390,166 @@ class Blockchain:
         logger.info(
             f"REORG: depth={depth}, displaced={len(displaced_txs)}, "
             f"returned_to_pool={returned}")
-        return True, f"reorg complete: {fork_start} → {len(self.chain) - 1}"
+        return True, f"reorg complete: {fork_start} → {self._height}"
 
     def _evaluate_fork(self, block: Block) -> tuple[bool, str]:
         """Evaluate a single competing block at same height.
-        First-seen wins — a single block cannot replace an existing block.
+        First-seen wins -- a single block cannot replace an existing block.
         Use try_reorg() with a strictly longer chain to trigger reorganization."""
         return False, (f"first-seen wins: already have block at index {block.index}, "
                        f"use try_reorg() with a longer fork chain")
 
+    def _get_blocks_range(self, start: int, end: int) -> list[Block]:
+        """Fetch blocks [start, end) from the appropriate backend."""
+        if self._chain_list is not None:
+            return list(self._chain_list[start:end])
+        if self._store is not None:
+            return self._store.get_blocks_range(start, end)
+        return []
+
     def _rollback_to(self, target_index: int) -> list[Transaction]:
         """Pop blocks from tip down to target_index (exclusive). Returns displaced txs."""
+        if self._store is not None:
+            with self._db_lock:
+                return self._rollback_to_inner(target_index)
+        return self._rollback_to_inner(target_index)
+
+    def _rollback_to_inner(self, target_index: int) -> list[Transaction]:
+        """Inner rollback logic -- caller must hold _db_lock when _store is set."""
+        # In SQLite mode, collect blocks to roll back BEFORE deleting from SQLite
+        blocks_to_rollback: list[Block] = []
+        if self._chain_list is None:
+            # SQLite mode: gather blocks from tip to target before deletion
+            for i in range(self._height, target_index - 1, -1):
+                block = self._get_block_by_index(i)
+                if block is not None:
+                    blocks_to_rollback.append(block)
+
         # Sync SQLite rollback
         if self._store is not None:
             self._store.delete_blocks_from(target_index)
 
         displaced = []
-        while len(self.chain) > target_index:
-            block = self.chain.pop()
-            self._block_by_hash.pop(block.block_hash, None)
-            for tx in block.transactions:
-                self._tx_by_id.pop(tx.tx_id, None)
-                self.consensus._chain_tx_ids.discard(tx.tx_id)
 
-                # Revert sender/recipient indices
-                sender_txs = self._txs_by_sender.get(tx.sender, [])
-                if tx.tx_id in sender_txs:
-                    sender_txs.remove(tx.tx_id)
-                if tx.recipient:
-                    recip_txs = self._txs_by_recipient.get(tx.recipient, [])
-                    if tx.tx_id in recip_txs:
-                        recip_txs.remove(tx.tx_id)
+        if self._chain_list is not None:
+            # In-memory mode: pop blocks from the list
+            while len(self._chain_list) > target_index:
+                block = self._chain_list.pop()
+                self._rollback_block(block, displaced)
+        else:
+            # SQLite mode: use the pre-fetched blocks
+            for block in blocks_to_rollback:
+                self._rollback_block(block, displaced)
 
-                # Revert notarization indices
-                if tx.tx_type == TxType.NOTARIZE:
-                    dh = tx.payload.get("documentHash", "")
-                    if dh:
-                        if self._notarizations.get(dh) == tx.tx_id:
-                            self._notarizations.pop(dh, None)
-                        by_hash = self._notarizations_by_hash.get(dh, [])
-                        if tx.tx_id in by_hash:
-                            by_hash.remove(tx.tx_id)
-                        # Restore first notarization from remaining entries
-                        if dh not in self._notarizations and by_hash:
-                            self._notarizations[dh] = by_hash[0]
-
-                # Revert key registry
-                elif tx.tx_type == TxType.REGISTER_KEY:
-                    epk = tx.payload.get("encryption_pk", "")
-                    if epk:
-                        history = self._key_history.get(tx.sender, [])
-                        if epk in history:
-                            history.remove(epk)
-                        if history:
-                            self._key_registry[tx.sender] = history[-1]
-                        else:
-                            self._key_registry.pop(tx.sender, None)
-
-                # Revert validator registry
-                elif tx.tx_type == TxType.REGISTER_VALIDATOR:
-                    vaddr = tx.payload.get("validator_address", "")
-                    if vaddr:
-                        self._validator_registry.pop(vaddr, None)
-                        self.consensus.remove_validator(vaddr)
-                        # SQLite cleanup is handled atomically by
-                        # delete_blocks_from() — no separate commit needed
-
-                displaced.append(tx)
-
-            # Recompute sender nonces after rollback
-            for tx in block.transactions:
-                remaining = self._txs_by_sender.get(tx.sender, [])
-                if remaining:
-                    max_nonce = max(
-                        (self.get_tx(tid).nonce for tid in remaining
-                         if self.get_tx(tid)),
-                        default=-1)
-                    self._sender_nonce[tx.sender] = max_nonce
-                else:
-                    self._sender_nonce.pop(tx.sender, None)
         return displaced
+
+    def _find_validator_pk_in_chain(self, address: str) -> bytes | None:
+        """Scan chain for a REGISTER_VALIDATOR tx that registered the given
+        address. Returns pubkey bytes or None."""
+        for i in range(self._height + 1):
+            block = self._get_block_by_index(i)
+            if block is None:
+                continue
+            for tx in block.transactions:
+                if tx.tx_type == TxType.REGISTER_VALIDATOR:
+                    if tx.payload.get("validator_address") == address:
+                        vpk_hex = tx.payload.get("validator_pubkey", "")
+                        if vpk_hex:
+                            return bytes.fromhex(vpk_hex)
+        return None
+
+    def _rollback_block(self, block: Block, displaced: list[Transaction]):
+        """Rollback a single block's indices and collect displaced transactions."""
+        self._block_by_hash.pop(block.block_hash, None)
+        for tx in block.transactions:
+            self._tx_by_id.pop(tx.tx_id, None)
+            self.consensus._chain_tx_ids.discard(tx.tx_id)
+
+            # Revert sender/recipient indices
+            sender_txs = self._txs_by_sender.get(tx.sender, [])
+            if tx.tx_id in sender_txs:
+                sender_txs.remove(tx.tx_id)
+            if tx.recipient:
+                recip_txs = self._txs_by_recipient.get(tx.recipient, [])
+                if tx.tx_id in recip_txs:
+                    recip_txs.remove(tx.tx_id)
+
+            # Revert notarization indices
+            if tx.tx_type == TxType.NOTARIZE:
+                dh = tx.payload.get("documentHash", "")
+                if dh:
+                    if self._notarizations.get(dh) == tx.tx_id:
+                        self._notarizations.pop(dh, None)
+                    by_hash = self._notarizations_by_hash.get(dh, [])
+                    if tx.tx_id in by_hash:
+                        by_hash.remove(tx.tx_id)
+                    # Restore first notarization from remaining entries
+                    if dh not in self._notarizations and by_hash:
+                        self._notarizations[dh] = by_hash[0]
+                cnt = self._notarization_count.get(tx.sender, 1) - 1
+                if cnt <= 0:
+                    self._notarization_count.pop(tx.sender, None)
+                else:
+                    self._notarization_count[tx.sender] = cnt
+
+            # Revert key registry
+            elif tx.tx_type == TxType.REGISTER_KEY:
+                epk = tx.payload.get("encryption_pk", "")
+                if epk:
+                    history = self._key_history.get(tx.sender, [])
+                    if epk in history:
+                        history.remove(epk)
+                    if history:
+                        self._key_registry[tx.sender] = history[-1]
+                    else:
+                        self._key_registry.pop(tx.sender, None)
+
+            # Revert validator registry
+            elif tx.tx_type == TxType.REGISTER_VALIDATOR:
+                vaddr = tx.payload.get("validator_address", "")
+                if vaddr:
+                    self._validator_registry.pop(vaddr, None)
+                    self.consensus.remove_validator(vaddr)
+                    # SQLite cleanup is handled atomically by
+                    # delete_blocks_from() -- no separate commit needed
+
+            # Revert key revocations
+            elif tx.tx_type == TxType.REVOKE_KEY:
+                key_type = tx.payload.get("key_type", "")
+                rev_key = f"{tx.sender}:{key_type}"
+                revocation = self._revoked_keys.pop(rev_key, None)
+                if revocation and key_type == "validator":
+                    # Re-add validator if their registration is still
+                    # in the remaining chain (scan up to current height)
+                    vpk = self._find_validator_pk_in_chain(tx.sender)
+                    if vpk:
+                        self._validator_registry[tx.sender] = vpk
+                        self.consensus.add_validator(tx.sender, vpk)
+                # SQLite revocation cleanup handled by delete_blocks_from()
+
+            displaced.append(tx)
+
+        # Recompute sender nonces after rollback
+        for tx in block.transactions:
+            remaining = self._txs_by_sender.get(tx.sender, [])
+            if remaining:
+                max_nonce = max(
+                    (self.get_tx(tid).nonce for tid in remaining
+                     if self.get_tx(tid)),
+                    default=-1)
+                self._sender_nonce[tx.sender] = max_nonce
+            else:
+                self._sender_nonce.pop(tx.sender, None)
+
+        # Update cached height and latest block
+        self._height -= 1
+        if self._height >= 0:
+            if self._chain_list is not None:
+                self._latest_block = self._chain_list[-1]
+            elif self._store is not None:
+                self._latest_block = self._store.get_block(self._height)
+        else:
+            self._latest_block = None
 
     def _drain_pool(self, block: Block):
         """Remove mined transactions from pool after block append."""
@@ -369,13 +569,25 @@ class Blockchain:
     # ---- Internal ----
 
     def _append_block(self, block: Block):
-        idx = len(self.chain)
-        self.chain.append(block)
-        self._block_by_hash[block.block_hash] = idx
+        if self._store is not None:
+            with self._db_lock:
+                self._append_block_inner(block)
+        else:
+            self._append_block_inner(block)
 
-        # Dual-write: persist to SQLite if store available
+    def _append_block_inner(self, block: Block):
+        idx = self._height + 1
+
+        if self._chain_list is not None:
+            self._chain_list.append(block)
+
+        # Persist to SQLite if store available
         if self._store is not None:
             self._store.append_block(block)
+
+        self._height = idx
+        self._latest_block = block
+        self._block_by_hash[block.block_hash] = idx
 
         for tx_idx, tx in enumerate(block.transactions):
             self._tx_by_id[tx.tx_id] = (idx, tx_idx)
@@ -394,6 +606,8 @@ class Blockchain:
                     if doc_hash not in self._notarizations:
                         self._notarizations[doc_hash] = tx.tx_id
                     self._notarizations_by_hash.setdefault(doc_hash, []).append(tx.tx_id)
+                self._notarization_count[tx.sender] = \
+                    self._notarization_count.get(tx.sender, 0) + 1
 
             elif tx.tx_type == TxType.REGISTER_KEY:
                 epk = tx.payload.get("encryption_pk", "")
@@ -421,23 +635,55 @@ class Blockchain:
                             f"Validator registered on-chain: {vaddr[:16]}... "
                             f"(block #{block.index})")
 
+            elif tx.tx_type == TxType.REVOKE_KEY:
+                key_type = tx.payload.get("key_type", "")
+                reason = tx.payload.get("reason", "")
+                rev_key = f"{tx.sender}:{key_type}"
+                self._revoked_keys[rev_key] = {
+                    "tx_id": tx.tx_id,
+                    "timestamp": tx.timestamp,
+                    "reason": reason,
+                }
+                if key_type == "validator":
+                    self._validator_registry.pop(tx.sender, None)
+                    self.consensus.remove_validator(tx.sender)
+                    if self._store is not None:
+                        self._store.delete_validator(tx.sender)
+                    logger.info(
+                        f"Validator revoked: {tx.sender[:16]}... "
+                        f"reason={reason} (block #{block.index})")
+                elif key_type == "encryption":
+                    logger.info(
+                        f"Encryption key revoked: {tx.sender[:16]}... "
+                        f"reason={reason} (block #{block.index})")
+                elif key_type == "signing":
+                    logger.info(
+                        f"Signing key revoked: {tx.sender[:16]}... "
+                        f"reason={reason} (block #{block.index})")
+                # Persist revocation to SQLite
+                if self._store is not None:
+                    self._store.put_revocation(
+                        tx.sender, key_type, tx.tx_id,
+                        float(tx.timestamp), reason)
+
     # ---- Queries ----
 
     def get_block(self, index_or_hash) -> Block | None:
         if isinstance(index_or_hash, int):
-            if 0 <= index_or_hash < len(self.chain):
-                return self.chain[index_or_hash]
+            return self._get_block_by_index(index_or_hash)
         elif isinstance(index_or_hash, str):
             idx = self._block_by_hash.get(index_or_hash)
             if idx is not None:
-                return self.chain[idx]
+                return self._get_block_by_index(idx)
         return None
 
     def get_tx(self, tx_id: str) -> Transaction | None:
         loc = self._tx_by_id.get(tx_id)
         if loc is not None:
             block_idx, tx_idx = loc
-            return self.chain[block_idx].transactions[tx_idx]
+            block = self._get_block_by_index(block_idx)
+            if block is not None and tx_idx < len(block.transactions):
+                return block.transactions[tx_idx]
         return None
 
     def get_tx_block(self, tx_id: str) -> int | None:
@@ -458,7 +704,9 @@ class Blockchain:
         block_idx = self.get_tx_block(tx_id)
         if not tx or block_idx is None:
             return None
-        block = self.chain[block_idx]
+        block = self._get_block_by_index(block_idx)
+        if block is None:
+            return None
         return {
             "tx_id": tx_id,
             "block_index": block_idx,
@@ -468,7 +716,7 @@ class Blockchain:
         }
 
     def get_all_notarizations(self, document_hash: str) -> list[dict]:
-        """Get ALL notarizations for a document hash — O(K) via reverse index."""
+        """Get ALL notarizations for a document hash -- O(K) via reverse index."""
         results = []
         for tid in self._notarizations_by_hash.get(document_hash, []):
             tx = self.get_tx(tid)
@@ -497,11 +745,13 @@ class Blockchain:
 
     def save(self):
         if self._store is not None:
-            return  # SQLite dual-write handles persistence per-block
+            return  # SQLite handles persistence per-block
         if not self.data_dir:
             return
+        if self._chain_list is None:
+            return
         os.makedirs(self.data_dir, exist_ok=True)
-        chain_data = [block.to_dict() for block in self.chain]
+        chain_data = [block.to_dict() for block in self._chain_list]
 
         target = os.path.join(self.data_dir, "chain.json")
         fd, tmp_path = tempfile.mkstemp(dir=self.data_dir, suffix=".tmp")
@@ -515,11 +765,11 @@ class Blockchain:
             except OSError:
                 pass
             raise
-        logger.info(f"Saved {len(self.chain)} blocks")
+        logger.info(f"Saved {self._height + 1} blocks")
 
     def load(self) -> bool:
         """Load chain from disk. Uses SQLite if available, falls back to chain.json."""
-        if self.chain:
+        if self._height >= 0:
             logger.warning("load() called on non-empty chain, skipping")
             return True
         if not self.data_dir:
@@ -561,8 +811,6 @@ class Blockchain:
             if i == 0:
                 if block.index != 0:
                     raise ValueError(f"Genesis block has wrong index: {block.index}")
-                # Genesis validator is auto-registered by the genesis block itself
-                # (its pubkey comes from consensus.validators set at startup)
             else:
                 parent = validated_blocks[i - 1]
                 if block.prev_hash != parent.block_hash:
@@ -586,37 +834,46 @@ class Blockchain:
                         raise ValueError(
                             f"Block #{block.index} has invalid validator signature")
                 elif block.index > 0:
-                    # Non-genesis block from unknown validator — cannot verify sig
                     logger.warning(
                         f"Block #{block.index} validator {block.validator[:16]}... "
-                        f"unknown — signature not verified")
+                        f"unknown -- signature not verified")
 
-            # Track REGISTER_VALIDATOR txs so subsequent blocks can be verified
+            # Track REGISTER_VALIDATOR / REVOKE_KEY txs so subsequent blocks
+            # can be verified
             for tx in block.transactions:
                 if tx.tx_type == TxType.REGISTER_VALIDATOR:
                     vpk_hex = tx.payload.get("validator_pubkey", "")
                     vaddr = tx.payload.get("validator_address", "")
                     if vpk_hex and vaddr:
                         load_validators[vaddr] = bytes.fromhex(vpk_hex)
+                elif tx.tx_type == TxType.REVOKE_KEY:
+                    if tx.payload.get("key_type") == "validator":
+                        load_validators.pop(tx.sender, None)
 
             validated_blocks.append(block)
 
-        # All validated — commit to chain
+        # All validated -- commit to chain
         for block in validated_blocks:
             self._append_block(block)
 
-        logger.info(f"Loaded {len(self.chain)} blocks (validated from JSON)")
+        logger.info(f"Loaded {self._height + 1} blocks (validated from JSON)")
         return True
 
     def _load_from_sqlite(self) -> bool:
-        """Load chain from SQLite, rebuild in-memory indices."""
+        """Load chain from SQLite, rebuild in-memory indices only (no in-memory block list)."""
         from .store import SQLiteStore
+        # Close existing connection to avoid leaking (SPRINT2-006)
+        if self._store is not None:
+            self._store.close()
         self._store = SQLiteStore(self.data_dir)
-        height = self._store.height()
-        if height < 0:
+        # SQLite mode: no in-memory chain list
+        self._chain_list = None
+        store_height = self._store.height()
+        if store_height < 0:
             return False
 
-        for i in range(height + 1):
+        prev_hash: str | None = None
+        for i in range(store_height + 1):
             block = self._store.get_block(i)
             if block is None:
                 logger.error(f"SQLite block #{i} missing")
@@ -627,16 +884,18 @@ class Blockchain:
                     logger.error(f"SQLite genesis has wrong index: {block.index}")
                     return False
             else:
-                parent = self.chain[i - 1]
-                if block.prev_hash != parent.block_hash:
+                if block.prev_hash != prev_hash:
                     logger.error(f"SQLite block #{i} prev_hash mismatch")
                     return False
+
+            prev_hash = block.block_hash
+
             # Rebuild in-memory indices (without re-writing to SQLite)
-            idx = len(self.chain)
-            self.chain.append(block)
-            self._block_by_hash[block.block_hash] = idx
+            self._height = i
+            self._latest_block = block
+            self._block_by_hash[block.block_hash] = i
             for tx_idx, tx in enumerate(block.transactions):
-                self._tx_by_id[tx.tx_id] = (idx, tx_idx)
+                self._tx_by_id[tx.tx_id] = (i, tx_idx)
                 self.consensus._chain_tx_ids.add(tx.tx_id)
                 self._txs_by_sender.setdefault(tx.sender, []).append(tx.tx_id)
                 if tx.recipient:
@@ -650,6 +909,8 @@ class Blockchain:
                         if dh not in self._notarizations:
                             self._notarizations[dh] = tx.tx_id
                         self._notarizations_by_hash.setdefault(dh, []).append(tx.tx_id)
+                    self._notarization_count[tx.sender] = \
+                        self._notarization_count.get(tx.sender, 0) + 1
                 elif tx.tx_type == TxType.REGISTER_KEY:
                     epk = tx.payload.get("encryption_pk", "")
                     if epk:
@@ -662,6 +923,18 @@ class Blockchain:
                         vpk_bytes = bytes.fromhex(vpk_hex)
                         self._validator_registry[vaddr] = vpk_bytes
                         self.consensus.add_validator(vaddr, vpk_bytes)
+                elif tx.tx_type == TxType.REVOKE_KEY:
+                    key_type = tx.payload.get("key_type", "")
+                    reason = tx.payload.get("reason", "")
+                    rev_key = f"{tx.sender}:{key_type}"
+                    self._revoked_keys[rev_key] = {
+                        "tx_id": tx.tx_id,
+                        "timestamp": tx.timestamp,
+                        "reason": reason,
+                    }
+                    if key_type == "validator":
+                        self._validator_registry.pop(tx.sender, None)
+                        self.consensus.remove_validator(tx.sender)
 
         # Also load genesis validator from SQLite validator_registry table
         if self._store is not None:
@@ -671,5 +944,5 @@ class Blockchain:
                     self._validator_registry[vaddr] = vpk_bytes
                     self.consensus.add_validator(vaddr, vpk_bytes)
 
-        logger.info(f"Loaded {len(self.chain)} blocks from SQLite")
+        logger.info(f"Loaded {self._height + 1} blocks from SQLite")
         return True

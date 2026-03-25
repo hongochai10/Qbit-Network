@@ -87,7 +87,7 @@ class RPCServer:
     TLS_REQUIRED_METHODS = {"qv_getSharedSecret", "qv_decapsulateShared"}
 
     # Endpoints exempt from rate limiting (health/status checks)
-    _RATE_EXEMPT_PATHS = {"/"}
+    _RATE_EXEMPT_PATHS = {"/", "/api/v1/health", "/api/v1/info"}
 
     def __init__(self, host: str = "0.0.0.0", port: int = 8545,
                  auth_token: str = "", tls_cert: str = "", tls_key: str = "",
@@ -103,6 +103,7 @@ class RPCServer:
         self._methods: dict[str, object] = {}
         self._rate_limiter = RateLimiter(RPC_RATE_LIMIT, RPC_RATE_BURST)
         self._cleanup_task = None
+        self._ws_manager = None
         self._app = web.Application(
             client_max_size=MAX_RPC_BODY,
             middlewares=[self._rate_limit_middleware],
@@ -110,6 +111,13 @@ class RPCServer:
         self._app.router.add_post("/", self._handle)
         self._app.router.add_get("/", self._info)
         self._runner = None
+
+    def attach_websocket(self, ws_manager):
+        """Attach a WebSocketManager and register the /ws route."""
+        from .websocket import websocket_handler
+        self._ws_manager = ws_manager
+        self._app["ws_manager"] = ws_manager
+        self._app.router.add_get("/ws", websocket_handler)
 
     @web.middleware
     async def _rate_limit_middleware(self, request, handler):

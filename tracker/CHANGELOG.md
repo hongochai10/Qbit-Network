@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.3.0-sprint2 (2026-03-25)
+
+### Storage: SQLite-Primary Chain Storage
+- Removed dual-write architecture for disk-backed blockchains
+  - `self.chain` list replaced with SQLite-only storage when `data_dir` is set
+  - Blocks no longer held in memory; fetched from SQLite on demand via `get_block()`
+  - Cached `_latest_block` (most accessed) and `_height` updated atomically on append/rollback
+  - `_ChainProxy` provides backward-compatible list-like interface (`len()`, `bool()`, `[index]`, iteration)
+  - In-memory mode (no `data_dir`) retains `_chain_list` for tests and ephemeral use
+  - `SQLiteStore.get_blocks_range(start, end)` and `get_blocks_count()` added for range queries
+  - Rollback refactored: blocks pre-fetched before SQLite deletion in `_rollback_to()`
+  - `node.py` migrated from `self.blockchain.chain` to `get_block()` / `height` API
+  - `get_next_nonce()` method added as explicit alias for `get_nonce()` (ISS-012)
+  - All 331 existing tests pass (backward-compatible migration)
+
+### Key Revocation (ISS-010)
+- `REVOKE_KEY` transaction type for permanent on-chain key revocation
+  - Payload: `key_type` (`signing`|`encryption`|`validator`) + `reason` (`compromised`|`rotation`|`decommission`)
+  - Self-revocation only: tx sender must be the key owner
+  - Idempotency: cannot revoke an already-revoked key
+  - Genesis validator cannot be revoked (safety check)
+- Revocation registry (`_revoked_keys: dict[str, dict]`) in Blockchain
+  - `is_key_revoked(address, key_type)` and `get_revocation_info(address, key_type)` queries
+- Processing in `_append_block`:
+  - Signing revocation: address blocked from submitting further transactions (submit_tx + consensus.validate_block)
+  - Encryption revocation: marked in registry for downstream consumers
+  - Validator revocation: removed from `_validator_registry` and `consensus.validators`, cannot produce blocks
+- Full rollback support in `_rollback_block`: revocations reverted, validators re-added from chain history
+- SQLite `revoked_keys` table: `put_revocation()`, `get_revocation()`, `delete_revocation()`, `get_all_revocations()`
+  - Atomic cleanup in `delete_blocks_from()` during reorg
+  - Loaded on startup in `_load_from_sqlite()`
+- Consensus integration: `_revoked_keys` injected into `ProofOfAuthority`; blocks with txs from revoked signers rejected
+- RPC `qv_revokeKey(wallet_address, key_type, reason)` protected method in node.py
+- 28 tests: payload validation (10), signing/encryption/validator revocation (6), idempotency (2), rollback (2), SQLite persistence (3), queries (2), adversarial (3)
+
+### Infrastructure
+- REST API gateway (`qbit_network/network/rest_api.py`) mounted at `/api/v1/` alongside existing JSON-RPC
+  - 13 public GET endpoints: `/info`, `/health`, `/blocks` (paginated), `/blocks/latest`, `/blocks/:index`, `/blocks/hash/:hash`, `/txs/:txid`, `/txs/sender/:addr` (paginated), `/address/:addr`, `/notarizations/:hash`, `/validators`, `/pool`, `/pool/count`
+  - 8 protected endpoints (bearer auth): `POST /txs`, `POST /wallets`, `GET /wallets`, `POST /notarize`, `POST /verify`, `POST /store`, `POST /share`, `POST /register-validator`
+  - CORS middleware: configurable origins (default `*`), `GET/POST/OPTIONS` methods, `Authorization` + `Content-Type` headers, preflight `204` responses
+  - Pagination: 1-based `page`, configurable `limit` (default 20, max 100)
+  - Consistent response envelope: `{"data": ..., "error": null}` on success, `{"data": null, "error": {"code": N, "message": "..."}}` on error
+  - Proper HTTP status codes: 200 OK, 201 Created, 204 No Content (preflight), 400 Bad Request, 401 Unauthorized, 404 Not Found, 429 Too Many Requests, 500 Internal Server Error
+  - All handlers proxy to existing node RPC methods — no business logic duplication
+  - Auth reuses `hmac.compare_digest` with the same RPC bearer token
+  - Rate limiting inherited from RPC server middleware; `/health` and `/info` exempt
+
+### WebSocket Subscriptions
+- Real-time event subscriptions via WebSocket at `WS /ws` (`qbit_network/network/websocket.py`)
+  - 3 channels: `new_block`, `new_tx`, `chain_stats`
+  - JSON subscription protocol: `subscribe`, `unsubscribe`, `ping`/`pong` with structured error responses
+  - `WebSocketManager` class: channel-based pub/sub with per-client tracking
+  - Max 100 concurrent connections; max 10 subscriptions per client; 10 msg/s rate limit per client
+  - Periodic `chain_stats` broadcast every 5s (height, tx_count, pool_size, peers) — skipped when no subscribers
+  - aiohttp built-in heartbeat: 30s server ping, auto-close on timeout; 8 KB max message size
+  - Events emitted on: block production, block receipt from P2P, tx submission via RPC and P2P
+  - Graceful disconnect cleanup: all subscriptions removed, dead clients pruned during broadcast
+  - WS route attached via `rpc.attach_websocket()` on the existing aiohttp app (no extra port)
+  - No auth required (read-only public data); no private keys or auth tokens in event payloads
+
+### Tests
+- 47 new REST API tests (`tests/test_rest_api.py`): public endpoints, protected endpoints, CORS headers/preflight, response structure, input validation, auth enforcement
+- 34 new WebSocket tests (`tests/test_websocket.py`): 18 unit tests (manager operations, rate limiting, broadcast, cleanup) + 16 integration tests (subscribe/unsubscribe, ping/pong, error handling, multi-channel, multi-client, disconnect cleanup, chain_stats)
+
 ## v0.3.0-sprint1 (2026-03-25)
 
 ### Protocol

@@ -2,6 +2,43 @@
 
 ## Implemented
 
+### v0.3.0-sprint2 (2026-03-25)
+- [x] SQLite-primary storage: removed in-memory chain list for disk-backed blockchains
+  - Blocks stored only in SQLite when `data_dir` is set (no more dual-write memory overhead)
+  - Cached `_latest_block` and `_height` for O(1) tip access
+  - `_ChainProxy` backward-compatible list-like interface for `bc.chain` access
+  - In-memory mode (no `data_dir`) retains list for tests/ephemeral use
+  - `get_blocks_range()` and `get_blocks_count()` added to SQLiteStore
+  - `get_next_nonce()` alias added (ISS-012 clarification)
+  - Rollback refactored: pre-fetch blocks before SQLite deletion in `_rollback_to()`
+  - `node.py` updated to use `get_block()`/`height` instead of `self.blockchain.chain`
+- [x] `REVOKE_KEY` transaction type for on-chain key revocation (ISS-010)
+- [x] Three key types: `signing`, `encryption`, `validator`; three reasons: `compromised`, `rotation`, `decommission`
+- [x] Revocation registry (`_revoked_keys`) with `is_key_revoked()` and `get_revocation_info()` queries
+- [x] Revoked signing keys blocked from submitting further transactions (submit_tx + consensus validation)
+- [x] Validator revocation removes from `_validator_registry` + `consensus.validators`
+- [x] Genesis validator cannot be revoked (safety check)
+- [x] Idempotency: cannot revoke an already-revoked key
+- [x] Full rollback support: revocations reverted during reorg, validators re-added
+- [x] SQLite `revoked_keys` table with `put_revocation()`, `get_revocation()`, `delete_revocation()`, `get_all_revocations()`
+- [x] RPC `qv_revokeKey` method for self-revocation
+- [x] 28 revocation tests (payload validation, signing/encryption/validator revocation, rollback, persistence, adversarial)
+- [x] REST API gateway — 26 endpoints (13 public GET, 8 protected POST, 5 protected GET/POST) at `/api/v1/`
+- [x] Pagination support (page/limit) on blocks and transaction listing endpoints
+- [x] CORS middleware with configurable origins, preflight OPTIONS handling
+- [x] Consistent JSON response structure: `{"data": ..., "error": null}` / `{"data": null, "error": {"code": N, "message": "..."}}`
+- [x] Bearer auth reuse from RPC server (constant-time comparison)
+- [x] Input validation on all parameters with proper HTTP status codes (400/401/404/429/500)
+- [x] REST sub-app mounted on existing aiohttp server alongside JSON-RPC
+- [x] 47 REST API tests (public endpoints, protected endpoints, CORS, response structure)
+- [x] WebSocket subscriptions at `/ws` — real-time `new_block`, `new_tx`, `chain_stats` events
+- [x] WebSocketManager: channel-based pub/sub, max 100 connections, 10 subs/client, 10 msg/s rate limit
+- [x] Periodic `chain_stats` broadcast every 5s (height, tx_count, pool_size, peers) — only when subscribers exist
+- [x] Event emission on block production, block receipt from P2P, tx submission (RPC + P2P)
+- [x] JSON subscription protocol: subscribe/unsubscribe/ping/pong with error handling
+- [x] aiohttp built-in heartbeat (30s ping, auto-close on timeout), graceful disconnect cleanup
+- [x] 34 WebSocket tests (18 unit, 16 integration via TestServer)
+
 ### v0.3.0-sprint1 (2026-03-25)
 - [x] HELLO_AUTH full server-side handler + challenge verification (ISS-002) — 3-step ML-DSA-65 challenge-response P2P auth
 - [x] Auth gating: block/tx messages require authentication for v2 peers
@@ -56,7 +93,7 @@
 ### Protocol
 - [ ] P2P encrypted channel (ML-KEM session key + AES-GCM)
 - [ ] Validator staking / deposit mechanism
-- [ ] Key revocation transactions (ISS-010)
+- [x] Key revocation transactions (ISS-010) -- implemented in sprint 2
 - [ ] Block finality (checkpoint mechanism)
 - [ ] Responder-signs-before-verify protocol fix (SPRINT1-003, deferred)
 
@@ -79,10 +116,10 @@
 ### Client
 - [ ] IPFS integration for STORE/SHARE workflows
 - [ ] Web dashboard / chain explorer
-- [ ] WebSocket subscriptions (new block, new tx events)
+- [x] WebSocket subscriptions (new block, new tx, chain stats events)
 - [ ] Human-readable proof PDF export
 
 ### Infrastructure
-- [ ] REST API gateway
+- [x] REST API gateway (Sprint 2)
 - [ ] Light client protocol (Merkle proof verification only)
 - [ ] Cross-chain bridge (hash anchoring)

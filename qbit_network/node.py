@@ -16,6 +16,8 @@ from .network.p2p import (
     MSG_STATUS, _is_safe_peer,
 )
 from .network.rpc import RPCServer
+from .network.rest_api import RESTApi
+from .network.websocket import WebSocketManager
 from .config import DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, BLOCK_INTERVAL
 
 logger = logging.getLogger("qbit_network.node")
@@ -40,6 +42,7 @@ class FullNode:
         self.rpc = RPCServer(host, rpc_port, auth_token=rpc_token,
                              tls_cert=tls_cert, tls_key=tls_key,
                              tls_self_signed=tls_self_signed, data_dir=data_dir)
+        self.ws_manager = WebSocketManager()
         self.bootstrap = bootstrap or []
         self._running = False
         self._block_task = None
@@ -103,6 +106,7 @@ class FullNode:
                 self._lock_genesis_if_needed()
                 await self.p2p.broadcast(
                     MSG_NEW_BLOCK, {"block": block.to_dict()}, exclude=peer.addr)
+                await self._ws_notify_block(block)
         except Exception as e:
             logger.debug(f"bad block from {peer.addr}: {e}")
 
@@ -113,6 +117,7 @@ class FullNode:
             if ok:
                 await self.p2p.broadcast(
                     MSG_NEW_TX, {"tx": tx.to_dict()}, exclude=peer.addr)
+                await self._ws_notify_tx(tx)
         except Exception:
             pass
 
@@ -122,10 +127,12 @@ class FullNode:
             count = min(int(data.get("count", 50)), 100)
         except (TypeError, ValueError):
             return
-        chain = self.blockchain.chain
+        chain_len = self.blockchain.height + 1
         blocks = []
-        for i in range(start, min(start + count, len(chain))):
-            blocks.append(chain[i].to_dict())
+        for i in range(start, min(start + count, chain_len)):
+            block = self.blockchain.get_block(i)
+            if block is not None:
+                blocks.append(block.to_dict())
         # Echo back request_id for correlation (ISS-005)
         resp = {"blocks": blocks}
         req_id = data.get("request_id")
@@ -248,6 +255,7 @@ class FullNode:
         m("qv_share", self._rpc_share)
         m("qv_registerKey", self._rpc_register_key)
         m("qv_registerValidator", self._rpc_register_validator)
+        m("qv_revokeKey", self._rpc_revoke_key)
         m("qv_getSharedWithMe", self._rpc_shared_with_me)
         m("qv_getSharedSecret", self._rpc_get_shared_secret)
         m("qv_decapsulateShared", self._rpc_decapsulate_shared)
@@ -351,6 +359,7 @@ class FullNode:
         if not ok:
             raise ValueError(result)
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
         return {"tx_id": result}
 
     async def _rpc_register_validator(self, wallet_address=""):
@@ -374,7 +383,36 @@ class FullNode:
         if not ok:
             raise ValueError(result)
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
         return {"tx_id": result, "validator_address": w.address}
+
+    async def _rpc_revoke_key(self, wallet_address="", key_type="", reason=""):
+        """Revoke a key on-chain. Self-revocation only."""
+        if not isinstance(key_type, str):
+            raise ValueError("key_type must be string")
+        if not isinstance(reason, str):
+            raise ValueError("reason must be string")
+        valid_key_types = {"signing", "encryption", "validator"}
+        valid_reasons = {"compromised", "rotation", "decommission"}
+        if key_type not in valid_key_types:
+            raise ValueError(f"key_type must be one of {sorted(valid_key_types)}")
+        if reason not in valid_reasons:
+            raise ValueError(f"reason must be one of {sorted(valid_reasons)}")
+        w = self._get_wallet(wallet_address)
+        async with self._lock_for(w.address):
+            tx = Transaction.revoke_key(
+                sender=w.address,
+                key_type=key_type,
+                reason=reason,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
+        return {"tx_id": result, "key_type": key_type, "reason": reason}
 
     async def _rpc_notarize(self, wallet_address="", document_hash="", metadata=""):
         w = self._get_wallet(wallet_address)
@@ -386,6 +424,7 @@ class FullNode:
         if not ok:
             raise ValueError(result)
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
         return {"tx_id": result}
 
     async def _rpc_store(self, wallet_address="", document_hash="", cid="", metadata=""):
@@ -398,6 +437,7 @@ class FullNode:
         if not ok:
             raise ValueError(result)
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
         return {"tx_id": result}
 
     async def _rpc_share(self, wallet_address="", recipient_address="",
@@ -423,6 +463,7 @@ class FullNode:
         if not ok:
             raise ValueError(result)
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
 
         self._store_shared_secret(result, shared_secret)
         return {"tx_id": result, "shared_secret_stored": True}
@@ -464,6 +505,7 @@ class FullNode:
         if not ok:
             raise ValueError(result)
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
         return {"tx_id": result}
 
     async def _rpc_new_wallet(self):
@@ -498,8 +540,10 @@ class FullNode:
     def _lock_genesis_if_needed(self):
         """Lock genesis hash once we have a chain, preventing replacement."""
         bc = self.blockchain
-        if bc.chain and not bc.consensus._genesis_hash:
-            bc.consensus.set_genesis_hash(bc.chain[0].block_hash)
+        if bc.height >= 0 and not bc.consensus._genesis_hash:
+            genesis = bc.get_block(0)
+            if genesis is not None:
+                bc.consensus.set_genesis_hash(genesis.block_hash)
 
     def _get_wallet(self, address: str) -> Wallet:
         if not isinstance(address, str):
@@ -514,6 +558,33 @@ class FullNode:
         if address not in self._wallet_locks:
             self._wallet_locks[address] = asyncio.Lock()
         return self._wallet_locks[address]
+
+    # ================================================================
+    # WebSocket event helpers
+    # ================================================================
+
+    def _get_chain_stats(self) -> dict:
+        """Build chain_stats payload for WS broadcast."""
+        return {
+            "height": self.blockchain.height,
+            "tx_count": len(self.blockchain._tx_by_id),
+            "pool_size": len(self.blockchain.tx_pool),
+            "peers": self.p2p.peer_count(),
+        }
+
+    async def _ws_notify_block(self, block: Block):
+        """Broadcast a new_block event over WebSocket."""
+        try:
+            await self.ws_manager.broadcast("new_block", block.to_dict())
+        except Exception as e:
+            logger.debug(f"WS new_block broadcast error: {e}")
+
+    async def _ws_notify_tx(self, tx: Transaction):
+        """Broadcast a new_tx event over WebSocket."""
+        try:
+            await self.ws_manager.broadcast("new_tx", tx.to_dict())
+        except Exception as e:
+            logger.debug(f"WS new_tx broadcast error: {e}")
 
     # ================================================================
     # Lifecycle
@@ -552,9 +623,10 @@ class FullNode:
             reg_tx.sign(validator_wallet.signing_sk, validator_wallet.signing_pk)
             self.blockchain.submit_tx(reg_tx)
 
-        if self.blockchain.chain:
-            self.blockchain.consensus.set_genesis_hash(
-                self.blockchain.chain[0].block_hash)
+        if self.blockchain.height >= 0:
+            genesis = self.blockchain.get_block(0)
+            if genesis is not None:
+                self.blockchain.consensus.set_genesis_hash(genesis.block_hash)
         elif not validator_wallet:
             # Non-validator with no chain — accept genesis from first sync.
             # Genesis hash stays "" so the first valid genesis is accepted.
@@ -564,8 +636,17 @@ class FullNode:
         self._register_p2p()
         self._register_rpc()
 
+        # Mount REST API gateway as sub-app at /api/v1/
+        self._rest_api = RESTApi(self, self.rpc.auth_token)
+        self.rpc._app.add_subapp("/api/v1/", self._rest_api.app)
+
+        # Attach WebSocket manager to RPC server
+        self.ws_manager._get_stats_fn = self._get_chain_stats
+        self.rpc.attach_websocket(self.ws_manager)
+
         await self.p2p.start()
         await self.rpc.start()
+        await self.ws_manager.start_stats_loop()
 
         for addr in self.bootstrap:
             parts = addr.split(":")
@@ -582,7 +663,7 @@ class FullNode:
             req_id = secrets.token_hex(8)
             self.p2p._pending_requests[req_id] = time.time()
             await self.p2p.broadcast(MSG_GET_BLOCKS, {
-                "from": len(self.blockchain.chain), "count": 50,
+                "from": self.blockchain.height + 1, "count": 50,
                 "request_id": req_id})
 
         self._running = True
@@ -605,6 +686,7 @@ class FullNode:
         for task in (self._block_task, self._sync_task):
             if task and not task.done():
                 task.cancel()
+        await self.ws_manager.stop()
         await self.p2p.stop()
         await self.rpc.stop()
         self.blockchain.save()
@@ -622,6 +704,7 @@ class FullNode:
                 if block:
                     await self.p2p.broadcast(
                         MSG_NEW_BLOCK, {"block": block.to_dict()})
+                    await self._ws_notify_block(block)
                     if block.index % 20 == 0:
                         self.blockchain.save()
             except Exception as e:

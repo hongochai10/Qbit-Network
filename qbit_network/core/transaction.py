@@ -10,6 +10,7 @@ from ..config import MAX_TX_PAYLOAD_SIZE, CHAIN_ID
 class TxType(str, Enum):
     REGISTER_KEY = "REGISTER_KEY"
     REGISTER_VALIDATOR = "REGISTER_VALIDATOR"
+    REVOKE_KEY = "REVOKE_KEY"
     NOTARIZE = "NOTARIZE"
     STORE = "STORE"
     SHARE = "SHARE"
@@ -79,6 +80,7 @@ class Transaction:
     _ALLOWED_KEYS = {
         TxType.REGISTER_KEY: {"encryption_pk"},
         TxType.REGISTER_VALIDATOR: {"validator_pubkey", "validator_address"},
+        TxType.REVOKE_KEY: {"key_type", "reason"},
         TxType.NOTARIZE: {"documentHash", "metadata"},
         TxType.STORE: {"documentHash", "cid", "metadata"},
         TxType.SHARE: {"cid", "encapsulatedKey", "expires"},
@@ -139,6 +141,18 @@ class Transaction:
             expected_addr = Wallet.derive_address(bytes.fromhex(vpk))
             if vaddr != expected_addr:
                 return False, "validator_address does not match validator_pubkey"
+
+        elif self.tx_type == TxType.REVOKE_KEY:
+            _VALID_KEY_TYPES = {"signing", "encryption", "validator"}
+            _VALID_REASONS = {"compromised", "rotation", "decommission"}
+            kt = self.payload.get("key_type", "")
+            if not isinstance(kt, str) or kt not in _VALID_KEY_TYPES:
+                return False, (f"key_type must be one of {sorted(_VALID_KEY_TYPES)}, "
+                               f"got {kt!r}")
+            reason = self.payload.get("reason", "")
+            if not isinstance(reason, str) or reason not in _VALID_REASONS:
+                return False, (f"reason must be one of {sorted(_VALID_REASONS)}, "
+                               f"got {reason!r}")
 
         return True, ""
 
@@ -221,6 +235,14 @@ class Transaction:
         return cls(
             tx_type=TxType.STORE, sender=sender, nonce=nonce,
             payload={"documentHash": document_hash, "cid": cid, "metadata": metadata},
+        )
+
+    @classmethod
+    def revoke_key(cls, sender: str, key_type: str, reason: str,
+                   nonce: int = 0) -> 'Transaction':
+        return cls(
+            tx_type=TxType.REVOKE_KEY, sender=sender, nonce=nonce,
+            payload={"key_type": key_type, "reason": reason},
         )
 
     @classmethod

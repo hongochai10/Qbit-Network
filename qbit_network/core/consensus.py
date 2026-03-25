@@ -20,6 +20,7 @@ class ProofOfAuthority:
         self._genesis_hash: str = ""
         self._chain_nonces: dict[str, int] | None = None  # injected by blockchain
         self._chain_tx_ids: set[str] | None = None       # injected by blockchain
+        self._revoked_keys: dict[str, dict] | None = None  # injected by blockchain
 
     def add_validator(self, address: str, signing_pk: bytes):
         self.validators[address] = signing_pk
@@ -73,6 +74,11 @@ class ProofOfAuthority:
         if not self.is_validator(block.validator):
             return False, f"unknown validator {block.validator[:16]}..."
 
+        # Revoked signing key cannot produce blocks (SPRINT2-014)
+        if self._revoked_keys is not None:
+            if f"{block.validator}:signing" in self._revoked_keys:
+                return False, "validator signing key revoked"
+
         expected = self.select_validator(block.index)
         if expected and block.validator != expected:
             return False, (f"wrong validator turn: expected {expected[:16]}..., "
@@ -114,6 +120,12 @@ class ProofOfAuthority:
             ok, err = tx.validate_payload()
             if not ok:
                 return False, f"invalid tx payload: {err}"
+
+            # Revoked signing key cannot submit transactions
+            if self._revoked_keys is not None:
+                if f"{tx.sender}:signing" in self._revoked_keys:
+                    return False, (f"tx from revoked signing key: "
+                                   f"{tx.sender[:16]}...")
 
             # Nonce: check sequential within block
             prev_nonce = sender_nonces.get(tx.sender)
