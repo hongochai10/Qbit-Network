@@ -1,5 +1,32 @@
 # Changelog
 
+## Round 15 Security Audit Fixes (2026-03-25)
+
+### MEDIUM Fixes
+- **R15-001**: Evidence verification now uses raw header bytes instead of block hash.
+  EVIDENCE payloads include `block_a_header` / `block_b_header` (hex-encoded header
+  JSON). Signatures verified against headers; headers verified to hash to claimed
+  block hashes. Updated `Transaction.evidence()` factory, `validate_payload()`, and
+  `_process_evidence_tx()`. Removed broken `_build_evidence_header()`.
+- **R15-002**: P2P signing and encryption secret keys zeroed on `P2PNode.stop()` via
+  `SecureBytes.zero()` (if available).
+- **R15-003**: Added explanatory comment on `threading.Lock` usage in `Blockchain`
+  (intentional: SQLite ops are synchronous and sub-ms; asyncio.Lock not warranted).
+- **R15-004**: `_wallet_locks` in `FullNode` now uses bounded `OrderedDict` (cap
+  10,000 entries, LRU eviction) to prevent unbounded memory growth.
+- **R15-005**: `/api/v1/blocks` list endpoint now returns block headers only
+  (transactions omitted). Full tx data available via `/api/v1/blocks/{index}`.
+
+### LOW Fixes
+- **R15-006**: `SecureBytes.__eq__` now uses `hmac.compare_digest()` for
+  constant-time comparison, preventing timing side-channels.
+- **R15-007**: Replaced deprecated `datetime.utcnow()` with
+  `datetime.now(datetime.timezone.utc)` in TLS cert generation.
+- **R15-008**: `documentHash` payload validation now enforces max 128 hex chars
+  for NOTARIZE and STORE transactions.
+- **R15-009**: `export_proof()` now includes `chain_id` field. `verify_proof()`
+  checks chain_id matches if present.
+
 ## v0.4.0-sprint3 (2026-03-25)
 
 ### TLS Auto-Provisioning (ISS-016)
@@ -67,15 +94,15 @@
 - ARCHITECTURE.md: dPoS consensus, epoch rotation, slashing, P2P encryption, peer reputation, chain pruning
 - PROTOCOL.md: dPoS consensus, STAKE/DELEGATE/UNSTAKE/EVIDENCE tx formats, encrypted channel spec, hello_auth proof field
 - SECURITY.md: dPoS security model, slashing, P2P encryption, deferred findings resolved
-- PAPER.md: updated abstract, dPoS section, 14 audit rounds, 958 tests, v0.4.0 status
+- PAPER.md: updated abstract, dPoS section, 15 audit rounds, 1080 tests, v0.4.0 final status
 - AUDIT_LOG.md: deferred findings SPRINT1-003/007/011 marked resolved in v0.4.0
 - ISSUES.md: ISS-007 (pruning) and ISS-009 (reputation) closed
 - FEATURES.md: all v0.4.0 features marked implemented, remaining items moved to v0.5.0+
 - CHANGELOG.md: complete v0.4.0 changelog
 
 ### Tests
-- 46 new tests (26 reputation, 10 pruning, 10 proof signature)
-- Total: 1004 tests, all passing
+- 76 new tests: 34 TLS manager, 42 SecureBytes, 26 reputation, 10 pruning, 10 proof signature
+- Total: 1080 tests, all passing
 
 ## v0.4.0-sprint2 (2026-03-25)
 

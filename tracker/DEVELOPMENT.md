@@ -39,22 +39,35 @@ print(f'ML-KEM-768 OK: pk={len(pk2)} bytes')
 
 ```
 qbit_network/
-├── crypto/          # Pure cryptographic primitives (no business logic)
-│   ├── mldsa.py     # ML-DSA-65 sign/verify
-│   ├── mlkem.py     # ML-KEM-768 encapsulate/decapsulate
-│   ├── hashing.py   # SHA3, SHAKE, Merkle tree
-│   └── aes.py       # AES-256-GCM
-├── core/            # Blockchain data structures and state
-│   ├── wallet.py    # Identity management
-│   ├── transaction.py # TX types and validation
-│   ├── block.py     # Block structure
-│   ├── blockchain.py # Chain state machine
-│   └── consensus.py # PoA validator logic
-├── network/         # Communication layer
-│   ├── p2p.py       # TCP peer-to-peer
-│   └── rpc.py       # JSON-RPC HTTP server
-├── node.py          # Orchestrator (ties everything together)
-└── config.py        # Constants
+├── crypto/              # Pure cryptographic primitives (no business logic)
+│   ├── mldsa.py         # ML-DSA-65 sign/verify
+│   ├── mlkem.py         # ML-KEM-768 encapsulate/decapsulate
+│   ├── hashing.py       # SHA3, SHAKE, Merkle tree
+│   ├── aes.py           # AES-256-GCM
+│   └── secure_bytes.py  # ctypes-backed mutable key material with zero()
+├── core/                # Blockchain data structures and state
+│   ├── wallet.py        # Identity management (SecureBytes-backed keys)
+│   ├── transaction.py   # 10 TX types and validation
+│   ├── block.py         # Block structure with Merkle proofs
+│   ├── blockchain.py    # Chain state machine (dPoS, epochs, slashing, pruning)
+│   ├── consensus.py     # dPoS weighted selection + PoA round-robin fallback
+│   ├── store.py         # SQLite backend (blocks, validators, stakes, epochs, slashing)
+│   └── proof.py         # Merkle proof export + block signature verification
+├── network/             # Communication layer
+│   ├── p2p.py           # TCP P2P, HELLO_AUTH 3-step auth, ML-KEM encrypted channel
+│   ├── rpc.py           # JSON-RPC 2.0 + WebSocket attach + dashboard static files
+│   ├── rest_api.py      # REST API gateway (36 endpoints, /api/v1/)
+│   ├── websocket.py     # WebSocket pub/sub (new_block, new_tx, chain_stats)
+│   ├── rate_limiter.py  # Token bucket rate limiting (P2P + RPC)
+│   ├── tls_manager.py   # TLS auto-provisioning, renewal, hot-reload
+│   └── reputation.py    # PeerReputation scoring with decay and banning
+├── node.py              # Orchestrator (ties everything together)
+└── config.py            # All configuration constants
+cli/
+├── qbit.py              # CLI entry point (wallet, notarize, verify, store, share, retrieve, proof)
+└── ipfs_client.py       # Lightweight IPFS HTTP API client (stdlib-only)
+dashboard/
+└── index.html           # Single-file SPA chain explorer (served at /dashboard/)
 ```
 
 **Dependency direction**: `crypto` -> `core` -> `network` -> `node`
@@ -108,5 +121,13 @@ MAX_TX_PER_BLOCK = 200      # max transactions per block
 MAX_TX_PAYLOAD_SIZE = 8192  # 8 KB max per-tx payload
 MAX_TX_POOL_SIZE = 10000    # max pending transactions
 MAX_BLOCK_DRIFT = 30        # max seconds a block timestamp can be in the future
-CHAIN_ID = "qvault-mainnet" # chain identifier for replay protection
+CHAIN_ID = "qbit-mainnet"   # chain identifier for replay protection
+EPOCH_LENGTH = 100          # blocks per dPoS epoch
+UNBONDING_PERIOD = 100      # blocks before unstake takes effect
+MIN_STAKE = 1               # minimum stake amount
+MAX_STAKE = 1_000_000       # maximum stake amount
+SLASH_PERCENTAGE = 50       # percentage of stake slashed on double-sign evidence
+PRUNING_RETENTION = 10000   # blocks to retain when pruning
+TLS_CERT_VALIDITY_DAYS = 365      # validity of auto-generated TLS certificates
+TLS_RENEWAL_THRESHOLD_DAYS = 30   # days before expiry to trigger auto-renewal
 ```

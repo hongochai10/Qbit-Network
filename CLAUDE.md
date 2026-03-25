@@ -5,6 +5,7 @@ Post-quantum cryptography blockchain for document notarization and encrypted sha
 - **Language:** Python 3.11+
 - **PQC:** ML-DSA-65 + ML-KEM-768 via liboqs
 - **Framework:** asyncio + aiohttp
+- **Version:** v0.4.0 (complete) — 10 TX types, dPoS, 1080 tests, 15 audit rounds, 0 open issues
 
 ## Agents Team
 

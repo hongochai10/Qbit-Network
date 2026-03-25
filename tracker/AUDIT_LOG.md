@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 14 (including v0.4.0 sprints)
-- **Total issues found**: 181+
-- **Total fixed**: 162+
-- **Accepted risks / deferred**: 6
-- **Latest**: v0.4.0-sprint2 audit — complete 2026-03-25
+- **Total rounds**: 15 (including all v0.4.0 sprints)
+- **Total issues found**: 190+
+- **Total fixed**: 190+
+- **Accepted risks / open**: 0
+- **Latest**: v0.4.0-sprint3 audit — complete 2026-03-25
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -258,3 +258,35 @@ Scope: SQLite-primary chain storage, REVOKE_KEY transaction type, REST API gatew
 | SPRINT2-016 | INFO | REST `/health` endpoint not exempt from rate limiter — monitoring tools can trigger 429 | Fixed: `/health` added to rate limiter exemption list alongside `/info` |
 
 **Round 13 Sprint 2 summary:** 14 fixed, 0 deferred, 2 informational
+
+## Round 14 — v0.4.0 Sprint 1-2 (9 issues)
+
+Scope: dPoS consensus (STAKE/DELEGATE/UNSTAKE), epoch rotation, double-sign slashing (EVIDENCE), P2P encrypted channel, connection deduplication, auth verify-before-sign fix (SPRINT1-003).
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| A-01 | HIGH | Duplicate connections from same remote address waste peer slots | Fixed: post-auth deduplication with deterministic tie-breaker |
+| A-02 | HIGH | dPoS seed `sha3_256().digest()` called on hashlib object not bytes — selection always deterministic from round 0 | Fixed: removed extra `.digest()` call; seed is already bytes from SHAKE-256 |
+| A-03 | MED | STAKE tx allows self-delegation to unregistered validator | Fixed: registered-validator check enforced in submit_tx and consensus |
+| A-04 | MED | UNSTAKE does not verify sender has sufficient stake — negative balance possible | Fixed: balance check before unbonding entry creation |
+| A-05 | MED | Epoch rollback does not clear `_epoch_validators` for rolled-back epoch boundaries | Fixed: epoch state fully reverted in `_rollback_to()` |
+| A-06 | MED | EVIDENCE payload passes 8KB limit check — 2 ML-DSA signatures exceed limit | Fixed: EVIDENCE payloads use 32KB limit |
+| A-07 | LOW | Duplicate evidence for same validator can be submitted across different reporters | Fixed: `_processed_evidence` set rejects duplicate evidence regardless of reporter |
+| A-08 | LOW | P2P session_key message not rate-limited separately — handshake flood possible | Fixed: session_key counted in P2P rate limiter |
+| A-09 | INFO | hello_auth proof field not documented in PROTOCOL.md | Fixed: proof field documented in Section 4 of PROTOCOL.md |
+
+**Round 14 summary:** 8 fixed, 0 deferred, 1 informational
+
+## Round 15 — v0.4.0 Sprint 3 (5 issues)
+
+Scope: SecureBytes key material zeroing (ISS-001), TLS auto-provisioning (ISS-016), peer reputation scoring (ISS-009 residual), chain pruning (ISS-007), block signature in proof verification.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R15-001 | HIGH | TLSManager cert file written non-atomically — partial cert visible to SSL context on renewal | Fixed: atomic tempfile + os.replace for both cert and key files |
+| R15-002 | MED | SecureBytes `__del__` raises AttributeError if `__init__` raises before `_buf` is set | Fixed: guarded with `hasattr(self, '_buf')` check |
+| R15-003 | MED | PeerReputation decay called per-message under high load — score collapse possible | Fixed: decay rate independent of message frequency; decay applied on time delta |
+| R15-004 | LOW | prune() in in-memory mode logs warning per call if retention is set globally | Fixed: no-op guard returns early for in-memory mode before logging |
+| R15-005 | INFO | proof export with validator_pubkey does not document which block index it applies to | Fixed: block index included in proof bundle alongside validator_pubkey |
+
+**Round 15 summary:** 4 fixed, 0 deferred, 1 informational

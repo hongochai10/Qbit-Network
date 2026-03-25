@@ -50,7 +50,7 @@ class FullNode:
         self._block_task = None
         self._sync_task = None
         self._shared_secrets: collections.OrderedDict[str, bytes] = collections.OrderedDict()
-        self._wallet_locks: dict[str, asyncio.Lock] = {}  # per-address tx submission lock
+        self._wallet_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()  # per-address tx submission lock
 
     def _store_shared_secret(self, tx_id: str, ss: bytes):
         self._shared_secrets[tx_id] = ss
@@ -652,7 +652,8 @@ class FullNode:
 
     async def _rpc_submit_evidence(self, wallet_address="", validator_address="",
                                    block_index=0, block_a_hash="", block_b_hash="",
-                                   block_a_sig="", block_b_sig=""):
+                                   block_a_sig="", block_b_sig="",
+                                   block_a_header="", block_b_header=""):
         """Submit double-sign evidence (protected)."""
         if not isinstance(wallet_address, str) or not wallet_address:
             raise ValueError("wallet_address required")
@@ -661,7 +662,8 @@ class FullNode:
         if not isinstance(block_index, int) or block_index < 0:
             raise ValueError("block_index must be non-negative integer")
         for name, val in [("block_a_hash", block_a_hash), ("block_b_hash", block_b_hash),
-                          ("block_a_sig", block_a_sig), ("block_b_sig", block_b_sig)]:
+                          ("block_a_sig", block_a_sig), ("block_b_sig", block_b_sig),
+                          ("block_a_header", block_a_header), ("block_b_header", block_b_header)]:
             if not isinstance(val, str) or not val:
                 raise ValueError(f"{name} must be non-empty string")
 
@@ -675,6 +677,8 @@ class FullNode:
                 block_b_hash=block_b_hash,
                 block_a_sig=block_a_sig,
                 block_b_sig=block_b_sig,
+                block_a_header=block_a_header,
+                block_b_header=block_b_header,
                 nonce=self._next_nonce(w.address),
             )
             tx.sign(w.signing_sk, w.signing_pk)
@@ -705,11 +709,22 @@ class FullNode:
             raise ValueError(f"wallet not found: {address[:16]}...")
         return w
 
+    _MAX_WALLET_LOCKS = 10_000
+
     def _lock_for(self, address: str) -> asyncio.Lock:
-        """Get or create a per-address lock for atomic nonce+submit."""
-        if address not in self._wallet_locks:
-            self._wallet_locks[address] = asyncio.Lock()
-        return self._wallet_locks[address]
+        """Get or create a per-address lock for atomic nonce+submit.
+
+        Bounded to _MAX_WALLET_LOCKS entries; oldest are evicted on overflow (R15-004).
+        """
+        if address in self._wallet_locks:
+            # Move to end (most recently used)
+            self._wallet_locks.move_to_end(address)
+            return self._wallet_locks[address]
+        lock = asyncio.Lock()
+        self._wallet_locks[address] = lock
+        while len(self._wallet_locks) > self._MAX_WALLET_LOCKS:
+            self._wallet_locks.popitem(last=False)
+        return lock
 
     # ================================================================
     # WebSocket event helpers

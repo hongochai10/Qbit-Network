@@ -199,6 +199,11 @@ class P2PNode:
         if self._server:
             self._server.close()
             await self._server.wait_closed()
+        # Zero secret key material on shutdown (R15-002)
+        if hasattr(self, 'signing_sk') and hasattr(self.signing_sk, 'zero'):
+            self.signing_sk.zero()
+        if hasattr(self, 'encryption_sk') and hasattr(self.encryption_sk, 'zero'):
+            self.encryption_sk.zero()
 
     # ================================================================
     # Outbound connections

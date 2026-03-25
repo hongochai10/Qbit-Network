@@ -93,7 +93,8 @@ class Transaction:
         TxType.UNSTAKE: {"amount", "validator_address"},
         TxType.EVIDENCE: {"evidence_type", "block_a_hash", "block_b_hash",
                           "block_a_sig", "block_b_sig", "block_index",
-                          "validator_address"},
+                          "validator_address",
+                          "block_a_header", "block_b_header"},
     }
 
     # EVIDENCE payloads contain two ML-DSA-65 signatures (3309 bytes each = 6618 hex chars)
@@ -117,6 +118,8 @@ class Transaction:
             dh = self.payload.get("documentHash", "")
             if not dh or not _HEX_RE.match(dh):
                 return False, "documentHash must be non-empty hex string"
+            if len(dh) > 128:
+                return False, "documentHash too long (max 128 hex chars)"
             meta = self.payload.get("metadata")
             if meta is not None and not isinstance(meta, str):
                 return False, "metadata must be a string"
@@ -127,6 +130,8 @@ class Transaction:
             dh = self.payload.get("documentHash", "")
             if not dh or not _HEX_RE.match(dh):
                 return False, "documentHash must be non-empty hex string"
+            if len(dh) > 128:
+                return False, "documentHash too long (max 128 hex chars)"
             if not self.payload.get("cid"):
                 return False, "cid required for STORE tx"
             meta = self.payload.get("metadata")
@@ -200,6 +205,19 @@ class Transaction:
                 val = self.payload.get(field, "")
                 if not isinstance(val, str) or not val or not _HEX_RE.match(val):
                     return False, f"{field} must be non-empty hex string"
+            # block_a_header / block_b_header carry the raw header JSON bytes
+            # (hex-encoded) that the validator actually signed.
+            for field in ("block_a_header", "block_b_header"):
+                val = self.payload.get(field, "")
+                if not isinstance(val, str) or not val or not _HEX_RE.match(val):
+                    return False, f"{field} must be non-empty hex string"
+            # Verify that each header hashes to the claimed block hash
+            for hdr_field, hash_field in (("block_a_header", "block_a_hash"),
+                                          ("block_b_header", "block_b_hash")):
+                hdr_bytes = bytes.fromhex(self.payload[hdr_field])
+                computed = sha3_256(hdr_bytes).hex()
+                if computed != self.payload[hash_field]:
+                    return False, f"{hdr_field} does not hash to {hash_field}"
             bah = self.payload.get("block_a_hash")
             bbh = self.payload.get("block_b_hash")
             if bah == bbh:
@@ -348,6 +366,7 @@ class Transaction:
     def evidence(cls, sender: str, validator_address: str,
                  block_index: int, block_a_hash: str, block_b_hash: str,
                  block_a_sig: str, block_b_sig: str,
+                 block_a_header: str = "", block_b_header: str = "",
                  nonce: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.EVIDENCE, sender=sender, nonce=nonce,
@@ -357,6 +376,8 @@ class Transaction:
                 "block_b_hash": block_b_hash,
                 "block_a_sig": block_a_sig,
                 "block_b_sig": block_b_sig,
+                "block_a_header": block_a_header,
+                "block_b_header": block_b_header,
                 "block_index": block_index,
                 "validator_address": validator_address,
             },

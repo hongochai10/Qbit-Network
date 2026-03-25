@@ -7,6 +7,7 @@ material from lingering in the process address space.
 """
 
 import ctypes
+import hmac as _hmac
 import logging
 import warnings
 
@@ -74,14 +75,15 @@ class SecureBytes:
         return bytes(self).hex()
 
     def __eq__(self, other: object) -> bool:
+        # Constant-time comparison to prevent timing side-channels (R15-006)
         if self._zeroed:
             return False
         if isinstance(other, SecureBytes):
             if other._zeroed:
                 return False
-            return bytes(self._buf) == bytes(other._buf)
+            return _hmac.compare_digest(bytes(self._buf), bytes(other._buf))
         if isinstance(other, (bytes, bytearray)):
-            return bytes(self._buf) == bytes(other)
+            return _hmac.compare_digest(bytes(self._buf), bytes(other))
         return NotImplemented
 
     def __hash__(self) -> int:

@@ -176,7 +176,9 @@ class RESTApi:
             for i in range(start, end):
                 block = bc.get_block(i)
                 if block is not None:
-                    blocks.append(block.to_dict())
+                    bd = block.to_dict()
+                    bd.pop("transactions", None)  # R15-005: headers only; full tx via /blocks/{index}
+                    blocks.append(bd)
 
         return _ok({
             "blocks": blocks,

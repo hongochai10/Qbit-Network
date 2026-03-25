@@ -15,11 +15,9 @@
 
 | Risk | Status | Mitigation Path |
 |------|--------|-----------------|
-| Python `bytes` key material in heap | Accepted | Requires C extension / mmap for zeroing |
-| Sybil/Eclipse attacks | Accepted | HELLO_AUTH raises bar; needs peer reputation |
-| ~~Responder signs before verifying initiator fields (SPRINT1-003)~~ | **Resolved v0.4.0** | Initiator includes proof in hello_auth; responder verifies before signing |
-| ~~Genesis validator not registered via on-chain tx (SPRINT1-007)~~ | **Resolved v0.4.0** | Genesis validator registered via REGISTER_VALIDATOR tx in genesis block |
-| ~~SQLite validator table uses string concat, not parameterized (SPRINT1-011)~~ | **Resolved v0.4.0** | Parameterized queries implemented |
+| Transaction pool not persisted across restarts | Accepted | WAL-based pool persistence planned |
+| No block finality checkpoint | Accepted | Checkpoint mechanism planned |
+| Sybil/Eclipse attacks (residual) | Accepted | HELLO_AUTH + reputation scoring raise the bar; full Sybil resistance needs staking bonding |
 
 ### Resolved in v0.4.0
 
@@ -28,8 +26,11 @@
 | Responder signs before verifying initiator fields (SPRINT1-003) | Initiator proof in hello_auth; responder verify-before-sign (v0.4.0-sprint2) |
 | Genesis validator not on-chain (SPRINT1-007) | Genesis validator registered via REGISTER_VALIDATOR tx in genesis block (v0.4.0-sprint1) |
 | SQLite string concat in validator table (SPRINT1-011) | Parameterized queries (v0.4.0-sprint1) |
-| No peer reputation / Sybil mitigation (ISS-009) | Slashing for misbehavior + P2P encrypted channel (v0.4.0) |
+| No peer reputation / Sybil mitigation (ISS-009) | dPoS slashing + PeerReputation scoring + P2P encrypted channel (v0.4.0) |
 | P2P not encrypted | ML-KEM-768 session key + AES-256-GCM encrypted channel (v0.4.0-sprint2) |
+| Python `bytes` key material persists in heap (ISS-001) | SecureBytes ctypes buffer with explicit zero(); wallet.close() zeros all keys (v0.4.0-sprint3) |
+| TLS self-signed cert UX (ISS-016) | TLSManager auto-generates, renews, and hot-reloads certificates (v0.4.0-sprint3) |
+| No chain pruning (ISS-007) | Blockchain.prune() removes old SQLite rows while preserving all indices (v0.4.0-sprint3) |
 
 ### Resolved in v0.2.0-v0.3.0
 
@@ -45,7 +46,7 @@
 
 ## Audit History
 
-14 rounds of security audit, 181+ issues found:
+15 rounds of security audit, 190+ issues found:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -63,8 +64,10 @@
 | 12 | v0.2.1 full audit (P2P auth, Docker, store/share) | 9 |
 | 13 Sprint 1 | v0.3.0 Sprint 1 (HELLO_AUTH, REGISTER_VALIDATOR, rate limiting, CI) | 14 |
 | 13 Sprint 2 | v0.3.0 Sprint 2 (SQLite-primary, REVOKE_KEY, REST API, WebSocket) | 16 |
+| 14 | v0.4.0 Sprint 1-2 (dPoS, epochs, slashing, P2P encryption, dedup) | 9 |
+| 15 | v0.4.0 Sprint 3 (SecureBytes, TLS auto-provisioning, reputation, pruning) | 5 |
 
-Round 13 Sprint 2 findings (SPRINT2-001 through SPRINT2-016): see `tracker/AUDIT_LOG.md` for the complete log.
+See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
 
 ## Key Security Controls
 

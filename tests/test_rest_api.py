@@ -129,6 +129,56 @@ class MockNode:
     async def _rpc_register_validator(self, wallet_address=""):
         raise ValueError("register_validator not supported in mock")
 
+    # --- dPoS stubs ---
+
+    async def _rpc_get_validator_stakes(self):
+        return [
+            {"validator": self.wallet.address, "stake": 1000, "delegated": 500}
+        ]
+
+    async def _rpc_get_stake(self, validator_address=""):
+        if not validator_address:
+            raise ValueError("validator_address required")
+        if validator_address == self.wallet.address:
+            return {"validator": validator_address, "stake": 1000, "delegated": 500}
+        return {"validator": validator_address, "stake": 0, "delegated": 0}
+
+    async def _rpc_stake(self, wallet_address="", validator_address="", amount=0):
+        if not wallet_address:
+            raise ValueError("wallet_address required")
+        if not validator_address:
+            raise ValueError("validator_address required")
+        if not isinstance(amount, int) or amount < 1:
+            raise ValueError("amount must be positive integer")
+        return {"tx_id": "mock-stake-tx-id", "status": "pending"}
+
+    async def _rpc_delegate(self, wallet_address="", validator_address="", amount=0):
+        if not wallet_address:
+            raise ValueError("wallet_address required")
+        if not validator_address:
+            raise ValueError("validator_address required")
+        if not isinstance(amount, int) or amount < 1:
+            raise ValueError("amount must be positive integer")
+        return {"tx_id": "mock-delegate-tx-id", "status": "pending"}
+
+    async def _rpc_unstake(self, wallet_address="", validator_address="", amount=0):
+        if not wallet_address:
+            raise ValueError("wallet_address required")
+        if not validator_address:
+            raise ValueError("validator_address required")
+        if not isinstance(amount, int) or amount < 1:
+            raise ValueError("amount must be positive integer")
+        return {"tx_id": "mock-unstake-tx-id", "status": "pending"}
+
+    async def _rpc_get_epoch(self):
+        return {"epoch": 0, "epoch_length": 100, "validators": [self.wallet.address]}
+
+    async def _rpc_get_slashing_events(self, validator=""):
+        return []
+
+    async def _rpc_submit_evidence(self, **kwargs):
+        raise ValueError("evidence submission not supported in mock")
+
 
 AUTH_TOKEN = "test-token-12345"
 
@@ -737,3 +787,252 @@ class TestAdditionalProtectedEndpoints(AsyncRESTTestCase):
         """GET /blocks/1.5 returns 400 (float is not valid index)."""
         resp = await self.client.get("/api/v1/blocks/1.5")
         self.assertEqual(resp.status, 400)
+
+
+# ===================================================================
+# dPoS REST API endpoint tests
+# ===================================================================
+
+class TestDPoSRESTEndpoints(AsyncRESTTestCase):
+    """Tests for staking, epoch, slashing, and evidence REST endpoints."""
+
+    # ---- Public read endpoints ----
+
+    async def test_get_all_stakes_returns_200(self):
+        """/stakes returns list of validator stakes."""
+        resp = await self.client.get("/api/v1/stakes")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIsNone(body["error"])
+        self.assertIn("validators", body["data"])
+        self.assertIn("total", body["data"])
+
+    async def test_get_all_stakes_total_matches_list(self):
+        """/stakes total matches length of validators list."""
+        resp = await self.client.get("/api/v1/stakes")
+        body = await resp.json()
+        self.assertEqual(body["data"]["total"], len(body["data"]["validators"]))
+
+    async def test_get_validator_stake_known_address(self):
+        """/stakes/{validator} for known validator returns stake data."""
+        node = self.app["_mock_node"]
+        resp = await self.client.get(f"/api/v1/stakes/{node.wallet.address}")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIsNone(body["error"])
+        self.assertIn("stake", body["data"])
+        self.assertEqual(body["data"]["validator"], node.wallet.address)
+
+    async def test_get_validator_stake_unknown_address_returns_zero_stake(self):
+        """/stakes/{validator} for unknown validator returns zero stake."""
+        resp = await self.client.get("/api/v1/stakes/qv1unknownaddress")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertEqual(body["data"]["stake"], 0)
+
+    async def test_get_current_epoch_returns_200(self):
+        """/epochs/current returns epoch data."""
+        resp = await self.client.get("/api/v1/epochs/current")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIsNone(body["error"])
+        self.assertIn("epoch", body["data"])
+        self.assertIn("validators", body["data"])
+
+    async def test_get_slashing_events_returns_200(self):
+        """/slashing-events returns list (may be empty)."""
+        resp = await self.client.get("/api/v1/slashing-events")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIsNone(body["error"])
+        self.assertIsInstance(body["data"], list)
+
+    async def test_get_slashing_events_with_validator_query(self):
+        """/slashing-events?validator=... is accepted."""
+        node = self.app["_mock_node"]
+        resp = await self.client.get(
+            f"/api/v1/slashing-events?validator={node.wallet.address}"
+        )
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIsInstance(body["data"], list)
+
+    # ---- Protected write endpoints ----
+
+    async def test_stake_no_auth_returns_401(self):
+        """POST /stake without auth returns 401."""
+        resp = await self.client.post("/api/v1/stake", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_delegate_no_auth_returns_401(self):
+        """POST /delegate without auth returns 401."""
+        resp = await self.client.post("/api/v1/delegate", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_unstake_no_auth_returns_401(self):
+        """POST /unstake without auth returns 401."""
+        resp = await self.client.post("/api/v1/unstake", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_evidence_no_auth_returns_401(self):
+        """POST /evidence without auth returns 401."""
+        resp = await self.client.post("/api/v1/evidence", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_stake_valid_request_returns_201(self):
+        """POST /stake with valid body returns 201."""
+        node = self.app["_mock_node"]
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": node.wallet.address,
+                "validator_address": node.wallet.address,
+                "amount": 100,
+            },
+        )
+        self.assertEqual(resp.status, 201)
+        body = await resp.json()
+        self.assertIsNone(body["error"])
+        self.assertIn("tx_id", body["data"])
+
+    async def test_stake_missing_wallet_returns_400(self):
+        """POST /stake without wallet_address returns 400."""
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"validator_address": "qv1abc", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_stake_missing_validator_returns_400(self):
+        """POST /stake without validator_address returns 400."""
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1abc", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_stake_zero_amount_returns_400(self):
+        """POST /stake with amount=0 returns 400."""
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1abc", "validator_address": "qv1abc", "amount": 0},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_stake_negative_amount_returns_400(self):
+        """POST /stake with negative amount returns 400."""
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1abc", "validator_address": "qv1abc", "amount": -5},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_stake_non_integer_amount_returns_400(self):
+        """POST /stake with float amount returns 400."""
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1abc", "validator_address": "qv1abc", "amount": 1.5},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_stake_invalid_json_returns_400(self):
+        """POST /stake with non-JSON body returns 400."""
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}",
+                     "Content-Type": "text/plain"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_delegate_valid_request_returns_201(self):
+        """POST /delegate with valid body returns 201."""
+        node = self.app["_mock_node"]
+        resp = await self.client.post(
+            "/api/v1/delegate",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": node.wallet.address,
+                "validator_address": node.wallet.address,
+                "amount": 50,
+            },
+        )
+        self.assertEqual(resp.status, 201)
+        body = await resp.json()
+        self.assertIsNone(body["error"])
+        self.assertIn("tx_id", body["data"])
+
+    async def test_delegate_missing_amount_returns_400(self):
+        """POST /delegate with missing amount defaults to 0 => 400."""
+        resp = await self.client.post(
+            "/api/v1/delegate",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1abc", "validator_address": "qv1abc"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_unstake_valid_request_returns_201(self):
+        """POST /unstake with valid body returns 201."""
+        node = self.app["_mock_node"]
+        resp = await self.client.post(
+            "/api/v1/unstake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": node.wallet.address,
+                "validator_address": node.wallet.address,
+                "amount": 25,
+            },
+        )
+        self.assertEqual(resp.status, 201)
+        body = await resp.json()
+        self.assertIsNone(body["error"])
+        self.assertIn("tx_id", body["data"])
+
+    async def test_unstake_missing_wallet_returns_400(self):
+        """POST /unstake without wallet_address returns 400."""
+        resp = await self.client.post(
+            "/api/v1/unstake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"validator_address": "qv1abc", "amount": 10},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_evidence_with_auth_invalid_data_returns_400(self):
+        """POST /evidence with auth but unsupported data returns 400 from mock."""
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1abc"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_evidence_invalid_json_returns_400(self):
+        """POST /evidence with non-JSON body returns 400."""
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}",
+                     "Content-Type": "text/plain"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_stakes_endpoint_is_public(self):
+        """/stakes endpoint does not require auth."""
+        resp = await self.client.get("/api/v1/stakes")
+        self.assertEqual(resp.status, 200)
+
+    async def test_epochs_endpoint_is_public(self):
+        """/epochs/current does not require auth."""
+        resp = await self.client.get("/api/v1/epochs/current")
+        self.assertEqual(resp.status, 200)
+
+    async def test_slashing_events_endpoint_is_public(self):
+        """/slashing-events does not require auth."""
+        resp = await self.client.get("/api/v1/slashing-events")
+        self.assertEqual(resp.status, 200)

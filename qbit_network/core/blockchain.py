@@ -113,7 +113,12 @@ class Blockchain:
         self._slashing_events: list[dict] = []             # [{validator, evidence_tx_id, amount_slashed, block_index}]
         self._processed_evidence: set[str] = set()         # validator_address values already slashed (dedup)
 
-        self._db_lock = threading.Lock()  # protects SQLite mutations (_append_block, _rollback_to)
+        # threading.Lock (not asyncio.Lock) is intentional here: SQLite operations
+        # protected by this lock are synchronous and fast (sub-ms), so blocking the
+        # event loop briefly is acceptable. Using asyncio.Lock would require every
+        # caller (including from_dict replay, rollback, etc.) to be async, adding
+        # unnecessary complexity for no practical benefit. (R15-003)
+        self._db_lock = threading.Lock()
 
         self.consensus = ProofOfAuthority()
         self.consensus._chain_nonces = self._sender_nonce
@@ -956,11 +961,17 @@ class Blockchain:
             logger.warning(f"Evidence tx {tx.tx_id[:16]}...: invalid signature hex")
             return
 
-        # Verify both signatures are valid for blocks at the same index but different hashes
-        # Build signable header bytes for each block hash
+        # Verify both signatures against the raw header bytes provided in evidence.
+        # The headers are the exact bytes the validator signed when producing each block.
         from ..crypto import MLDSA
-        header_a = self._build_evidence_header(evidence_block_index, block_a_hash, vaddr)
-        header_b = self._build_evidence_header(evidence_block_index, block_b_hash, vaddr)
+        block_a_header_hex = tx.payload.get("block_a_header", "")
+        block_b_header_hex = tx.payload.get("block_b_header", "")
+        try:
+            header_a = bytes.fromhex(block_a_header_hex)
+            header_b = bytes.fromhex(block_b_header_hex)
+        except ValueError:
+            logger.warning(f"Evidence tx {tx.tx_id[:16]}...: invalid header hex")
+            return
 
         if not MLDSA.verify(vpk, header_a, block_a_sig):
             logger.warning(f"Evidence tx {tx.tx_id[:16]}...: block_a signature verification failed")
@@ -1034,28 +1045,11 @@ class Blockchain:
             f"SLASHED validator {vaddr[:16]}...: amount={slash_amount}, "
             f"remaining_stake={new_total} (block #{block_index})")
 
-    @staticmethod
-    def _build_evidence_header(block_index: int, block_hash: str,
-                               validator: str) -> bytes:
-        """Build the header bytes that a block would have been signed with.
-
-        This is a simplified header for evidence verification -- we reconstruct
-        the canonical signing format from the block_hash directly since the
-        evidence payload contains the block hash (which is the SHA3-256 of
-        the full header). The validator signed the header bytes, so we
-        use the block_hash as the message that was signed.
-        """
-        import json as _json
-        # The evidence contains pre-computed block hashes.
-        # The validator's signature is over the block's _header_bytes().
-        # Since we cannot reconstruct the full header from just the hash,
-        # the evidence signatures are over the raw header bytes that produced
-        # each hash. The submitter must provide signatures that verify against
-        # the validator's pubkey. In practice, the evidence provider captures
-        # the actual block signatures from the competing blocks.
-        # For verification, we check that each signature verifies when treated
-        # as a signature over the block hash bytes.
-        return bytes.fromhex(block_hash)
+    # NOTE: _build_evidence_header() was removed in R15-001 fix.
+    # Evidence payloads now include block_a_header / block_b_header fields
+    # containing the hex-encoded raw header bytes that validators signed.
+    # Signature verification in _process_evidence_tx uses those directly,
+    # and validate_payload checks that each header hashes to its block hash.
 
     def _check_epoch_transition(self, block_index: int):
         """Check if we've crossed an epoch boundary and snapshot validators."""

@@ -243,12 +243,7 @@
 - [ ] Block finality (checkpoint mechanism)
 
 ### Storage
-- [ ] Chain pruning (ISS-007 partially addressed via epoch checkpoints)
-- [ ] Transaction pool persistence
-
-### Security
-- [ ] Key material zeroing via ctypes/mmap (ISS-001)
-- [ ] ACME/Let's Encrypt TLS auto-provisioning (ISS-016)
+- [ ] Transaction pool persistence across restarts
 
 ### Client
 - [ ] Human-readable proof PDF export

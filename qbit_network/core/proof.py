@@ -1,6 +1,7 @@
 """Standalone notarization proof — export and offline verification."""
 import json
 from ..crypto import sha3_256, MLDSA, merkle_proof, verify_merkle_proof
+from ..config import CHAIN_ID
 
 PROOF_VERSION = 1
 PROOF_TYPE = "qbit-notarization-proof"
@@ -33,6 +34,7 @@ def export_proof(block_dict: dict, tx_index: int, tx_id: str,
     result = {
         "version": PROOF_VERSION,
         "type": PROOF_TYPE,
+        "chain_id": CHAIN_ID,
         "document_hash": document_hash,
         "tx_id": tx_id,
         "block": {
@@ -72,6 +74,11 @@ def verify_proof(proof: dict) -> tuple[bool, list[str]]:
     if version < 1:
         errors.append(f"unsupported proof version: {version}")
         return False, errors
+
+    # Verify chain_id if present (R15-009)
+    proof_chain_id = proof.get("chain_id")
+    if proof_chain_id is not None and proof_chain_id != CHAIN_ID:
+        errors.append(f"chain_id mismatch: proof has {proof_chain_id!r}, expected {CHAIN_ID!r}")
 
     tx_id = proof.get("tx_id", "")
     block = proof.get("block", {})

@@ -287,11 +287,56 @@ After successful authentication, duplicate connections to the same remote addres
 
 ## Peer Reputation
 
-The `_slashed_validators` set prevents re-staking to misbehaving validators. Authentication via HELLO_AUTH prevents unauthenticated peers from participating. Connection deduplication prevents resource exhaustion from redundant connections.
+`PeerReputation` class in `network/reputation.py` tracks per-peer scores across 8 event types:
+
+| Event | Score Delta |
+|-------|------------|
+| valid_block | +10 |
+| valid_tx | +1 |
+| invalid_block | -50 |
+| invalid_tx | -10 |
+| auth_failed | -100 |
+| timeout | -5 |
+| rate_limited | -20 |
+| protocol_error | -30 |
+
+Peers start at score 100. A score at or below -100 triggers a ban. Score decay (0.99x per minute) ensures old events fade over time. Banned peers are rejected on inbound connections and disconnected mid-session. Manual unban resets score to the default.
+
+In addition to score-based reputation, the `_slashed_validators` set prevents re-staking to misbehaving validators, and HELLO_AUTH mutual authentication prevents unauthenticated peers from participating.
 
 ## Chain Pruning
 
-Chain pruning strategy is tracked as ISS-007. Current storage growth is bounded by SQLite-primary persistence, which avoids in-memory chain list overhead. Epoch snapshots provide natural checkpoints for future pruning implementations.
+`Blockchain.prune(retention)` removes block data from SQLite for blocks older than `height - retention`. The default retention is `PRUNING_RETENTION = 10000` blocks.
+
+- `SQLiteStore.prune_blocks(before_index)` performs atomic deletion of block and transaction rows.
+- All in-memory indices (notarizations, key_registry, validator_registry, stakes, epochs, slashing) are preserved; only raw block storage rows are removed.
+- Thread-safe via `_db_lock`.
+- No-op in in-memory mode (no `data_dir`).
+- Epoch snapshots act as natural state checkpoints for the retained range.
+
+## SecureBytes
+
+`SecureBytes` in `crypto/secure_bytes.py` provides a ctypes-backed mutable byte buffer that can be explicitly zeroed:
+
+- `zero()` method overwrites the buffer with zeros using `ctypes.memset`.
+- Context manager (`__enter__`/`__exit__`) and `__del__` auto-zero for defense in depth.
+- Full bytes-like interface: `__bytes__`, `__len__`, `hex()`, `__eq__`, `__hash__`.
+- `Wallet` wraps `signing_sk` and `encryption_sk` in `SecureBytes`.
+- `Wallet.close()` and `Wallet.__exit__` zero all secret key material.
+- `MLDSA.sign()` and `MLKEM.decapsulate()` accept `SecureBytes` transparently.
+- scrypt-derived keys and decrypted plaintext buffers are zeroed after use.
+- Graceful fallback to `bytearray` with best-effort zeroing if ctypes is unavailable.
+
+## TLS Manager
+
+`TLSManager` in `network/tls_manager.py` handles TLS certificate lifecycle:
+
+- Generates self-signed ECC (P-256) certificates with correct X.509 fields (CN, SAN, BasicConstraints).
+- Auto-renewal: checks cert expiry against `TLS_RENEWAL_THRESHOLD_DAYS` (default 30); regenerates before expiry.
+- External cert hot-reload: watches file modification times, reloads SSL context on change.
+- SIGHUP handler triggers manual TLS context reload on Unix platforms.
+- Atomic writes (tempfile + os.replace) for cert and key files; key files written with 0o600 permissions.
+- Activated with `--tls-auto`; hostname set with `--tls-hostname`.
 
 ## REST API Gateway
 

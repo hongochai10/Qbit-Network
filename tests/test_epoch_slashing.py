@@ -141,12 +141,38 @@ def _setup_slashing_scenario(w, w2):
 
 
 def _create_double_sign_evidence(validator_wallet, block_index):
-    """Create fake double-sign evidence: two different block hashes signed by same validator."""
-    hash_a = sha3_256(f"block-a-{block_index}".encode()).hex()
-    hash_b = sha3_256(f"block-b-{block_index}".encode()).hex()
-    sig_a = MLDSA.sign(validator_wallet.signing_sk, bytes.fromhex(hash_a))
-    sig_b = MLDSA.sign(validator_wallet.signing_sk, bytes.fromhex(hash_b))
-    return hash_a, hash_b, sig_a.hex(), sig_b.hex()
+    """Create fake double-sign evidence: two different block headers signed by same validator.
+
+    Returns (hash_a, hash_b, sig_a_hex, sig_b_hex, header_a_hex, header_b_hex).
+    The headers are canonical JSON matching Block._header_bytes() format.
+    """
+    from qbit_network.core.wallet import Wallet
+    validator = Wallet.derive_address(validator_wallet.signing_pk)
+
+    # Build two distinct headers at the same index (simulating a double-sign)
+    header_obj_a = {
+        "index": block_index,
+        "merkleRoot": "aa" * 32,
+        "prevHash": "00" * 32,
+        "timestamp": 1000000,
+        "txCount": 1,
+        "validator": validator,
+    }
+    header_obj_b = {
+        "index": block_index,
+        "merkleRoot": "bb" * 32,
+        "prevHash": "00" * 32,
+        "timestamp": 1000001,
+        "txCount": 1,
+        "validator": validator,
+    }
+    header_a = json.dumps(header_obj_a, sort_keys=True, separators=(',', ':')).encode()
+    header_b = json.dumps(header_obj_b, sort_keys=True, separators=(',', ':')).encode()
+    hash_a = sha3_256(header_a).hex()
+    hash_b = sha3_256(header_b).hex()
+    sig_a = MLDSA.sign(validator_wallet.signing_sk, header_a)
+    sig_b = MLDSA.sign(validator_wallet.signing_sk, header_b)
+    return hash_a, hash_b, sig_a.hex(), sig_b.hex(), header_a.hex(), header_b.hex()
 
 
 # ===========================================================================
@@ -158,14 +184,18 @@ class TestEvidenceTransaction:
 
     def test_evidence_factory(self):
         w = Wallet.generate()
+        hdr_a = b'{"index":10,"merkleRoot":"' + b'aa' * 32 + b'"}'
+        hdr_b = b'{"index":10,"merkleRoot":"' + b'bb' * 32 + b'"}'
         tx = Transaction.evidence(
             sender=w.address,
             validator_address="qv1bad",
             block_index=10,
-            block_a_hash="aa" * 32,
-            block_b_hash="bb" * 32,
+            block_a_hash=sha3_256(hdr_a).hex(),
+            block_b_hash=sha3_256(hdr_b).hex(),
             block_a_sig="cc" * 100,
             block_b_sig="dd" * 100,
+            block_a_header=hdr_a.hex(),
+            block_b_header=hdr_b.hex(),
             nonce=0,
         )
         assert tx.tx_type == TxType.EVIDENCE
@@ -175,14 +205,18 @@ class TestEvidenceTransaction:
 
     def test_evidence_serialization_roundtrip(self):
         w = Wallet.generate()
+        hdr_a = b'{"index":5,"merkleRoot":"' + b'aa' * 32 + b'"}'
+        hdr_b = b'{"index":5,"merkleRoot":"' + b'bb' * 32 + b'"}'
         tx = Transaction.evidence(
             sender=w.address,
             validator_address="qv1bad",
             block_index=5,
-            block_a_hash="aa" * 32,
-            block_b_hash="bb" * 32,
+            block_a_hash=sha3_256(hdr_a).hex(),
+            block_b_hash=sha3_256(hdr_b).hex(),
             block_a_sig="cc" * 100,
             block_b_sig="dd" * 100,
+            block_a_header=hdr_a.hex(),
+            block_b_header=hdr_b.hex(),
             nonce=0,
         )
         tx.sign(w.signing_sk, w.signing_pk)
@@ -194,28 +228,36 @@ class TestEvidenceTransaction:
 
     def test_evidence_payload_validation_valid(self):
         w = Wallet.generate()
+        hdr_a = b'{"index":5,"tag":"a"}'
+        hdr_b = b'{"index":5,"tag":"b"}'
         tx = Transaction.evidence(
             sender=w.address,
             validator_address="qv1bad",
             block_index=5,
-            block_a_hash="aa" * 32,
-            block_b_hash="bb" * 32,
+            block_a_hash=sha3_256(hdr_a).hex(),
+            block_b_hash=sha3_256(hdr_b).hex(),
             block_a_sig="cc" * 100,
             block_b_sig="dd" * 100,
+            block_a_header=hdr_a.hex(),
+            block_b_header=hdr_b.hex(),
         )
         ok, err = tx.validate_payload()
         assert ok, err
 
     def test_evidence_rejects_same_hash(self):
         w = Wallet.generate()
+        hdr = b'{"index":5,"tag":"same"}'
+        h = sha3_256(hdr).hex()
         tx = Transaction.evidence(
             sender=w.address,
             validator_address="qv1bad",
             block_index=5,
-            block_a_hash="aa" * 32,
-            block_b_hash="aa" * 32,  # same hash
+            block_a_hash=h,
+            block_b_hash=h,  # same hash
             block_a_sig="cc" * 100,
             block_b_sig="dd" * 100,
+            block_a_header=hdr.hex(),
+            block_b_header=hdr.hex(),
         )
         ok, err = tx.validate_payload()
         assert not ok
@@ -241,14 +283,18 @@ class TestEvidenceTransaction:
 
     def test_evidence_rejects_negative_block_index(self):
         w = Wallet.generate()
+        hdr_a = b'{"index":-1,"tag":"a"}'
+        hdr_b = b'{"index":-1,"tag":"b"}'
         tx = Transaction.evidence(
             sender=w.address,
             validator_address="qv1bad",
             block_index=-1,
-            block_a_hash="aa" * 32,
-            block_b_hash="bb" * 32,
+            block_a_hash=sha3_256(hdr_a).hex(),
+            block_b_hash=sha3_256(hdr_b).hex(),
             block_a_sig="cc" * 100,
             block_b_sig="dd" * 100,
+            block_a_header=hdr_a.hex(),
+            block_b_header=hdr_b.hex(),
         )
         ok, err = tx.validate_payload()
         assert not ok
@@ -274,14 +320,18 @@ class TestEvidenceTransaction:
 
     def test_evidence_rejects_empty_validator_address(self):
         w = Wallet.generate()
+        hdr_a = b'{"index":5,"tag":"va"}'
+        hdr_b = b'{"index":5,"tag":"vb"}'
         tx = Transaction.evidence(
             sender=w.address,
             validator_address="",
             block_index=5,
-            block_a_hash="aa" * 32,
-            block_b_hash="bb" * 32,
+            block_a_hash=sha3_256(hdr_a).hex(),
+            block_b_hash=sha3_256(hdr_b).hex(),
             block_a_sig="cc" * 100,
             block_b_sig="dd" * 100,
+            block_a_header=hdr_a.hex(),
+            block_b_header=hdr_b.hex(),
         )
         ok, err = tx.validate_payload()
         assert not ok
@@ -432,13 +482,14 @@ class TestSlashing:
 
     def _submit_evidence(self, bc, miners, w, w2, block_index=5):
         """Helper: create and submit double-sign evidence against w2."""
-        hash_a, hash_b, sig_a, sig_b = _create_double_sign_evidence(w2, block_index)
+        hash_a, hash_b, sig_a, sig_b, hdr_a, hdr_b = _create_double_sign_evidence(w2, block_index)
         nonce = bc.get_nonce(w.address)
         tx = Transaction.evidence(
             sender=w.address, validator_address=w2.address,
             block_index=block_index,
             block_a_hash=hash_a, block_b_hash=hash_b,
-            block_a_sig=sig_a, block_b_sig=sig_b, nonce=nonce,
+            block_a_sig=sig_a, block_b_sig=sig_b,
+            block_a_header=hdr_a, block_b_header=hdr_b, nonce=nonce,
         )
         tx.sign(w.signing_sk, w.signing_pk)
         _submit_and_mine_multi(bc, miners, tx)
@@ -506,16 +557,14 @@ class TestSlashing:
         self._submit_evidence(bc, miners, w, w2)
 
         # Second evidence for same validator
-        hash_c = sha3_256(b"block-c").hex()
-        hash_d = sha3_256(b"block-d").hex()
-        sig_c = MLDSA.sign(w2.signing_sk, bytes.fromhex(hash_c)).hex()
-        sig_d = MLDSA.sign(w2.signing_sk, bytes.fromhex(hash_d)).hex()
+        hash_c2, hash_d2, sig_c2, sig_d2, hdr_c2, hdr_d2 = _create_double_sign_evidence(w2, 6)
 
         nonce2 = bc.get_nonce(w.address)
         ev2 = Transaction.evidence(
             sender=w.address, validator_address=w2.address, block_index=6,
-            block_a_hash=hash_c, block_b_hash=hash_d,
-            block_a_sig=sig_c, block_b_sig=sig_d, nonce=nonce2,
+            block_a_hash=hash_c2, block_b_hash=hash_d2,
+            block_a_sig=sig_c2, block_b_sig=sig_d2,
+            block_a_header=hdr_c2, block_b_header=hdr_d2, nonce=nonce2,
         )
         ev2.sign(w.signing_sk, w.signing_pk)
         ok, err = bc.submit_tx(ev2)
@@ -527,12 +576,15 @@ class TestSlashing:
         w = Wallet.generate()
         bc = _setup_chain(w)
 
+        hdr_a = b'{"index":5,"tag":"a"}'
+        hdr_b = b'{"index":5,"tag":"b"}'
         nonce = bc.get_nonce(w.address)
         tx = Transaction.evidence(
             sender=w.address, validator_address="qv1nonexistent",
             block_index=5,
-            block_a_hash="aa" * 32, block_b_hash="bb" * 32,
+            block_a_hash=sha3_256(hdr_a).hex(), block_b_hash=sha3_256(hdr_b).hex(),
             block_a_sig="cc" * 100, block_b_sig="dd" * 100,
+            block_a_header=hdr_a.hex(), block_b_header=hdr_b.hex(),
             nonce=nonce,
         )
         tx.sign(w.signing_sk, w.signing_pk)
@@ -546,17 +598,20 @@ class TestSlashing:
         w2 = Wallet.generate()
         bc, miners = _setup_slashing_scenario(w, w2)
 
-        hash_a = sha3_256(b"block-a").hex()
-        hash_b = sha3_256(b"block-b").hex()
+        hdr_a = b'{"index":5,"tag":"wrong-a"}'
+        hdr_b = b'{"index":5,"tag":"wrong-b"}'
+        hash_a = sha3_256(hdr_a).hex()
+        hash_b = sha3_256(hdr_b).hex()
         # Sign with WRONG key (w instead of w2)
-        sig_a = MLDSA.sign(w.signing_sk, bytes.fromhex(hash_a)).hex()
-        sig_b = MLDSA.sign(w.signing_sk, bytes.fromhex(hash_b)).hex()
+        sig_a = MLDSA.sign(w.signing_sk, hdr_a).hex()
+        sig_b = MLDSA.sign(w.signing_sk, hdr_b).hex()
 
         nonce = bc.get_nonce(w.address)
         tx = Transaction.evidence(
             sender=w.address, validator_address=w2.address, block_index=5,
             block_a_hash=hash_a, block_b_hash=hash_b,
-            block_a_sig=sig_a, block_b_sig=sig_b, nonce=nonce,
+            block_a_sig=sig_a, block_b_sig=sig_b,
+            block_a_header=hdr_a.hex(), block_b_header=hdr_b.hex(), nonce=nonce,
         )
         tx.sign(w.signing_sk, w.signing_pk)
         _submit_and_mine_multi(bc, miners, tx)
@@ -575,12 +630,13 @@ class TestSlashing:
         miners = [w, w2]
         _stake_validator(bc, miners, w, w2.address, MIN_STAKE)  # exactly min
 
-        hash_a, hash_b, sig_a, sig_b = _create_double_sign_evidence(w2, 5)
+        hash_a, hash_b, sig_a, sig_b, hdr_a, hdr_b = _create_double_sign_evidence(w2, 5)
         nonce = bc.get_nonce(w.address)
         tx = Transaction.evidence(
             sender=w.address, validator_address=w2.address, block_index=5,
             block_a_hash=hash_a, block_b_hash=hash_b,
-            block_a_sig=sig_a, block_b_sig=sig_b, nonce=nonce,
+            block_a_sig=sig_a, block_b_sig=sig_b,
+            block_a_header=hdr_a, block_b_header=hdr_b, nonce=nonce,
         )
         tx.sign(w.signing_sk, w.signing_pk)
         _submit_and_mine_multi(bc, miners, tx)
@@ -633,12 +689,13 @@ class TestEpochSlashingRollback:
 
         height_before = bc.height
 
-        hash_a, hash_b, sig_a, sig_b = _create_double_sign_evidence(w2, 5)
+        hash_a, hash_b, sig_a, sig_b, hdr_a, hdr_b = _create_double_sign_evidence(w2, 5)
         nonce = bc.get_nonce(w.address)
         tx = Transaction.evidence(
             sender=w.address, validator_address=w2.address, block_index=5,
             block_a_hash=hash_a, block_b_hash=hash_b,
-            block_a_sig=sig_a, block_b_sig=sig_b, nonce=nonce,
+            block_a_sig=sig_a, block_b_sig=sig_b,
+            block_a_header=hdr_a, block_b_header=hdr_b, nonce=nonce,
         )
         tx.sign(w.signing_sk, w.signing_pk)
         _submit_and_mine_multi(bc, miners, tx)
@@ -685,12 +742,13 @@ class TestSQLitePersistence:
         miners = [w, w2]
         _stake_validator(bc, miners, w, w2.address, 1000)
 
-        hash_a, hash_b, sig_a, sig_b = _create_double_sign_evidence(w2, 5)
+        hash_a, hash_b, sig_a, sig_b, hdr_a, hdr_b = _create_double_sign_evidence(w2, 5)
         nonce = bc.get_nonce(w.address)
         tx = Transaction.evidence(
             sender=w.address, validator_address=w2.address, block_index=5,
             block_a_hash=hash_a, block_b_hash=hash_b,
-            block_a_sig=sig_a, block_b_sig=sig_b, nonce=nonce,
+            block_a_sig=sig_a, block_b_sig=sig_b,
+            block_a_header=hdr_a, block_b_header=hdr_b, nonce=nonce,
         )
         tx.sign(w.signing_sk, w.signing_pk)
         _submit_and_mine_multi(bc, miners, tx)
@@ -724,12 +782,13 @@ class TestSQLitePersistence:
         miners = [w, w2]
         _stake_validator(bc, miners, w, w2.address, 1000)
 
-        hash_a, hash_b, sig_a, sig_b = _create_double_sign_evidence(w2, 5)
+        hash_a, hash_b, sig_a, sig_b, hdr_a, hdr_b = _create_double_sign_evidence(w2, 5)
         nonce = bc.get_nonce(w.address)
         tx = Transaction.evidence(
             sender=w.address, validator_address=w2.address, block_index=5,
             block_a_hash=hash_a, block_b_hash=hash_b,
-            block_a_sig=sig_a, block_b_sig=sig_b, nonce=nonce,
+            block_a_sig=sig_a, block_b_sig=sig_b,
+            block_a_header=hdr_a, block_b_header=hdr_b, nonce=nonce,
         )
         tx.sign(w.signing_sk, w.signing_pk)
         _submit_and_mine_multi(bc, miners, tx)
@@ -768,12 +827,13 @@ class TestSQLitePersistence:
 
         height_before = bc.height
 
-        hash_a, hash_b, sig_a, sig_b = _create_double_sign_evidence(w2, 5)
+        hash_a, hash_b, sig_a, sig_b, hdr_a, hdr_b = _create_double_sign_evidence(w2, 5)
         nonce = bc.get_nonce(w.address)
         tx = Transaction.evidence(
             sender=w.address, validator_address=w2.address, block_index=5,
             block_a_hash=hash_a, block_b_hash=hash_b,
-            block_a_sig=sig_a, block_b_sig=sig_b, nonce=nonce,
+            block_a_sig=sig_a, block_b_sig=sig_b,
+            block_a_header=hdr_a, block_b_header=hdr_b, nonce=nonce,
         )
         tx.sign(w.signing_sk, w.signing_pk)
         _submit_and_mine_multi(bc, miners, tx)
@@ -837,12 +897,13 @@ class TestEdgeCases:
         assert ok
 
         # Submit evidence tx
-        hash_a, hash_b, sig_a, sig_b = _create_double_sign_evidence(w2, 5)
+        hash_a, hash_b, sig_a, sig_b, hdr_a, hdr_b = _create_double_sign_evidence(w2, 5)
         nonce2 = bc.get_nonce(w.address) + bc._pool_sender_count.get(w.address, 0)
         ev_tx = Transaction.evidence(
             sender=w.address, validator_address=w2.address, block_index=5,
             block_a_hash=hash_a, block_b_hash=hash_b,
-            block_a_sig=sig_a, block_b_sig=sig_b, nonce=nonce2,
+            block_a_sig=sig_a, block_b_sig=sig_b,
+            block_a_header=hdr_a, block_b_header=hdr_b, nonce=nonce2,
         )
         ev_tx.sign(w.signing_sk, w.signing_pk)
         ok, _ = bc.submit_tx(ev_tx)

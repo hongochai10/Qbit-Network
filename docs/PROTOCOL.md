@@ -17,7 +17,7 @@ address = "qv1" + hex(SHA3-256(ML-DSA-65 public key))
 ```json
 {
   "id": "SHA3-256 hex of signable content",
-  "type": "NOTARIZE | STORE | SHARE | REGISTER_KEY",
+  "type": "NOTARIZE | STORE | SHARE | REGISTER_KEY | REGISTER_VALIDATOR | REVOKE_KEY | STAKE | DELEGATE | UNSTAKE | EVIDENCE",
   "from": "qv1...",
   "to": "qv1... (recipient, required for SHARE)",
   "timestamp": 1700000000,

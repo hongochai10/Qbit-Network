@@ -10,7 +10,7 @@
 
 ## Abstract
 
-We present QBit Network, a purpose-built blockchain system that replaces all quantum-vulnerable cryptographic primitives with NIST-standardized post-quantum algorithms. QBit Network utilizes ML-DSA-65 (CRYSTALS-Dilithium) for digital signatures and ML-KEM-768 (CRYSTALS-Kyber) for key encapsulation, providing quantum-resistant document notarization, encrypted vault storage, and secure data sharing. The system implements a dual-keypair identity model, Delegated Proof of Stake (dPoS) consensus with epoch rotation and slashing, and a domain-separated Merkle tree construction. Version 0.4.0 introduces dPoS consensus with stake-weighted validator selection, epoch-based rotation, double-sign slashing, ML-KEM-768 encrypted P2P channels, and a web dashboard for chain exploration. Through fourteen rounds of security auditing encompassing 181+ identified vulnerabilities, we demonstrate that a production-grade PQC blockchain can be realized with acceptable performance overhead. Our implementation achieves 0.29ms per ML-DSA signature, 3.8ms for block production with 50 transactions, and a per-transaction wire overhead of approximately 10.9KB — a 55x increase over ECDSA-based systems, which we argue is an acceptable trade-off for quantum resistance.
+We present QBit Network, a purpose-built blockchain system that replaces all quantum-vulnerable cryptographic primitives with NIST-standardized post-quantum algorithms. QBit Network utilizes ML-DSA-65 (CRYSTALS-Dilithium) for digital signatures and ML-KEM-768 (CRYSTALS-Kyber) for key encapsulation, providing quantum-resistant document notarization, encrypted vault storage, and secure data sharing. The system implements a dual-keypair identity model, Delegated Proof of Stake (dPoS) consensus with epoch rotation and slashing, and a domain-separated Merkle tree construction. Version 0.4.0 completes the feature set with dPoS stake-weighted validator selection, epoch-based rotation, double-sign slashing, ML-KEM-768 encrypted P2P channels, ctypes-backed secure key material zeroing, TLS auto-provisioning, peer reputation scoring, chain pruning, IPFS integration, and a web dashboard for chain exploration. Through fifteen rounds of security auditing encompassing 190+ identified vulnerabilities, all of which are resolved, we demonstrate that a production-grade PQC blockchain can be realized with acceptable performance overhead. Our implementation achieves 0.29ms per ML-DSA signature, 3.8ms for block production with 50 transactions, and a per-transaction wire overhead of approximately 10.9KB — a 55x increase over ECDSA-based systems, which we argue is an acceptable trade-off for quantum resistance.
 
 **Keywords:** post-quantum cryptography, blockchain, ML-DSA, ML-KEM, document notarization, key encapsulation, CRYSTALS-Dilithium, CRYSTALS-Kyber
 
@@ -42,7 +42,7 @@ This paper presents:
 2. **A dual-keypair identity model** separating signing (ML-DSA) from encryption (ML-KEM) responsibilities, with an on-chain key registry binding encryption keys to addresses.
 3. **A domain-specific transaction model** optimized for document notarization, encrypted storage, and ML-KEM-based secure sharing — including on-chain validator key distribution and permanent key revocation.
 4. **A ML-DSA-65 mutual authentication protocol** for P2P connections, providing a 3-step challenge-response handshake that resists downgrade, impersonation, and cross-protocol signature reuse.
-5. **A comprehensive security analysis** from thirteen independent audit rounds covering cryptographic, protocol, network, and implementation security.
+5. **A comprehensive security analysis** from fifteen independent audit rounds covering cryptographic, protocol, network, and implementation security, with 0 open findings.
 6. **Performance benchmarks** quantifying the overhead of PQC primitives in a blockchain context.
 
 ---
@@ -250,8 +250,9 @@ The system underwent thirteen rounds of security auditing:
 | 12 | v0.2.1 full audit (P2P auth, Docker, store/share) | 9 |
 | 13 Sprint 1 | v0.3.0 Sprint 1 (HELLO_AUTH, REGISTER_VALIDATOR, rate limiting, CI) | 14 |
 | 13 Sprint 2 | v0.3.0 Sprint 2 (SQLite-primary, REVOKE_KEY, REST API, WebSocket) | 16 |
-| 14 | v0.4.0 (dPoS, epochs, slashing, P2P encryption, connection dedup) | ongoing |
-| **Total** | | **181+** |
+| 14 | v0.4.0 Sprint 1-2 (dPoS, epochs, slashing, P2P encryption, connection dedup) | 9 |
+| 15 | v0.4.0 Sprint 3 (SecureBytes, TLS auto-provisioning, reputation, pruning) | 5 |
+| **Total** | | **190+** |
 
 ### 4.2 Cryptographic Security
 
@@ -315,10 +316,9 @@ Both chain and wallet files use atomic writes (tempfile + `os.replace`). Wallet 
 
 | Limitation | Impact | Mitigation Path |
 |------------|--------|-----------------|
-| Python `bytes` immutability | Secret keys persist in heap after GC | C extension with `mmap` for key storage |
-| No chain pruning | Disk grows without bound | Pruning strategy (future) |
-| No transaction pool persistence | Pending TXs lost on crash | WAL-based pool persistence |
-| No block finality | No checkpoint mechanism | Future work |
+| No transaction pool persistence | Pending TXs lost on crash | WAL-based pool persistence (v0.5.0+) |
+| No block finality | No checkpoint mechanism | Checkpoint protocol (v0.5.0+) |
+| Sybil resistance is probabilistic | High-stake adversary can influence block selection | Bonding requirements and slashing raise cost; formal finality would close this gap |
 
 ---
 
@@ -339,37 +339,40 @@ Both chain and wallet files use atomic writes (tempfile + `os.replace`). Wallet 
 
 | Metric | Value |
 |--------|-------|
-| Source code (qbit_network/) | 2,259 lines |
-| Test code (tests/) | 1,199 lines |
-| Test cases | 149 |
-| Test modules | 6 (crypto, wallet, transaction, block, blockchain, adversarial) |
-| Documentation | 1,134 lines across 9 files |
-| Security issues found/fixed | 104 across 9 audit rounds |
+| Source code (qbit_network/) | ~4,800 lines |
+| Test code (tests/) | ~5,200 lines |
+| Test cases | 1,080 |
+| Test modules | 14 (crypto, wallet, transaction, block, blockchain, adversarial, integration, dPoS, REST API, WebSocket, IPFS, TLS, SecureBytes, reputation) |
+| Documentation | ~2,800 lines across 9 files |
+| Security issues found/fixed | 190+ across 15 audit rounds |
 
 ### 5.3 Module Architecture
 
 ```
 qbit_network/
-├── crypto/            Zero-dependency PQC primitives
-│   ├── mldsa.py       ML-DSA-65 (sign, verify, keygen)
-│   ├── mlkem.py       ML-KEM-768 (encapsulate, decapsulate, keygen)
-│   ├── hashing.py     SHA3-256, SHAKE-256, Merkle tree
-│   └── aes.py         AES-256-GCM
-├── core/              Blockchain state machine
-│   ├── wallet.py      Dual-keypair identity, scrypt+AES encryption
-│   ├── transaction.py 6 TX types with validation
-│   ├── block.py       Block structure with Merkle proofs
-│   ├── blockchain.py  Chain management, indices, persistence
-│   ├── consensus.py   PoA with round-robin, revocation enforcement
-│   ├── store.py       SQLite backend (blocks, validators, revocations)
-│   └── proof.py       Merkle proof export
-├── network/           Communication
-│   ├── p2p.py         TCP P2P, HELLO_AUTH 3-step auth, peer validation
-│   ├── rpc.py         JSON-RPC 2.0 with bearer auth, WebSocket attach
-│   ├── rest_api.py    REST API gateway (26 endpoints, sub-app pattern)
-│   ├── websocket.py   WebSocket pub/sub (3 channels, WebSocketManager)
-│   └── rate_limiter.py Token bucket rate limiting (P2P + RPC)
-└── node.py            Full node orchestrator
+├── crypto/              Zero-dependency PQC primitives
+│   ├── mldsa.py         ML-DSA-65 (sign, verify, keygen)
+│   ├── mlkem.py         ML-KEM-768 (encapsulate, decapsulate, keygen)
+│   ├── hashing.py       SHA3-256, SHAKE-256, Merkle tree
+│   ├── aes.py           AES-256-GCM
+│   └── secure_bytes.py  ctypes-backed mutable key material with zero()
+├── core/                Blockchain state machine
+│   ├── wallet.py        Dual-keypair identity, scrypt+AES encryption, SecureBytes
+│   ├── transaction.py   10 TX types with validation
+│   ├── block.py         Block structure with Merkle proofs
+│   ├── blockchain.py    Chain management, dPoS, epochs, slashing, pruning
+│   ├── consensus.py     dPoS weighted selection + PoA round-robin fallback
+│   ├── store.py         SQLite backend (blocks, validators, stakes, epochs, slashing)
+│   └── proof.py         Merkle proof export + block signature verification
+├── network/             Communication
+│   ├── p2p.py           TCP P2P, HELLO_AUTH 3-step auth, ML-KEM encrypted channel
+│   ├── rpc.py           JSON-RPC 2.0 with bearer auth, WebSocket attach, dashboard
+│   ├── rest_api.py      REST API gateway (36 endpoints, sub-app pattern)
+│   ├── websocket.py     WebSocket pub/sub (3 channels, WebSocketManager)
+│   ├── rate_limiter.py  Token bucket rate limiting (P2P + RPC)
+│   ├── tls_manager.py   TLS auto-provisioning, renewal, hot-reload
+│   └── reputation.py    PeerReputation scoring with decay and banning
+└── node.py              Full node orchestrator
 ```
 
 Dependencies flow strictly downward: `crypto` has zero internal dependencies; `core` depends only on `crypto`; `network` depends on `core`; `node` orchestrates all layers.
@@ -482,7 +485,7 @@ The separation of ML-DSA (signing) and ML-KEM (encryption) follows NIST SP 800-5
 
 ### 8.3 Security Hardening Through Iterative Audit
 
-The thirteen-round audit process demonstrates the value of iterative security review:
+The fifteen-round audit process demonstrates the value of iterative security review:
 
 - **Round 1-3** (manual review): Found fundamental issues — broken serialization, XOR encryption, missing validation.
 - **Round 4-5** (regression + automated): Found fix-induced bugs and systematic weaknesses — out-of-order block injection, SSRF via peer gossip.
@@ -491,6 +494,7 @@ The thirteen-round audit process demonstrates the value of iterative security re
 - **Round 10-11** (feature + rate limiting): Found feature-scope issues — unbounded reorg depth, SQLite partial failure, rate limiter shared-state race.
 - **Round 12** (v0.2.1 full audit): Found validator registry overwrite, XSS in HTML proof export, genesis validator not in SQLite.
 - **Round 13 Sprint 1-2** (v0.3.0): Found auth grace period bypass, v1 downgrade on failed auth, handshake flood, rate limiter LRU eviction bypass — all fixed.
+- **Rounds 14-15** (v0.4.0): Found dPoS seed bug causing deterministic selection, duplicate connection slot exhaustion, EVIDENCE size limit bypass, TLS non-atomic cert renewal, SecureBytes `__del__` AttributeError on failed init — all fixed.
 
 This progression from obvious to subtle issues illustrates why single-pass auditing is insufficient for blockchain systems. New features consistently introduce new attack surfaces that require dedicated audit scope.
 
@@ -502,7 +506,7 @@ QBit Network demonstrates that a fully post-quantum blockchain system is practic
 
 1. **ML-DSA-65 and ML-KEM-768 are performant**: Sub-millisecond operations enable real-time blockchain transaction processing without specialized hardware.
 2. **The 55x size overhead is manageable**: For document notarization workloads with moderate transaction volumes, storage requirements remain practical.
-3. **Security requires depth**: 181+ vulnerabilities across 13 audit rounds underscore the complexity of building secure blockchain systems, even with well-studied cryptographic primitives.
+3. **Security requires depth**: 190+ vulnerabilities across 15 audit rounds underscore the complexity of building secure blockchain systems, even with well-studied cryptographic primitives.
 4. **Dual-keypair identity enables new capabilities**: The combination of ML-DSA signing with ML-KEM key encapsulation provides a natural framework for authenticated encrypted communication on-chain.
 5. **ML-DSA enables P2P authentication**: The same signing primitive used for transactions and blocks can be applied directly to P2P handshake authentication, enabling post-quantum-secure node identity without additional key material.
 
@@ -515,17 +519,18 @@ QBit Network demonstrates that a fully post-quantum blockchain system is practic
 - Genesis validator registered via on-chain REGISTER_VALIDATOR tx (SPRINT1-007 resolved)
 - SQLite-primary persistence with staking, epoch, and slashing tables
 - 36-endpoint REST API gateway + WebSocket subscriptions + web dashboard
-- 14 audit rounds, 181+ issues found; 1004 tests passing
-- All v0.3.0 deferred findings resolved
+- SecureBytes ctypes-backed key material zeroing (ISS-001 resolved)
+- TLS auto-provisioning with renewal and hot-reload (ISS-016 resolved)
+- Peer reputation scoring, chain pruning, IPFS integration, proof block signature verification
+- 15 audit rounds, 190+ issues found; 1080 tests passing; 0 open issues
 
 ### Future Work
 
 - **Block finality**: Checkpoint mechanism for faster transaction confirmation guarantees.
-- **Chain pruning**: Remove old block data while preserving state proofs via epoch checkpoints.
+- **Transaction pool persistence**: WAL-based persistence so pending transactions survive node restarts.
 - **Light client protocol**: Enable Merkle proof-based verification without full chain download.
 - **Cross-chain anchoring**: Periodic hash commitments to established chains for additional security guarantees.
-- **Key material zeroing**: C extension with mmap for secure secret key storage and explicit zeroing.
-- **ACME/Let's Encrypt**: Automated TLS certificate provisioning.
+- **Proof PDF export**: Human-readable certificate PDF for legal and compliance workflows.
 
 ---
 
@@ -566,11 +571,11 @@ QBit Network demonstrates that a fully post-quantum blockchain system is practic
 
 **Public (11 methods):** `qv_blockNumber`, `qv_getBlock`, `qv_getTransaction`, `qv_pendingTxCount`, `qv_verifyDocument`, `qv_getEncryptionPk`, `qv_peerCount`, `qv_nodeInfo`, `qv_validators`, `qv_getTxsBySender`, `qv_getTxsByRecipient`
 
-**Protected (13 methods, require Bearer token):** `qv_newWallet`, `qv_listWallets`, `qv_getWalletKeys`, `qv_registerKey`, `qv_notarize`, `qv_store`, `qv_share`, `qv_getSharedWithMe`, `qv_getSharedSecret`, `qv_decapsulateShared`, `qv_sendRawTransaction`, `qv_registerValidator`, `qv_revokeKey`
+**Protected (16 methods, require Bearer token):** `qv_newWallet`, `qv_listWallets`, `qv_getWalletKeys`, `qv_registerKey`, `qv_notarize`, `qv_store`, `qv_share`, `qv_getSharedWithMe`, `qv_getSharedSecret`, `qv_decapsulateShared`, `qv_sendRawTransaction`, `qv_registerValidator`, `qv_revokeKey`, `qv_stake`, `qv_delegate`, `qv_unstake`
 
 ### REST API (`/api/v1/`)
 
-14 public endpoints (13 GET + 1 POST `/verify`) and 7 protected POST/GET endpoints. See `docs/PROTOCOL.md` Section 6 for the full endpoint list.
+36 endpoints: 14 public (13 GET + 1 POST `/verify`) and 22 protected endpoints covering staking, epochs, slashing, wallets, and transactions. See `docs/PROTOCOL.md` Section 6 for the full endpoint list.
 
 ### WebSocket (`/ws`)
 
@@ -579,11 +584,14 @@ Channels: `new_block`, `new_tx`, `chain_stats`. Protocol: JSON subscribe/unsubsc
 ## Appendix C: Test Execution Summary
 
 ```
-149 tests collected
-149 passed in 4.90 seconds
+1080 tests collected
+1080 passed
 0 failed
 0 skipped
 
-Coverage: crypto (30), wallet (19), transaction (27),
-          block (14), blockchain (40), adversarial (19)
+Coverage: crypto (30+), wallet (19+), transaction (27+), block (14+),
+          blockchain (40+), adversarial (46), integration (29),
+          dPoS (58), REST API (47), WebSocket (34), IPFS (35),
+          TLS manager (34), SecureBytes (42), reputation (26),
+          pruning (10), proof signature (10)
 ```
