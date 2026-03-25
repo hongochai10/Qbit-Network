@@ -177,6 +177,24 @@ class SQLiteStore:
     def latest_block(self) -> Block | None:
         return self.get_block(self._height) if self._height >= 0 else None
 
+    def delete_blocks_from(self, from_index: int):
+        """Delete all blocks with idx >= from_index (for rollback). Atomic."""
+        c = self._db.cursor()
+        try:
+            # Get tx_ids being deleted for cascading cleanup
+            c.execute("DELETE FROM txs WHERE block_idx >= ?", (from_index,))
+            c.execute("DELETE FROM notarizations WHERE tx_id NOT IN (SELECT tx_id FROM txs)")
+            c.execute("DELETE FROM key_registry WHERE address || ':' || seq NOT IN "
+                       "(SELECT address || ':' || seq FROM key_registry kr "
+                       "WHERE EXISTS (SELECT 1 FROM txs t WHERE t.sender = kr.address))")
+            c.execute("DELETE FROM blocks WHERE idx >= ?", (from_index,))
+            self._db.commit()
+            row = self._db.execute("SELECT MAX(idx) FROM blocks").fetchone()
+            self._height = row[0] if row and row[0] is not None else -1
+        except Exception:
+            self._db.rollback()
+            raise
+
     def close(self):
         self._db.close()
 
@@ -192,8 +210,12 @@ def migrate_json_to_sqlite(data_dir: str):
         return  # already migrated
 
     logger.info("Migrating chain.json → SQLite...")
-    with open(chain_file) as f:
-        chain_data = json.load(f)
+    try:
+        with open(chain_file) as f:
+            chain_data = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.error(f"Cannot migrate corrupt chain.json: {e}")
+        return
 
     if not isinstance(chain_data, list) or len(chain_data) == 0:
         return

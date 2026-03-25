@@ -90,15 +90,23 @@ class TestSQLiteStore:
         store.close()
 
     def test_migration_from_json(self, wallet, tmp_dir):
-        bc = Blockchain(data_dir=tmp_dir)
+        """Test migration from chain.json to SQLite."""
+        # Build chain without data_dir (in-memory only), then manually save JSON
+        bc = Blockchain()
         bc.consensus.add_validator(wallet.address, wallet.signing_pk)
         bc.init_chain(wallet.address, wallet.signing_sk)
         tx = Transaction.notarize(wallet.address, 'cc' * 32, nonce=0)
         tx.sign(wallet.signing_sk, wallet.signing_pk)
         bc.submit_tx(tx)
         bc.produce_block(wallet.address, wallet.signing_sk)
-        bc.save()
 
+        # Write chain.json manually
+        import json as _json
+        os.makedirs(tmp_dir, exist_ok=True)
+        with open(os.path.join(tmp_dir, 'chain.json'), 'w') as f:
+            _json.dump([b.to_dict() for b in bc.chain], f)
+
+        # Run migration
         migrate_json_to_sqlite(tmp_dir)
         assert os.path.exists(os.path.join(tmp_dir, 'chain.db'))
         assert os.path.exists(os.path.join(tmp_dir, 'chain.json.migrated'))

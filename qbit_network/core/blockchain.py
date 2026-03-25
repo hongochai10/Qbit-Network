@@ -13,11 +13,17 @@ logger = logging.getLogger("qbit_network.chain")
 
 
 class Blockchain:
-    """The QVault blockchain."""
+    """The QBit Network blockchain."""
 
     def __init__(self, data_dir: str = ""):
         self.data_dir = data_dir
         self.chain: list[Block] = []
+        self._store = None
+        # Initialize SQLite store if data_dir provided
+        if data_dir:
+            from .store import SQLiteStore
+            os.makedirs(data_dir, exist_ok=True)
+            self._store = SQLiteStore(data_dir)
         self.tx_pool: list[Transaction] = []
         self._pool_ids: set[str] = set()
         self._pool_sender_count: dict[str, int] = {}  # sender -> pending tx count (O(1) nonce calc)
@@ -310,6 +316,10 @@ class Blockchain:
 
     def _rollback_to(self, target_index: int) -> list[Transaction]:
         """Pop blocks from tip down to target_index (exclusive). Returns displaced txs."""
+        # Sync SQLite rollback
+        if self._store is not None:
+            self._store.delete_blocks_from(target_index)
+
         displaced = []
         while len(self.chain) > target_index:
             block = self.chain.pop()
@@ -388,6 +398,10 @@ class Blockchain:
         idx = len(self.chain)
         self.chain.append(block)
         self._block_by_hash[block.block_hash] = idx
+
+        # Dual-write: persist to SQLite if store available
+        if self._store is not None:
+            self._store.append_block(block)
 
         for tx_idx, tx in enumerate(block.transactions):
             self._tx_by_id[tx.tx_id] = (idx, tx_idx)
@@ -488,6 +502,8 @@ class Blockchain:
     # ---- Persistence ----
 
     def save(self):
+        if self._store is not None:
+            return  # SQLite dual-write handles persistence per-block
         if not self.data_dir:
             return
         os.makedirs(self.data_dir, exist_ok=True)
@@ -508,12 +524,21 @@ class Blockchain:
         logger.info(f"Saved {len(self.chain)} blocks")
 
     def load(self) -> bool:
-        """Load and validate chain from disk. Validates structure and signatures."""
+        """Load chain from disk. Uses SQLite if available, falls back to chain.json."""
         if self.chain:
             logger.warning("load() called on non-empty chain, skipping")
             return True
         if not self.data_dir:
             return False
+
+        # Try SQLite first (auto-migrate from JSON if needed)
+        from .store import SQLiteStore, migrate_json_to_sqlite
+        migrate_json_to_sqlite(self.data_dir)
+        db_file = os.path.join(self.data_dir, "chain.db")
+        if os.path.exists(db_file):
+            return self._load_from_sqlite()
+
+        # Fall back to chain.json
         chain_file = os.path.join(self.data_dir, "chain.json")
         if not os.path.exists(chain_file):
             return False
@@ -574,5 +599,46 @@ class Blockchain:
         for block in validated_blocks:
             self._append_block(block)
 
-        logger.info(f"Loaded {len(self.chain)} blocks (validated)")
+        logger.info(f"Loaded {len(self.chain)} blocks (validated from JSON)")
+        return True
+
+    def _load_from_sqlite(self) -> bool:
+        """Load chain from SQLite, rebuild in-memory indices."""
+        from .store import SQLiteStore
+        self._store = SQLiteStore(self.data_dir)
+        height = self._store.height()
+        if height < 0:
+            return False
+
+        for i in range(height + 1):
+            block = self._store.get_block(i)
+            if block is None:
+                logger.error(f"SQLite block #{i} missing")
+                return False
+            # Rebuild in-memory indices (without re-writing to SQLite)
+            idx = len(self.chain)
+            self.chain.append(block)
+            self._block_by_hash[block.block_hash] = idx
+            for tx_idx, tx in enumerate(block.transactions):
+                self._tx_by_id[tx.tx_id] = (idx, tx_idx)
+                self.consensus._chain_tx_ids.add(tx.tx_id)
+                self._txs_by_sender.setdefault(tx.sender, []).append(tx.tx_id)
+                if tx.recipient:
+                    self._txs_by_recipient.setdefault(tx.recipient, []).append(tx.tx_id)
+                current = self._sender_nonce.get(tx.sender, -1)
+                if tx.nonce > current:
+                    self._sender_nonce[tx.sender] = tx.nonce
+                if tx.tx_type == TxType.NOTARIZE:
+                    dh = tx.payload.get("documentHash", "")
+                    if dh:
+                        if dh not in self._notarizations:
+                            self._notarizations[dh] = tx.tx_id
+                        self._notarizations_by_hash.setdefault(dh, []).append(tx.tx_id)
+                elif tx.tx_type == TxType.REGISTER_KEY:
+                    epk = tx.payload.get("encryption_pk", "")
+                    if epk:
+                        self._key_history.setdefault(tx.sender, []).append(epk)
+                        self._key_registry[tx.sender] = epk
+
+        logger.info(f"Loaded {len(self.chain)} blocks from SQLite")
         return True

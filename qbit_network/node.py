@@ -305,7 +305,7 @@ class FullNode:
 
     async def _rpc_node_info(self):
         return {
-            "version": "0.1.0",
+            "version": "0.2.0",
             "chain_height": self.blockchain.height,
             "pending_txs": len(self.blockchain.tx_pool),
             "peers": self.p2p.peer_count(),
