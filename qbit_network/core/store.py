@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS key_registry (
     seq INTEGER NOT NULL,
     PRIMARY KEY (address, seq)
 );
+CREATE TABLE IF NOT EXISTS validator_registry (
+    address TEXT PRIMARY KEY,
+    pubkey TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -166,6 +170,42 @@ class SQLiteStore:
             (address,)).fetchall()
         return [r[0] for r in rows]
 
+    def put_validator(self, address: str, pubkey_hex: str, commit: bool = True):
+        """Register or update a validator's signing pubkey.
+
+        When commit=False, the caller is responsible for committing the
+        transaction (e.g. during reorg operations for atomicity).
+        """
+        self._db.execute(
+            "INSERT OR REPLACE INTO validator_registry (address, pubkey) VALUES (?, ?)",
+            (address, pubkey_hex))
+        if commit:
+            self._db.commit()
+
+    def get_validator(self, address: str) -> str | None:
+        """Get a validator's signing pubkey hex, or None."""
+        row = self._db.execute(
+            "SELECT pubkey FROM validator_registry WHERE address=?",
+            (address,)).fetchone()
+        return row[0] if row else None
+
+    def get_all_validators(self) -> list[tuple[str, str]]:
+        """Return all registered validators as (address, pubkey_hex) pairs."""
+        rows = self._db.execute(
+            "SELECT address, pubkey FROM validator_registry").fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def delete_validator(self, address: str, commit: bool = True):
+        """Remove a validator from the registry (for rollback).
+
+        When commit=False, the caller is responsible for committing the
+        transaction (e.g. during reorg operations for atomicity).
+        """
+        self._db.execute(
+            "DELETE FROM validator_registry WHERE address=?", (address,))
+        if commit:
+            self._db.commit()
+
     def block_hash_exists(self, h: str) -> bool:
         return self._db.execute(
             "SELECT 1 FROM blocks WHERE hash=?", (h,)).fetchone() is not None
@@ -178,16 +218,39 @@ class SQLiteStore:
         return self.get_block(self._height) if self._height >= 0 else None
 
     def delete_blocks_from(self, from_index: int):
-        """Delete all blocks with idx >= from_index (for rollback). Atomic."""
+        """Delete all blocks with idx >= from_index (for rollback). Atomic.
+
+        Handles validator registry cleanup within the same transaction to
+        prevent non-atomic commits during reorg.
+        """
         c = self._db.cursor()
         try:
-            # Get tx_ids being deleted for cascading cleanup
+            # Collect validator addresses from REGISTER_VALIDATOR txs being rolled back
+            # so we can clean them up atomically within this transaction
+            rows = c.execute(
+                "SELECT data FROM blocks WHERE idx >= ? ORDER BY idx", (from_index,)
+            ).fetchall()
+            validator_addrs_to_remove = []
+            for row in rows:
+                block_data = json.loads(row[0])
+                for tx_data in block_data.get("transactions", []):
+                    if tx_data.get("type") == "REGISTER_VALIDATOR":
+                        vaddr = tx_data.get("payload", {}).get("validator_address", "")
+                        if vaddr:
+                            validator_addrs_to_remove.append(vaddr)
+
+            # Delete block data and cascading indices
             c.execute("DELETE FROM txs WHERE block_idx >= ?", (from_index,))
             c.execute("DELETE FROM notarizations WHERE tx_id NOT IN (SELECT tx_id FROM txs)")
             c.execute("DELETE FROM key_registry WHERE address || ':' || seq NOT IN "
                        "(SELECT address || ':' || seq FROM key_registry kr "
                        "WHERE EXISTS (SELECT 1 FROM txs t WHERE t.sender = kr.address))")
             c.execute("DELETE FROM blocks WHERE idx >= ?", (from_index,))
+
+            # Remove validators registered in the rolled-back blocks
+            for vaddr in validator_addrs_to_remove:
+                c.execute("DELETE FROM validator_registry WHERE address=?", (vaddr,))
+
             self._db.commit()
             row = self._db.execute("SELECT MAX(idx) FROM blocks").fetchone()
             self._height = row[0] if row and row[0] is not None else -1

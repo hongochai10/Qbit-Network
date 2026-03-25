@@ -38,6 +38,7 @@ class Blockchain:
         self._key_registry: dict[str, str] = {}       # current key
         self._key_history: dict[str, list[str]] = {}  # address -> [pk_hex, ...]
         self._notarizations_by_hash: dict[str, list[str]] = {}  # doc_hash -> [tx_id, ...] (all notarizations)
+        self._validator_registry: dict[str, bytes] = {}  # validator_address -> signing pubkey
 
         self.consensus = ProofOfAuthority()
         self.consensus._chain_nonces = self._sender_nonce
@@ -58,14 +59,31 @@ class Blockchain:
         """Lookup on-chain registered encryption public key."""
         return self._key_registry.get(address)
 
+    def get_validator_pk(self, address: str) -> bytes | None:
+        """Lookup on-chain registered validator signing public key."""
+        return self._validator_registry.get(address)
+
+    def is_registered_validator(self, address: str) -> bool:
+        """Check if an address has registered as a validator on-chain."""
+        return address in self._validator_registry
+
     # ---- Genesis ----
 
-    def init_chain(self, validator_address: str, validator_sk: bytes):
+    def init_chain(self, validator_address: str, validator_sk: bytes,
+                   validator_pk: bytes = b''):
         if self.chain:
             return
         genesis = Block.genesis(validator_address)
         genesis.sign(validator_sk)
         self._append_block(genesis)
+        # Auto-register genesis validator in on-chain registry
+        if validator_pk:
+            self._validator_registry[validator_address] = validator_pk
+            self.consensus.add_validator(validator_address, validator_pk)
+            # Persist to SQLite if available
+            if self._store is not None:
+                self._store.put_validator(validator_address, validator_pk.hex())
+            logger.info(f"Genesis validator registered: {validator_address[:16]}...")
         logger.info(f"Genesis: {genesis.block_hash[:16]}...")
 
     # ---- Transaction pool ----
@@ -309,6 +327,15 @@ class Blockchain:
                         else:
                             self._key_registry.pop(tx.sender, None)
 
+                # Revert validator registry
+                elif tx.tx_type == TxType.REGISTER_VALIDATOR:
+                    vaddr = tx.payload.get("validator_address", "")
+                    if vaddr:
+                        self._validator_registry.pop(vaddr, None)
+                        self.consensus.remove_validator(vaddr)
+                        # SQLite cleanup is handled atomically by
+                        # delete_blocks_from() — no separate commit needed
+
                 displaced.append(tx)
 
             # Recompute sender nonces after rollback
@@ -373,6 +400,26 @@ class Blockchain:
                 if epk:
                     self._key_history.setdefault(tx.sender, []).append(epk)
                     self._key_registry[tx.sender] = epk
+
+            elif tx.tx_type == TxType.REGISTER_VALIDATOR:
+                vpk_hex = tx.payload.get("validator_pubkey", "")
+                vaddr = tx.payload.get("validator_address", "")
+                if vpk_hex and vaddr:
+                    # First-registration-wins: skip if already registered
+                    if vaddr in self._validator_registry:
+                        logger.warning(
+                            f"Validator {vaddr[:16]}... already registered, "
+                            f"skipping duplicate registration (block #{block.index})")
+                    else:
+                        vpk_bytes = bytes.fromhex(vpk_hex)
+                        self._validator_registry[vaddr] = vpk_bytes
+                        self.consensus.add_validator(vaddr, vpk_bytes)
+                        # Persist to SQLite if available
+                        if self._store is not None:
+                            self._store.put_validator(vaddr, vpk_hex)
+                        logger.info(
+                            f"Validator registered on-chain: {vaddr[:16]}... "
+                            f"(block #{block.index})")
 
     # ---- Queries ----
 
@@ -505,6 +552,8 @@ class Blockchain:
             return False
 
         # Validate all blocks into temp list before committing (atomic load)
+        # Track validators discovered during load so later blocks can be verified
+        load_validators: dict[str, bytes] = dict(self.consensus.validators)
         validated_blocks: list[Block] = []
         for i, bd in enumerate(chain_data):
             block = Block.from_dict(bd)
@@ -512,6 +561,8 @@ class Blockchain:
             if i == 0:
                 if block.index != 0:
                     raise ValueError(f"Genesis block has wrong index: {block.index}")
+                # Genesis validator is auto-registered by the genesis block itself
+                # (its pubkey comes from consensus.validators set at startup)
             else:
                 parent = validated_blocks[i - 1]
                 if block.prev_hash != parent.block_hash:
@@ -529,7 +580,7 @@ class Blockchain:
                         f"{tx.tx_id[:16]}...")
 
             if block.validator:
-                pk = self.consensus.validators.get(block.validator)
+                pk = load_validators.get(block.validator)
                 if pk:
                     if not block.verify_signature(pk):
                         raise ValueError(
@@ -539,6 +590,14 @@ class Blockchain:
                     logger.warning(
                         f"Block #{block.index} validator {block.validator[:16]}... "
                         f"unknown — signature not verified")
+
+            # Track REGISTER_VALIDATOR txs so subsequent blocks can be verified
+            for tx in block.transactions:
+                if tx.tx_type == TxType.REGISTER_VALIDATOR:
+                    vpk_hex = tx.payload.get("validator_pubkey", "")
+                    vaddr = tx.payload.get("validator_address", "")
+                    if vpk_hex and vaddr:
+                        load_validators[vaddr] = bytes.fromhex(vpk_hex)
 
             validated_blocks.append(block)
 
@@ -596,6 +655,21 @@ class Blockchain:
                     if epk:
                         self._key_history.setdefault(tx.sender, []).append(epk)
                         self._key_registry[tx.sender] = epk
+                elif tx.tx_type == TxType.REGISTER_VALIDATOR:
+                    vpk_hex = tx.payload.get("validator_pubkey", "")
+                    vaddr = tx.payload.get("validator_address", "")
+                    if vpk_hex and vaddr:
+                        vpk_bytes = bytes.fromhex(vpk_hex)
+                        self._validator_registry[vaddr] = vpk_bytes
+                        self.consensus.add_validator(vaddr, vpk_bytes)
+
+        # Also load genesis validator from SQLite validator_registry table
+        if self._store is not None:
+            for vaddr, vpk_hex in self._store.get_all_validators():
+                if vaddr not in self._validator_registry:
+                    vpk_bytes = bytes.fromhex(vpk_hex)
+                    self._validator_registry[vaddr] = vpk_bytes
+                    self.consensus.add_validator(vaddr, vpk_bytes)
 
         logger.info(f"Loaded {len(self.chain)} blocks from SQLite")
         return True

@@ -1,4 +1,5 @@
 """JSON-RPC 2.0 API server with bearer token authentication and optional TLS."""
+import asyncio
 import hmac
 import ipaddress
 import json
@@ -8,7 +9,8 @@ import secrets
 import ssl
 import tempfile
 from aiohttp import web
-from ..config import MAX_RPC_BODY, MAX_RPC_BATCH
+from ..config import MAX_RPC_BODY, MAX_RPC_BATCH, RPC_RATE_LIMIT, RPC_RATE_BURST
+from .rate_limiter import RateLimiter
 
 logger = logging.getLogger("qbit_network.rpc")
 
@@ -84,6 +86,9 @@ class RPCServer:
     # Methods that MUST NOT be served over plain HTTP (secret-returning)
     TLS_REQUIRED_METHODS = {"qv_getSharedSecret", "qv_decapsulateShared"}
 
+    # Endpoints exempt from rate limiting (health/status checks)
+    _RATE_EXEMPT_PATHS = {"/"}
+
     def __init__(self, host: str = "0.0.0.0", port: int = 8545,
                  auth_token: str = "", tls_cert: str = "", tls_key: str = "",
                  tls_self_signed: bool = False, data_dir: str = ""):
@@ -96,10 +101,35 @@ class RPCServer:
         self.data_dir = data_dir
         self._tls_active = False
         self._methods: dict[str, object] = {}
-        self._app = web.Application(client_max_size=MAX_RPC_BODY)
+        self._rate_limiter = RateLimiter(RPC_RATE_LIMIT, RPC_RATE_BURST)
+        self._cleanup_task = None
+        self._app = web.Application(
+            client_max_size=MAX_RPC_BODY,
+            middlewares=[self._rate_limit_middleware],
+        )
         self._app.router.add_post("/", self._handle)
         self._app.router.add_get("/", self._info)
         self._runner = None
+
+    @web.middleware
+    async def _rate_limit_middleware(self, request, handler):
+        """Return 429 if the client IP exceeds the rate limit."""
+        # Exempt GET on root (info/health endpoint)
+        if request.method == "GET" and request.path in self._RATE_EXEMPT_PATHS:
+            return await handler(request)
+
+        peername = request.remote or ""
+        # Don't rate limit localhost in development
+        if peername in ("127.0.0.1", "::1", "localhost"):
+            return await handler(request)
+
+        if not self._rate_limiter.check(peername):
+            return web.json_response(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32000, "message": "rate limit exceeded"}},
+                status=429,
+            )
+        return await handler(request)
 
     def method(self, name: str, fn):
         self._methods[name] = fn
@@ -126,6 +156,7 @@ class RPCServer:
 
         site = web.TCPSite(self._runner, self.host, self.port, ssl_context=ssl_ctx)
         await site.start()
+        self._cleanup_task = asyncio.create_task(self._rate_cleanup_loop())
 
         proto = "https" if self._tls_active else "http"
         logger.info(f"RPC server on {proto}://{self.host}:{self.port}")
@@ -134,8 +165,21 @@ class RPCServer:
         logger.info(f"RPC auth token: {self.auth_token[:8]}...{self.auth_token[-4:]}")
 
     async def stop(self):
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
         if self._runner:
             await self._runner.cleanup()
+
+    async def _rate_cleanup_loop(self):
+        """Periodically remove stale rate-limiter entries."""
+        try:
+            while True:
+                await asyncio.sleep(60)
+                removed = self._rate_limiter.cleanup()
+                if removed:
+                    logger.debug(f"RPC rate limiter cleanup: removed {removed} stale entries")
+        except asyncio.CancelledError:
+            pass
 
     async def _info(self, request):
         public = sorted(m for m in self._methods if m not in self.PROTECTED_METHODS)

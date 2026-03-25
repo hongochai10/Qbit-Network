@@ -29,5 +29,14 @@ MAX_RPC_BATCH = 50
 # Security
 ALLOW_PRIVATE_PEERS = os.environ.get("QBIT_ALLOW_PRIVATE_PEERS", "").lower() in ("1", "true", "yes")
 
+# Rate limiting — P2P (per peer IP)
+P2P_RATE_LIMIT = 20       # messages/second sustained
+P2P_RATE_BURST = 100      # max burst capacity
+P2P_RATE_VIOLATIONS_MAX = 3  # disconnects after this many violations
+
+# Rate limiting — RPC (per client IP)
+RPC_RATE_LIMIT = 10       # requests/second sustained
+RPC_RATE_BURST = 50       # max burst capacity
+
 # Storage
 DATA_DIR = os.environ.get("QBIT_DATA_DIR", os.path.expanduser("~/.qbit"))

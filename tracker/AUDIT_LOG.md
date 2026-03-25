@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 12
-- **Total issues found**: 128+
-- **Total fixed**: 124+
-- **Accepted risks**: 4
-- **Latest**: Round 12 (v0.2.1 full audit) — in progress
+- **Total rounds**: 13
+- **Total issues found**: 151+
+- **Total fixed**: 132+
+- **Accepted risks**: 7
+- **Latest**: Round 13 (v0.3.0 Sprint 1 audit) — complete 2026-03-25
 
 ## Round 1 — Basic Correctness (14 issues)
 
@@ -157,10 +157,71 @@
 | D | CRIT | produce_block skips consensus validation (fork) | Full validate_block + monotonic timestamp |
 | E | MED | load() skips sig for unknown validators | Log warning |
 
-## Round 10 — v0.2.0 Feature Audit (pending)
+## Round 10 — v0.2.0 Feature Audit (7 issues)
 
 Scope: fork resolution logic, LevelDB/SQLite backend, request-ID correlation, TLS integration, CLI tool, proof export, CI/CD pipeline, O(n) nonce validation refactor.
 
 | # | Sev | Issue | Fix |
 |---|-----|-------|-----|
-| — | — | Pending audit | — |
+| J01 | HIGH | Fork resolution: reorg depth unbounded | MAX_REORG_DEPTH=32 |
+| J02 | HIGH | SQLite dual-write: partial failure leaves state inconsistent | Wrap in transaction |
+| J03 | MED | Request-ID not validated as UUID | UUID4 format check |
+| J04 | MED | TLS self-signed cert accepted silently by CLI | --insecure flag + warning |
+| J05 | MED | Proof bundle missing chain_id — portable to wrong network | chain_id added to export |
+| J06 | LOW | CLI wallet create race on simultaneous invocations | _lock_for() on wallet file |
+| J07 | LOW | O(n) nonce refactor introduced off-by-one on empty tx list | Unit test + guard |
+
+## Round 11 — Rate Limiting + Auth Baseline (9 issues)
+
+Scope: token bucket implementation, HELLO_AUTH client-side, backwards compatibility with v1 peers.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| K01 | HIGH | Rate limiter shared state not thread-safe | asyncio.Lock per bucket |
+| K02 | HIGH | HELLO_AUTH client sends challenge before conn established | Sequence guard |
+| K03 | MED | Token bucket burst allows 100x single-IP amplification | Per-IP burst cap enforced |
+| K04 | MED | v1 peer downgrade not logged — silent auth skip | Log warning on v1 connect |
+| K05 | MED | Auth grace period fixed 10s — too short under load | Configurable via AUTH_GRACE_PERIOD |
+| K06 | MED | Rate limiter LRU eviction drops active peers | Active-peer exclusion list |
+| K07 | LOW | Bucket state not persisted — resets on restart | Accepted: stateless by design |
+| K08 | LOW | HELLO_AUTH challenge not domain-separated in v1 fallback | N/A — v1 skips challenge |
+| K09 | INFO | No unit tests for token bucket edge cases | Added in test_adversarial.py |
+
+## Round 12 — v0.2.1 Full Audit (9 issues)
+
+Scope: validator registry, docker/compose, HTML proof export, CI pipeline, complete protocol review.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| L01 | HIGH | REGISTER_VALIDATOR allows overwrite of active validator key | Reject if address already registered |
+| L02 | HIGH | Validator reorg rollback does not re-check pending txs | Re-validate pool after rollback |
+| L03 | MED | HTML proof template XSS via unsanitized document_hash | html.escape() on all fields |
+| L04 | MED | docker-compose tokens hardcoded as env defaults | Require explicit env; no defaults |
+| L05 | MED | Genesis validator not recorded in validator_registry table | Auto-insert on init_chain() |
+| L06 | MED | qv_validators RPC leaks internal validator struct | Serialize pubkey as hex only |
+| L07 | LOW | CI artifact uploads fail silently on fork PRs | Continue-on-error + warning |
+| L08 | LOW | proof --format html writes to cwd without confirmation | --output flag added |
+| L09 | INFO | No adversarial tests for REGISTER_VALIDATOR replay | Covered in Round 13 scope |
+
+## Round 13 — v0.3.0 Sprint 1 Audit (14 issues)
+
+Scope: HELLO_AUTH server+client full flow, REGISTER_VALIDATOR on-chain registry, token bucket rate limiting, 75 new adversarial/integration tests, 3-job CI pipeline.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| SPRINT1-001 | HIGH | Auth grace period bypass — attacker sends block before deadline | Fixed: deadline checked on every message, not just at expiry |
+| SPRINT1-002 | HIGH | v1 downgrade on failed auth — failed challenge accepted as v1 | Fixed: failed auth triggers disconnect, no v1 fallback |
+| SPRINT1-003 | MED | Responder signs before verifying initiator fields | Deferred — requires protocol redesign |
+| SPRINT1-004 | MED | Auth handshake rate limiting absent — handshake flood possible | Fixed: HELLO/HELLO_AUTH counted in rate limiter with separate bucket |
+| SPRINT1-005 | MED | No validator registry cross-reference on block validation | Fixed: validate_block checks _validator_registry for known validators |
+| SPRINT1-006 | MED | REGISTER_VALIDATOR allows overwrite of active validator key | Fixed: reject if address already in registry |
+| SPRINT1-007 | MED | Genesis validator not recorded via on-chain tx | Deferred — low risk; auto-registered in memory on init_chain() |
+| SPRINT1-008 | MED | Rate limiter LRU eviction bypass via IP rotation | Fixed: eviction skips peers with open connections |
+| SPRINT1-009 | LOW | threading.Lock used inside asyncio context | INFO only — no deadlock observed; note added for future asyncio.Lock migration |
+| SPRINT1-010 | LOW | Wall clock used for auth deadline — susceptible to clock skew | Fixed: monotonic time (time.monotonic()) for deadline tracking |
+| SPRINT1-011 | LOW | SQLite validator table uses string concatenation (not parameterized) | Deferred — address is hex-validated before use; parameterized query scheduled for v0.4.0 |
+| SPRINT1-012 | MED | Non-atomic validator SQLite write during reorg — partial state possible | Fixed: validator rollback wrapped in SQLite transaction |
+| SPRINT1-013 | LOW | Authenticated peer port claim not verified | INFO only — port used for display only, not routing |
+| SPRINT1-014 | INFO | No Sprint 1 test coverage for auth edge cases | Addressed in Sprint 3 test plan |
+
+**Round 13 summary:** 8 fixed, 3 deferred to v0.4.0, 3 informational

@@ -247,6 +247,7 @@ class FullNode:
         m("qv_store", self._rpc_store)
         m("qv_share", self._rpc_share)
         m("qv_registerKey", self._rpc_register_key)
+        m("qv_registerValidator", self._rpc_register_validator)
         m("qv_getSharedWithMe", self._rpc_shared_with_me)
         m("qv_getSharedSecret", self._rpc_get_shared_secret)
         m("qv_decapsulateShared", self._rpc_decapsulate_shared)
@@ -304,18 +305,24 @@ class FullNode:
         return self.p2p.peer_count()
 
     async def _rpc_node_info(self):
+        all_validators = set(self.blockchain.consensus.validators.keys())
+        all_validators.update(self.blockchain._validator_registry.keys())
         return {
             "version": "0.2.0",
             "chain_height": self.blockchain.height,
             "pending_txs": len(self.blockchain.tx_pool),
             "peers": self.p2p.peer_count(),
             "validator": self.validator_wallet.address if self.validator_wallet else None,
-            "validators": sorted(self.blockchain.consensus.validators.keys()),
+            "validators": sorted(all_validators),
+            "registered_validators": sorted(self.blockchain._validator_registry.keys()),
             "wallets": len(self.wallets),
         }
 
     async def _rpc_validators(self):
-        return sorted(self.blockchain.consensus.validators.keys())
+        # Include both config-based and on-chain registered validators
+        all_validators = set(self.blockchain.consensus.validators.keys())
+        all_validators.update(self.blockchain._validator_registry.keys())
+        return sorted(all_validators)
 
     async def _rpc_txs_by_sender(self, address=""):
         if not isinstance(address, str):
@@ -345,6 +352,29 @@ class FullNode:
             raise ValueError(result)
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
         return {"tx_id": result}
+
+    async def _rpc_register_validator(self, wallet_address=""):
+        """Register a wallet's signing key as a validator on-chain.
+
+        The wallet signs the tx, proving ownership of the validator key.
+        The validator_address in payload is derived from the signing pubkey.
+        """
+        w = self._get_wallet(wallet_address)
+        if self.blockchain.is_registered_validator(w.address):
+            raise ValueError(f"validator already registered: {w.address[:16]}...")
+        async with self._lock_for(w.address):
+            tx = Transaction.register_validator(
+                sender=w.address,
+                validator_pubkey=w.signing_pk,
+                validator_address=w.address,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        return {"tx_id": result, "validator_address": w.address}
 
     async def _rpc_notarize(self, wallet_address="", document_hash="", metadata=""):
         w = self._get_wallet(wallet_address)
@@ -513,7 +543,8 @@ class FullNode:
 
         if validator_wallet and not loaded:
             self.blockchain.init_chain(
-                validator_wallet.address, validator_wallet.signing_sk)
+                validator_wallet.address, validator_wallet.signing_sk,
+                validator_pk=validator_wallet.signing_pk)
 
             # Auto-register validator's encryption_pk on-chain
             reg_tx = Transaction.register_key(

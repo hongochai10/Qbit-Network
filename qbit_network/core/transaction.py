@@ -1,4 +1,4 @@
-"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY."""
+"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR."""
 import json
 import re
 import time
@@ -9,6 +9,7 @@ from ..config import MAX_TX_PAYLOAD_SIZE, CHAIN_ID
 
 class TxType(str, Enum):
     REGISTER_KEY = "REGISTER_KEY"
+    REGISTER_VALIDATOR = "REGISTER_VALIDATOR"
     NOTARIZE = "NOTARIZE"
     STORE = "STORE"
     SHARE = "SHARE"
@@ -77,6 +78,7 @@ class Transaction:
 
     _ALLOWED_KEYS = {
         TxType.REGISTER_KEY: {"encryption_pk"},
+        TxType.REGISTER_VALIDATOR: {"validator_pubkey", "validator_address"},
         TxType.NOTARIZE: {"documentHash", "metadata"},
         TxType.STORE: {"documentHash", "cid", "metadata"},
         TxType.SHARE: {"cid", "encapsulatedKey", "expires"},
@@ -120,6 +122,23 @@ class Transaction:
             epk = self.payload.get("encryption_pk", "")
             if not epk or not _HEX_RE.match(epk):
                 return False, "encryption_pk must be non-empty hex"
+
+        elif self.tx_type == TxType.REGISTER_VALIDATOR:
+            vpk = self.payload.get("validator_pubkey", "")
+            if not vpk or not _HEX_RE.match(vpk):
+                return False, "validator_pubkey must be non-empty hex"
+            # ML-DSA-65 public key = 1952 bytes = 3904 hex chars
+            if len(vpk) != 3904:
+                return False, (f"validator_pubkey wrong size: {len(vpk)} hex chars, "
+                               f"expected 3904 (1952 bytes)")
+            vaddr = self.payload.get("validator_address", "")
+            if not vaddr or not isinstance(vaddr, str):
+                return False, "validator_address must be non-empty string"
+            # Verify the claimed address derives from the claimed pubkey
+            from .wallet import Wallet
+            expected_addr = Wallet.derive_address(bytes.fromhex(vpk))
+            if vaddr != expected_addr:
+                return False, "validator_address does not match validator_pubkey"
 
         return True, ""
 
@@ -174,6 +193,18 @@ class Transaction:
         return cls(
             tx_type=TxType.REGISTER_KEY, sender=sender, nonce=nonce,
             payload={"encryption_pk": encryption_pk.hex()},
+        )
+
+    @classmethod
+    def register_validator(cls, sender: str, validator_pubkey: bytes,
+                           validator_address: str,
+                           nonce: int = 0) -> 'Transaction':
+        return cls(
+            tx_type=TxType.REGISTER_VALIDATOR, sender=sender, nonce=nonce,
+            payload={
+                "validator_pubkey": validator_pubkey.hex(),
+                "validator_address": validator_address,
+            },
         )
 
     @classmethod
