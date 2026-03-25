@@ -8,13 +8,25 @@ Post-quantum cryptography blockchain for document notarization and encrypted sha
 
 ## Agents Team
 
+### Leadership
+| Agent | Role | Model | Use When |
+|-------|------|-------|----------|
+| `tech-lead` | **Orchestrator** — dispatches work, makes arch decisions, reviews all output | opus | Starting any non-trivial task, resolving trade-offs, release decisions |
+| `product-owner` | **Vision** — defines requirements, prioritizes backlog, represents users | opus | Feature planning, acceptance criteria, roadmap decisions |
+
+### Specialists
 | Agent | Role | Model | Use When |
 |-------|------|-------|----------|
 | `security-auditor` | Security review and vulnerability assessment | opus | Auditing code changes, reviewing PRs, threat analysis |
 | `blockchain-dev` | Core blockchain implementation | opus | Building features, fixing bugs, refactoring |
+| `protocol-designer` | Protocol architecture and design decisions | opus | Consensus changes, P2P upgrades, crypto decisions |
+| `researcher` | Academic research, literature review, paper writing | opus | PQC analysis, benchmarks, publications |
 | `test-runner` | Comprehensive testing (unit, integration, adversarial) | sonnet | After code changes, before releases |
 | `docs-writer` | Documentation and tracker maintenance | sonnet | After features/fixes, updating docs |
-| `protocol-designer` | Protocol architecture and design decisions | opus | Consensus changes, P2P upgrades, crypto decisions |
+| `report-writer` | Audit/test/status reports | sonnet | After audits, releases, milestones |
+| `devops` | Infrastructure, CI/CD, TLS, database backends | sonnet | Deployment, monitoring, DB migration |
+| `frontend-dev` | CLI tools, web dashboard, chain explorer | sonnet | User-facing tools, IPFS integration |
+| `perf-engineer` | Benchmarking, profiling, optimization | sonnet | Performance bottlenecks, load testing |
 
 ### Usage
 ```
@@ -30,8 +42,26 @@ Post-quantum cryptography blockchain for document notarization and encrypted sha
 # Update docs
 @docs-writer Update CHANGELOG for v0.2.0
 
+# Start a feature (tech-lead orchestrates everything)
+@tech-lead Implement LevelDB backend for chain storage
+
+# Plan next release
+@product-owner Write requirements for v0.2.0 CLI wallet tool
+
 # Design discussion
 @protocol-designer Propose fork resolution mechanism for multi-validator
+
+# Research
+@researcher Compare ML-DSA-65 vs SLH-DSA for our use case
+
+# Infrastructure
+@devops Set up GitHub Actions CI with pytest
+
+# CLI tool
+@frontend-dev Build CLI wallet management tool
+
+# Optimization
+@perf-engineer Profile block validation and optimize nonce check
 ```
 
 ## Key Rules

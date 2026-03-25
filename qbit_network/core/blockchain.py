@@ -1,4 +1,4 @@
-"""QVault blockchain - chain management, block production, persistence."""
+"""QBit Network blockchain - chain management, block production, fork resolution, persistence."""
 import json
 import os
 import tempfile
@@ -7,7 +7,7 @@ import logging
 from .block import Block
 from .transaction import Transaction, TxType
 from .consensus import ProofOfAuthority
-from ..config import MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE
+from ..config import MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -20,6 +20,7 @@ class Blockchain:
         self.chain: list[Block] = []
         self.tx_pool: list[Transaction] = []
         self._pool_ids: set[str] = set()
+        self._pool_sender_count: dict[str, int] = {}  # sender -> pending tx count (O(1) nonce calc)
 
         # Indices
         self._block_by_hash: dict[str, int] = {}
@@ -30,6 +31,7 @@ class Blockchain:
         self._sender_nonce: dict[str, int] = {}
         self._key_registry: dict[str, str] = {}       # current key
         self._key_history: dict[str, list[str]] = {}  # address -> [pk_hex, ...]
+        self._notarizations_by_hash: dict[str, list[str]] = {}  # doc_hash -> [tx_id, ...] (all notarizations)
 
         self.consensus = ProofOfAuthority()
         self.consensus._chain_nonces = self._sender_nonce
@@ -85,9 +87,9 @@ class Blockchain:
         if tx.tx_type == TxType.SHARE and not tx.recipient:
             return False, "SHARE tx requires recipient"
 
-        # Nonce check
+        # Nonce check — O(1) via _pool_sender_count
         expected_nonce = self.get_nonce(tx.sender)
-        pending_from_sender = sum(1 for p in self.tx_pool if p.sender == tx.sender)
+        pending_from_sender = self._pool_sender_count.get(tx.sender, 0)
         if tx.nonce != expected_nonce + pending_from_sender:
             return False, (f"invalid nonce: expected {expected_nonce + pending_from_sender}, "
                            f"got {tx.nonce}")
@@ -101,6 +103,7 @@ class Blockchain:
 
         self.tx_pool.append(tx)
         self._pool_ids.add(tx.tx_id)
+        self._pool_sender_count[tx.sender] = pending_from_sender + 1
         return True, tx.tx_id
 
     # ---- Block production ----
@@ -135,9 +138,7 @@ class Blockchain:
             return None
 
         self._append_block(block)
-        for tx in txs:
-            self._pool_ids.discard(tx.tx_id)
-        self.tx_pool = self.tx_pool[len(txs):]
+        self._drain_pool(block)
 
         logger.info(
             f"Block #{block.index} | {block.block_hash[:16]}... | "
@@ -145,30 +146,235 @@ class Blockchain:
         )
         return block
 
+    # ---- Authority scoring for fork resolution ----
+
+    def _authority_score(self, block: Block) -> int:
+        """Score 1 if block was produced by correct round-robin validator, else 0."""
+        expected = self.consensus.select_validator(block.index)
+        return 1 if expected and block.validator == expected else 0
+
+    def _chain_score(self, from_index: int = 0) -> int:
+        """Sum of authority scores from from_index to tip."""
+        return sum(self._authority_score(self.chain[i])
+                   for i in range(from_index, len(self.chain)))
+
     # ---- Receive block from network ----
 
     def add_block(self, block: Block) -> tuple[bool, str]:
         if block.block_hash in self._block_by_hash:
             return False, "already have this block"
 
-        # Block must be the next in sequence — reject out-of-order
         expected_index = len(self.chain)
-        if block.index != expected_index:
-            return False, (f"out-of-order block: expected index {expected_index}, "
-                           f"got {block.index}")
 
-        parent = self.chain[block.index - 1] if block.index > 0 else None
-        ok, err = self.consensus.validate_block(block, parent)
-        if not ok:
-            return False, err
+        # Normal case: extends tip
+        if block.index == expected_index:
+            parent = self.chain[block.index - 1] if block.index > 0 else None
+            ok, err = self.consensus.validate_block(block, parent)
+            if not ok:
+                return False, err
+            self._append_block(block)
+            self._drain_pool(block)
+            return True, ""
 
-        self._append_block(block)
+        # Fork case: block at a height we already have (competing chain)
+        if 0 < block.index < expected_index:
+            return self._evaluate_fork(block)
 
+        return False, (f"out-of-order block: expected index {expected_index}, "
+                       f"got {block.index}")
+
+    def try_reorg(self, fork_blocks: list[Block]) -> tuple[bool, str]:
+        """Attempt reorganization with a competing chain fork.
+
+        fork_blocks: list of blocks starting from the fork point +1.
+        Returns (success, message).
+        """
+        if not fork_blocks:
+            return False, "empty fork"
+
+        fork_start = fork_blocks[0].index
+        if fork_start == 0 or fork_start > len(self.chain):
+            return False, "invalid fork start"
+
+        depth = len(self.chain) - fork_start
+        if depth > MAX_REORG_DEPTH:
+            return False, f"reorg too deep: {depth} > {MAX_REORG_DEPTH}"
+
+        # Validate fork chain links to our chain at fork_start - 1
+        common_ancestor = self.chain[fork_start - 1]
+        if fork_blocks[0].prev_hash != common_ancestor.block_hash:
+            return False, "fork doesn't connect to our chain"
+
+        # Compare authority scores BEFORE rollback
+        our_score = sum(self._authority_score(self.chain[i])
+                        for i in range(fork_start, len(self.chain)))
+        fork_score = sum(
+            1 if (self.consensus.select_validator(fb.index) and
+                  fb.validator == self.consensus.select_validator(fb.index)) else 0
+            for fb in fork_blocks)
+
+        if fork_score < our_score:
+            return False, f"fork score {fork_score} <= our score {our_score}"
+        if fork_score == our_score and len(fork_blocks) <= depth:
+            return False, "fork not better (same score, not longer)"
+
+        # Rollback to common ancestor, then validate + apply fork
+        # Save current chain for rollback-on-failure
+        saved_chain = list(self.chain[fork_start:])
+        displaced_txs = self._rollback_to(fork_start)
+
+        # Validate and append fork blocks against the rolled-back state
+        parent = self.chain[-1] if self.chain else None
+        applied = []
+        for fb in fork_blocks:
+            ok, err = self.consensus.validate_block(fb, parent)
+            if not ok:
+                # Rollback any partially-applied fork blocks FIRST
+                if applied:
+                    self._rollback_to(fork_start)
+                # Restore original chain
+                for orig_block in saved_chain:
+                    self._append_block(orig_block)
+                return False, f"fork block #{fb.index} invalid: {err}"
+            self._append_block(fb)
+            applied.append(fb)
+            parent = fb
+
+        # Return displaced txs to pool (if still valid)
+        mined_in_fork = set()
+        for fb in fork_blocks:
+            for tx in fb.transactions:
+                mined_in_fork.add(tx.tx_id)
+
+        # Return displaced txs to pool — validate nonce freshness first
+        returned = 0
+        for tx in displaced_txs:
+            if tx.tx_id in mined_in_fork or tx.tx_id in self._tx_by_id:
+                continue
+            # Check nonce is still valid for current chain state
+            expected_nonce = self.get_nonce(tx.sender) + \
+                self._pool_sender_count.get(tx.sender, 0)
+            if tx.nonce == expected_nonce:
+                self.tx_pool.append(tx)
+                self._pool_ids.add(tx.tx_id)
+                self._pool_sender_count[tx.sender] = \
+                    self._pool_sender_count.get(tx.sender, 0) + 1
+                returned += 1
+
+        logger.info(
+            f"REORG: depth={depth}, fork_score={fork_score}, "
+            f"our_score={our_score}, displaced={len(displaced_txs)}, "
+            f"returned_to_pool={returned}")
+        return True, f"reorg complete: {fork_start} → {len(self.chain) - 1}"
+
+    def _evaluate_fork(self, block: Block) -> tuple[bool, str]:
+        """Evaluate a single competing block — request full fork if promising."""
+        # For single-block forks, compare authority scores directly
+        our_block = self.chain[block.index]
+        our_score = self._authority_score(our_block)
+        fork_score = (1 if (self.consensus.select_validator(block.index) and
+                           block.validator == self.consensus.select_validator(block.index))
+                     else 0)
+
+        if fork_score <= our_score:
+            return False, "competing block not better than ours"
+
+        # Single-block reorg at the tip
+        if block.index == len(self.chain) - 1:
+            parent = self.chain[block.index - 1]
+            ok, err = self.consensus.validate_block(block, parent)
+            if not ok:
+                return False, f"competing block invalid: {err}"
+            displaced = self._rollback_to(block.index)
+            self._append_block(block)
+            self._drain_pool(block)
+            # Return valid displaced txs to pool
+            new_tx_ids = {tx.tx_id for tx in block.transactions}
+            for tx in displaced:
+                if tx.tx_id not in new_tx_ids and tx.tx_id not in self._tx_by_id:
+                    self.tx_pool.append(tx)
+                    self._pool_ids.add(tx.tx_id)
+                    self._pool_sender_count[tx.sender] = \
+                        self._pool_sender_count.get(tx.sender, 0) + 1
+            logger.info(f"TIP REORG: replaced block #{block.index}, "
+                        f"{len(displaced)} displaced")
+            return True, "tip replaced"
+
+        return False, "multi-block fork needs try_reorg()"
+
+    def _rollback_to(self, target_index: int) -> list[Transaction]:
+        """Pop blocks from tip down to target_index (exclusive). Returns displaced txs."""
+        displaced = []
+        while len(self.chain) > target_index:
+            block = self.chain.pop()
+            self._block_by_hash.pop(block.block_hash, None)
+            for tx in block.transactions:
+                self._tx_by_id.pop(tx.tx_id, None)
+                self.consensus._chain_tx_ids.discard(tx.tx_id)
+
+                # Revert sender/recipient indices
+                sender_txs = self._txs_by_sender.get(tx.sender, [])
+                if tx.tx_id in sender_txs:
+                    sender_txs.remove(tx.tx_id)
+                if tx.recipient:
+                    recip_txs = self._txs_by_recipient.get(tx.recipient, [])
+                    if tx.tx_id in recip_txs:
+                        recip_txs.remove(tx.tx_id)
+
+                # Revert notarization indices
+                if tx.tx_type == TxType.NOTARIZE:
+                    dh = tx.payload.get("documentHash", "")
+                    if dh:
+                        if self._notarizations.get(dh) == tx.tx_id:
+                            self._notarizations.pop(dh, None)
+                        by_hash = self._notarizations_by_hash.get(dh, [])
+                        if tx.tx_id in by_hash:
+                            by_hash.remove(tx.tx_id)
+                        # Restore first notarization from remaining entries
+                        if dh not in self._notarizations and by_hash:
+                            self._notarizations[dh] = by_hash[0]
+
+                # Revert key registry
+                elif tx.tx_type == TxType.REGISTER_KEY:
+                    epk = tx.payload.get("encryption_pk", "")
+                    if epk:
+                        history = self._key_history.get(tx.sender, [])
+                        if epk in history:
+                            history.remove(epk)
+                        if history:
+                            self._key_registry[tx.sender] = history[-1]
+                        else:
+                            self._key_registry.pop(tx.sender, None)
+
+                displaced.append(tx)
+
+            # Recompute sender nonces after rollback
+            for tx in block.transactions:
+                remaining = self._txs_by_sender.get(tx.sender, [])
+                if remaining:
+                    max_nonce = max(
+                        (self.get_tx(tid).nonce for tid in remaining
+                         if self.get_tx(tid)),
+                        default=-1)
+                    self._sender_nonce[tx.sender] = max_nonce
+                else:
+                    self._sender_nonce.pop(tx.sender, None)
+        return displaced
+
+    def _drain_pool(self, block: Block):
+        """Remove mined transactions from pool after block append."""
         mined_ids = {tx.tx_id for tx in block.transactions}
+        mined_senders: dict[str, int] = {}
+        for tx in block.transactions:
+            mined_senders[tx.sender] = mined_senders.get(tx.sender, 0) + 1
         self.tx_pool = [tx for tx in self.tx_pool if tx.tx_id not in mined_ids]
         self._pool_ids -= mined_ids
-
-        return True, ""
+        for sender, cnt in mined_senders.items():
+            remaining = self._pool_sender_count.get(sender, cnt) - cnt
+            if remaining <= 0:
+                self._pool_sender_count.pop(sender, None)
+            else:
+                self._pool_sender_count[sender] = remaining
 
     # ---- Internal ----
 
@@ -191,9 +397,9 @@ class Blockchain:
             if tx.tx_type == TxType.NOTARIZE:
                 doc_hash = tx.payload.get("documentHash", "")
                 if doc_hash:
-                    # Keep first notarization (immutable proof of earliest claim)
                     if doc_hash not in self._notarizations:
                         self._notarizations[doc_hash] = tx.tx_id
+                    self._notarizations_by_hash.setdefault(doc_hash, []).append(tx.tx_id)
 
             elif tx.tx_type == TxType.REGISTER_KEY:
                 epk = tx.payload.get("encryption_pk", "")
@@ -248,20 +454,17 @@ class Blockchain:
         }
 
     def get_all_notarizations(self, document_hash: str) -> list[dict]:
-        """Get ALL notarizations for a document hash (not just the first)."""
+        """Get ALL notarizations for a document hash — O(K) via reverse index."""
         results = []
-        for tx_id_list in self._txs_by_sender.values():
-            for tid in tx_id_list:
-                tx = self.get_tx(tid)
-                if (tx and tx.tx_type == TxType.NOTARIZE
-                        and tx.payload.get("documentHash") == document_hash):
-                    block_idx = self.get_tx_block(tid)
-                    results.append({
-                        "tx_id": tid,
-                        "block_index": block_idx,
-                        "timestamp": tx.timestamp,
-                        "sender": tx.sender,
-                    })
+        for tid in self._notarizations_by_hash.get(document_hash, []):
+            tx = self.get_tx(tid)
+            if tx:
+                results.append({
+                    "tx_id": tid,
+                    "block_index": self.get_tx_block(tid),
+                    "timestamp": tx.timestamp,
+                    "sender": tx.sender,
+                })
         return sorted(results, key=lambda r: r["timestamp"])
 
     def get_shared_with(self, address: str) -> list[dict]:

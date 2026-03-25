@@ -4,6 +4,7 @@ import collections
 import logging
 import os
 import secrets
+import time
 from .core.wallet import Wallet
 from .core.blockchain import Blockchain
 from .core.transaction import Transaction, TxType
@@ -27,14 +28,18 @@ class FullNode:
 
     def __init__(self, *, host: str = "0.0.0.0", p2p_port: int = DEFAULT_P2P_PORT,
                  rpc_port: int = DEFAULT_RPC_PORT, data_dir: str = "",
-                 bootstrap: list[str] | None = None, rpc_token: str = ""):
+                 bootstrap: list[str] | None = None, rpc_token: str = "",
+                 tls_cert: str = "", tls_key: str = "",
+                 tls_self_signed: bool = False):
         self.data_dir = data_dir
         self.blockchain = Blockchain(data_dir=data_dir)
         self.wallets: dict[str, Wallet] = {}
         self.validator_wallet: Wallet | None = None
 
         self.p2p = P2PNode(host, p2p_port, node_id=secrets.token_hex(16))
-        self.rpc = RPCServer(host, rpc_port, auth_token=rpc_token)
+        self.rpc = RPCServer(host, rpc_port, auth_token=rpc_token,
+                             tls_cert=tls_cert, tls_key=tls_key,
+                             tls_self_signed=tls_self_signed, data_dir=data_dir)
         self.bootstrap = bootstrap or []
         self._running = False
         self._block_task = None
@@ -121,20 +126,37 @@ class FullNode:
         blocks = []
         for i in range(start, min(start + count, len(chain))):
             blocks.append(chain[i].to_dict())
-        await peer.send(MSG_BLOCKS, {"blocks": blocks})
+        # Echo back request_id for correlation (ISS-005)
+        resp = {"blocks": blocks}
+        req_id = data.get("request_id")
+        if req_id:
+            resp["request_id"] = req_id
+        await peer.send(MSG_BLOCKS, resp)
 
     async def _p2p_blocks(self, peer, data):
+        # Reject unsolicited blocks — require matching request_id (ISS-005)
+        req_id = data.get("request_id")
+        if req_id:
+            if req_id not in self.p2p._pending_requests:
+                logger.debug(f"Ignoring blocks with unknown request_id from {peer.addr}")
+                return
+            self.p2p._pending_requests.pop(req_id, None)
+        else:
+            # No request_id = unsolicited — drop
+            logger.debug(f"Dropping unsolicited MSG_BLOCKS from {peer.addr}")
+            return
+
         blocks_list = data.get("blocks", [])
         if not isinstance(blocks_list, list):
             return
-        for bd in blocks_list[:100]:  # cap to prevent CPU DoS
+        for bd in blocks_list[:100]:
             try:
                 block = Block.from_dict(bd)
                 ok, _ = self.blockchain.add_block(block)
                 if ok:
                     self._lock_genesis_if_needed()
                 else:
-                    break  # stop on first invalid — remaining depend on it
+                    break
             except Exception:
                 break
 
@@ -173,8 +195,14 @@ class FullNode:
             if not self._running:
                 break
             try:
+                # Prune stale pending requests (TTL 60s)
+                now = time.time()
+                stale = [rid for rid, ts in self.p2p._pending_requests.items()
+                         if now - ts > 60]
+                for rid in stale:
+                    self.p2p._pending_requests.pop(rid, None)
+
                 my_height = self.blockchain.height
-                # Broadcast our height
                 await self.p2p.broadcast(MSG_STATUS, {"height": my_height})
                 # Check if any peer is ahead
                 best = self.p2p.best_peer_height()
@@ -184,9 +212,12 @@ class FullNode:
                         (p for p in self.p2p.peers.values() if p.connected and p.height >= 0),
                         key=lambda p: p.height, default=None)
                     if best_peer:
+                        req_id = secrets.token_hex(8)
+                        self.p2p._pending_requests[req_id] = time.time()
                         await best_peer.send(MSG_GET_BLOCKS, {
                             "from": my_height + 1,
                             "count": min(best - my_height, 100),
+                            "request_id": req_id,
                         })
             except Exception as e:
                 logger.debug(f"Sync error: {e}")
@@ -300,7 +331,7 @@ class FullNode:
 
     def _next_nonce(self, address: str) -> int:
         base = self.blockchain.get_nonce(address)
-        pending = sum(1 for t in self.blockchain.tx_pool if t.sender == address)
+        pending = self.blockchain._pool_sender_count.get(address, 0)
         return base + pending
 
     async def _rpc_register_key(self, wallet_address=""):
@@ -460,7 +491,7 @@ class FullNode:
 
     async def start(self, validator_wallet: Wallet | None = None):
         logger.info("=" * 60)
-        logger.info("  QVault PQC Blockchain Node")
+        logger.info("  QBit Network PQC Blockchain Node")
         logger.info("=" * 60)
 
         # Load persisted wallets
@@ -509,12 +540,15 @@ class FullNode:
                 except ValueError:
                     pass
 
-        # Initial sync
+        # Initial sync with request-ID correlation
         if self.p2p.peer_count() > 0:
             await self.p2p.broadcast(MSG_STATUS, {
                 "height": self.blockchain.height})
+            req_id = secrets.token_hex(8)
+            self.p2p._pending_requests[req_id] = time.time()
             await self.p2p.broadcast(MSG_GET_BLOCKS, {
-                "from": len(self.blockchain.chain), "count": 50})
+                "from": len(self.blockchain.chain), "count": 50,
+                "request_id": req_id})
 
         self._running = True
         self._save_wallets()

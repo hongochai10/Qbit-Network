@@ -17,6 +17,9 @@ MSG_GET_PEERS = "get_peers"
 MSG_PEERS = "peers"
 MSG_STATUS = "status"
 
+# Pending request IDs for correlated responses
+# Stored as: {request_id: True} — only accept MSG_BLOCKS with known request_id
+
 _READER_LIMIT = 10 * 1024 * 1024  # 10 MB
 
 _BLOCKED_PORTS = {22, 23, 25, 53, 80, 443, 445, 3306, 5432, 6379, 8080, 8443}
@@ -87,6 +90,7 @@ class P2PNode:
         self.peers: dict[str, Peer] = {}
         self._handlers: dict[str, object] = {}
         self._server = None
+        self._pending_requests: dict[str, float] = {}  # request_id -> timestamp (bounded, TTL 60s)
 
     def on(self, msg_type: str, handler):
         self._handlers[msg_type] = handler

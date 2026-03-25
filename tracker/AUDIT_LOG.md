@@ -2,10 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 9
+- **Total rounds**: 10
 - **Total issues found**: 104
 - **Total fixed**: 101
 - **Accepted risks**: 3
+- **Round 10 status**: Pending — scheduled post-v0.2.0 release
 
 ## Round 1 — Basic Correctness (14 issues)
 
@@ -155,3 +156,11 @@
 | C | MED | Empty [] chain.json causes validator stall | Return False for empty array |
 | D | CRIT | produce_block skips consensus validation (fork) | Full validate_block + monotonic timestamp |
 | E | MED | load() skips sig for unknown validators | Log warning |
+
+## Round 10 — v0.2.0 Feature Audit (pending)
+
+Scope: fork resolution logic, LevelDB/SQLite backend, request-ID correlation, TLS integration, CLI tool, proof export, CI/CD pipeline, O(n) nonce validation refactor.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| — | — | Pending audit | — |

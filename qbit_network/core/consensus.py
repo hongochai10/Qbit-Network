@@ -97,7 +97,8 @@ class ProofOfAuthority:
 
         # ---- Transactions ----
         seen_ids = set()
-        sender_nonces: dict[str, int] = {}
+        sender_nonces: dict[str, int] = {}      # sender -> last nonce in block
+        sender_first_nonce: dict[str, int] = {}  # sender -> first nonce in block (O(1))
 
         for tx in block.transactions:
             if not tx.verify():
@@ -119,18 +120,19 @@ class ProofOfAuthority:
             if prev_nonce is not None and tx.nonce != prev_nonce + 1:
                 return False, (f"nonce gap for {tx.sender[:16]}...: "
                                f"expected {prev_nonce + 1}, got {tx.nonce}")
+            if tx.sender not in sender_first_nonce:
+                sender_first_nonce[tx.sender] = tx.nonce
             sender_nonces[tx.sender] = tx.nonce
 
-        # Nonce: check first nonce per sender matches chain state
+        # Nonce: check first nonce per sender matches chain state — O(senders) not O(txs)
         if self._chain_nonces is not None:
-            for sender, last_nonce_in_block in sender_nonces.items():
-                first_nonce_in_block = last_nonce_in_block - sum(
-                    1 for tx in block.transactions if tx.sender == sender) + 1
+            for sender in sender_nonces:
                 expected_start = self._chain_nonces.get(sender, -1) + 1
-                if first_nonce_in_block != expected_start:
+                actual_start = sender_first_nonce[sender]
+                if actual_start != expected_start:
                     return False, (
                         f"nonce mismatch for {sender[:16]}...: "
                         f"chain expects {expected_start}, "
-                        f"block starts at {first_nonce_in_block}")
+                        f"block starts at {actual_start}")
 
         return True, ""

@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.2.0 (2026-03-25)
+
+### Protocol
+- Fork resolution: longest valid chain rule replaces permanent divergence on conflicting blocks (closes ISS-003)
+- Request-ID correlation: unsolicited MSG_BLOCKS are now rejected, preventing chain-split between honest nodes (closes ISS-005)
+
+### Storage
+- LevelDB/SQLite persistent backend replaces the in-memory chain; blocks and indices survive node restarts (closes ISS-006)
+
+### Security
+- TLS support for the RPC server via reverse-proxy mode; shared secrets no longer exposed over plain HTTP (closes ISS-004)
+
+### Performance
+- Consensus nonce validation reduced from O(n^2) to O(n) using a precomputed sender-count map (closes ISS-011)
+
+### Client
+- CLI tool added: wallet creation, key listing, and NOTARIZE submission from the command line
+- Merkle proof export: `getProof` RPC method and CLI flag produce a portable JSON proof bundle
+
+### Infrastructure
+- CI/CD pipeline added: unit test suite runs on every push
+
+### Known Issues Introduced
+- ISS-015: CI pipeline covers unit tests only; adversarial and integration tests not yet included
+- ISS-016: TLS termination is external (reverse proxy); in-process TLS deferred to v0.3.0
+- ISS-017: CLI does not yet expose STORE or SHARE workflows
+
+---
+
 ## v0.1.0 (2026-03-25)
 
 ### Initial Release

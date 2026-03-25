@@ -50,17 +50,37 @@
 - [x] Payload key whitelisting
 - [x] Input size limits at every boundary
 
-## Planned (v0.2.0)
+## Implemented (v0.2.0)
+
+### Protocol
+- [x] Fork resolution (longest valid chain rule)
+- [x] Request-response correlation (prevent unsolicited blocks)
+
+### Storage
+- [x] LevelDB/SQLite backend (replace in-memory chain)
+
+### Security
+- [x] TLS for RPC server (reverse-proxy mode; in-process TLS deferred)
+
+### Performance
+- [x] O(n^2) → O(n) consensus nonce validation (precomputed sender-count map)
+
+### Client
+- [x] CLI tool for wallet management and notarization
+- [x] Merkle proof export
+
+### Infrastructure
+- [x] CI/CD pipeline (unit test suite on push)
+
+## Planned (v0.2.x / backlog)
 
 ### Protocol
 - [ ] Multi-validator key distribution on chain
 - [ ] Validator staking / deposit mechanism
-- [ ] Fork resolution (longest valid chain rule)
 - [ ] Block finality (checkpoint mechanism)
 - [ ] Key revocation transactions
 
 ### Storage
-- [ ] LevelDB/RocksDB backend (replace in-memory chain)
 - [ ] Chain pruning (configurable retention)
 - [ ] Transaction pool persistence
 - [ ] State snapshot/restore
@@ -69,19 +89,18 @@
 - [ ] Noise Protocol for P2P authentication
 - [ ] Peer reputation scoring
 - [ ] NAT traversal / hole punching
-- [ ] Request-response correlation (prevent unsolicited blocks)
 
 ### Security
-- [ ] TLS for RPC server
 - [ ] Key material zeroing via ctypes/mmap
 - [ ] Rate limiting per-peer and per-RPC-client
 - [ ] Audit log on-chain (validator accountability)
+- [ ] In-process TLS (no reverse-proxy dependency)
 
 ### Client
-- [ ] CLI tool for wallet management
 - [ ] File notarization helper (auto SHA3 + submit)
 - [ ] IPFS integration for STORE/SHARE workflows
 - [ ] Web dashboard for chain explorer
+- [ ] CLI coverage for STORE and SHARE workflows
 
 ## Planned (v0.3.0)
 

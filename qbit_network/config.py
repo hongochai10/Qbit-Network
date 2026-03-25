@@ -1,4 +1,4 @@
-"""QVault blockchain configuration."""
+"""QBit Network blockchain configuration."""
 import os
 
 # Crypto
@@ -14,6 +14,7 @@ MAX_TX_POOL_SIZE = 10000
 MAX_BLOCK_DRIFT = 30              # seconds into the future allowed
 ADDRESS_PREFIX = "qv1"
 CHAIN_ID = "qbit-mainnet"
+MAX_REORG_DEPTH = 32              # max blocks to reorganize
 
 # Network
 DEFAULT_P2P_PORT = 9000
