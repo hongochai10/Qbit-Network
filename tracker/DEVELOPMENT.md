@@ -47,14 +47,15 @@ qbit_network/
 │   └── secure_bytes.py  # ctypes-backed mutable key material with zero()
 ├── core/                # Blockchain data structures and state
 │   ├── wallet.py        # Identity management (SecureBytes-backed keys)
-│   ├── transaction.py   # 10 TX types and validation
-│   ├── block.py         # Block structure with Merkle proofs
-│   ├── blockchain.py    # Chain state machine (dPoS, epochs, slashing, pruning)
+│   ├── transaction.py   # 11 TX types and validation
+│   ├── block.py         # Block structure with Merkle proofs and baseFee
+│   ├── blockchain.py    # Chain state machine (dPoS, epochs, slashing, QBIT balance ledger, pruning)
 │   ├── consensus.py     # dPoS weighted selection + PoA round-robin fallback
-│   ├── store.py         # SQLite backend (blocks, validators, stakes, epochs, slashing)
+│   ├── fees.py          # EIP-1559 fee engine (compute_base_fee, compute_tx_fee, tx_weight)
+│   ├── store.py         # SQLite backend (blocks, validators, stakes, epochs, slashing, balances)
 │   └── proof.py         # Merkle proof export + block signature verification
 ├── network/             # Communication layer
-│   ├── p2p.py           # TCP P2P, HELLO_AUTH 3-step auth, ML-KEM encrypted channel
+│   ├── p2p.py           # TCP P2P, HELLO_AUTH 4-step auth, ML-KEM encrypted channel
 │   ├── rpc.py           # JSON-RPC 2.0 + WebSocket attach + dashboard static files
 │   ├── rest_api.py      # REST API gateway (36 endpoints, /api/v1/)
 │   ├── websocket.py     # WebSocket pub/sub (new_block, new_tx, chain_stats)

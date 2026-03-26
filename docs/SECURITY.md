@@ -46,7 +46,7 @@
 
 ## Audit History
 
-16 rounds of security audit, 195+ issues found:
+17 rounds of security audit, 197+ issues found:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -67,8 +67,16 @@
 | 14 | v0.4.0 Sprint 1-2 (dPoS, epochs, slashing, P2P encryption, dedup) | 9 |
 | 15 | v0.4.0 Sprint 3 (SecureBytes, TLS auto-provisioning, reputation, pruning) | 5 |
 | 16 | v0.5.0 Sprint 4 Financial layer security (TRANSFER, fees, rewards, supply) | 5 |
+| 17 | v0.6.0 EIP-1559 + auth bypass (CRITICAL auth bypass, unbonding persistence) | 2 |
 
 See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
+
+### EIP-1559 and Auth Security (Round 17)
+
+- **[CRITICAL] Auth bypass**: Fixed a critical authentication bypass vulnerability. See `tracker/AUDIT_LOG.md` Round 17 for details.
+- **Unbonding persistence**: Fixed unbonding state persistence to survive node restarts correctly.
+- **EIP-1559 anti-spam**: `maxFeePerWeight` pool admission gate rejects under-priced TXs before they consume validator resources.
+- **Self-TX weight cap**: Validator self-TXs capped at 25% of total block weight, preventing artificial base fee manipulation.
 
 ### Financial Layer Security (Round 16)
 
@@ -102,7 +110,7 @@ See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
 
 ### Authentication Protocol
 
-- HELLO_AUTH 3-step ML-DSA-65 challenge-response: both sides verify the other's signature before marking `peer.authenticated = True`
+- HELLO_AUTH 4-step ML-DSA-65 mutual authentication: initiator embeds proof in hello_auth; responder verifies proof before signing (verify-before-sign); both sides verify the other's signature before marking `peer.authenticated = True`
 - Failed auth triggers immediate disconnect; no downgrade to unauthenticated state (no v1 fallback on failure)
 - Challenges are 32-byte single-use random values (`os.urandom(32)`), cleared before verification
 - Signature domain: `"QBIT_AUTH_v2:" || challenge || signer_address` prevents cross-protocol reuse

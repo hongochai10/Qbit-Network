@@ -117,7 +117,7 @@ No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 - Self-transfer (`to == from`) is rejected.
 - Optional `memo` must be a string, max 256 characters.
 - Balance check: sender must have `amount + fee` available after pending pool debits.
-- Fee: 100,000 qubits (50% to validator, 50% burned).
+- Fee: 100,000 qubits (legacy: 50% to validator, 50% burned; dynamic fee mode: 100% to validator).
 
 #### Fee Schedule (Legacy Fixed Fees -- Pre-Activation)
 
@@ -292,12 +292,13 @@ TCP with newline-delimited JSON messages. Reader limit: 10 MB.
 |---------|---------|----------|
 | 1 | v0.1.0-v0.2.0 | Plain hello, no auth, no request-ID |
 | 2 | v0.2.1+ | hello_auth challenge-response, request-ID correlation |
+| 3 | v0.6.0+ | EIP-1559 dynamic fees, baseFee in block header, max_fee_per_weight + max_priority_fee in TX |
 
 Negotiation: `min(initiator_version, responder_version)`.
 
 ### Authenticated Handshake (v0.2.1+)
 
-Full 3-step mutual authentication using ML-DSA-65 challenge-response:
+Full 4-step mutual authentication using ML-DSA-65 challenge-response. The initiator includes a self-signed proof in the first message; the responder verifies that proof before signing anything (verify-before-sign, resolves SPRINT1-003):
 
 #### Step 1 — hello_auth (Initiator → Responder)
 

@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 16 (including all v0.5.0 sprints)
-- **Total issues found**: 195+
-- **Total fixed**: 195+
+- **Total rounds**: 17 (including all v0.6.0 sprints)
+- **Total issues found**: 197+
+- **Total fixed**: 197+
 - **Accepted risks / open**: 0
-- **Latest**: v0.5.0-sprint4 audit — complete 2026-03-26
+- **Latest**: v0.6.0 audit (Round 17) — complete 2026-03-26
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -304,3 +304,14 @@ Scope: TRANSFER processing, fee deduction/burn, block rewards, halving, supply c
 | R16-005 | MED | Rollback block reward reversal uses `min(reward, bal)` — partial reversal if validator spent reward, causing `_total_minted` to underflow relative to actual balances | Accepted: this is defense-in-depth (prevents negative balance on rollback); full state rebuild on load from SQLite resolves any drift |
 
 **Round 16 summary:** 3 fixed, 2 accepted, 0 deferred
+
+## Round 17 — v0.6.0 EIP-1559 + Auth (2 issues)
+
+Scope: EIP-1559 dynamic fee engine, HELLO_AUTH 4-step verify-before-sign, unbonding persistence across restarts.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R17-001 | CRIT | Auth bypass in HELLO_AUTH — responder could be tricked into authenticating without verifying initiator proof under specific timing conditions | Fixed: initiator proof validated before any signing occurs; no fallback if proof is absent or invalid |
+| R17-002 | MED | Unbonding entries not persisted correctly across restarts — mature unbondings could be skipped after node restart | Fixed: `_process_mature_unbondings()` called on chain reload from SQLite; unbonding state fully rebuilt from SQLite `unbonding` table |
+
+**Round 17 summary:** 2 fixed, 0 accepted, 0 deferred

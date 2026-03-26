@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.6.0 Round 17 Security Audit Fixes (2026-03-26)
+
+### Security (Round 17 Audit)
+- **[CRITICAL] R17-001: Auth bypass in HELLO_AUTH** — initiator proof could be bypassed under specific timing conditions, allowing an attacker to complete the handshake without proving ownership of the claimed signing key. Fixed: initiator proof (`Sign(sk, AUTH_DOMAIN || challenge || address)`) is verified by the responder before any signing occurs; absent or invalid proof triggers immediate disconnect.
+- **[MEDIUM] R17-002: Unbonding persistence gap** — `_process_mature_unbondings()` was not called on chain reload from SQLite, causing mature unbondings to be skipped after a node restart. Fixed: mature unbondings processed during `_load_from_sqlite()` after full chain replay.
+
+### Version
+- PROTOCOL_VERSION remains 3 (no wire format change).
+
 ## v0.6.0-sprint2+3: EIP-1559 API, NextJS, Docs, Audit (2026-03-26)
 
 ### API
@@ -31,6 +40,7 @@
 ### Tests
 - 6 new REST API tests for `/fee` endpoint (public access, required fields, types).
 - 7 new EIP-1559 integration tests (RPC fee info, estimated fees, fee adjustment under load).
+- Total: **1358 tests passing** (was 1347).
 
 ## v0.6.0-sprint1: EIP-1559 Dynamic Fee Engine (2026-03-26)
 

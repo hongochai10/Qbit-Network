@@ -159,9 +159,9 @@
   - `GET /api/v1/supply` -- total minted, burned, circulating
   - `GET /api/v1/address/:addr` now includes `balance` field
 - [x] Token Economics Config
-  - TOKEN_NAME="QBit", TOKEN_SYMBOL="QBIT", TOKEN_DECIMALS=8
-  - QUBIT_PER_QBIT = 100,000,000 (smallest unit)
-  - MAX_SUPPLY = 1,000,000,000 QBIT (10^17 qubits)
+  - TOKEN_NAME="QBit", TOKEN_SYMBOL="QBIT", TOKEN_DECIMALS=9
+  - QUBIT_PER_QBIT = 1,000,000,000 (smallest unit)
+  - MAX_SUPPLY = 21,000,000 QBIT
   - INITIAL_BLOCK_REWARD = 5 QBIT, HALVING_INTERVAL = 2,100,000
   - GENESIS_BALANCE_QBIT = 20,000,000 QBIT
 - [x] 63 new tests covering all financial layer features
@@ -401,7 +401,7 @@
 
 ---
 
-## Planned (v0.5.0+)
+## Planned (v0.7.0+)
 
 ### Protocol
 - [ ] Block finality (checkpoint mechanism)

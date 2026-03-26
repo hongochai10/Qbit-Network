@@ -19,8 +19,8 @@
 │   Bearer auth | Body limits | Batch caps | Rate limit│
 ├─────────────┬───────────────────┬───────────────────┤
 │  Blockchain │    Consensus      │     P2P Network   │
-│  (SQLite +  │    (PoA round-    │   (TCP + JSON     │
-│   indices)  │     robin)        │    newline-delim)  │
+│  (SQLite +  │    (dPoS/PoA      │   (TCP + JSON     │
+│   indices)  │     fallback)     │    newline-delim)  │
 ├─────────────┴───────────────────┴───────────────────┤
 │                     Core                             │
 │   Wallet | Transaction | Block | State Indices       │
@@ -61,8 +61,8 @@ The QBit Network has a built-in token economy with the following properties:
 
 ### Token: QBIT
 
-- **Name**: QBit / **Symbol**: QBIT / **Decimals**: 8 (1 QBIT = 10^8 qubits)
-- **Max supply**: 1,000,000,000 QBIT (10^17 qubits)
+- **Name**: QBit / **Symbol**: QBIT / **Decimals**: 9 (1 QBIT = 10^9 qubits)
+- **Max supply**: 21,000,000 QBIT
 - **Genesis allocation**: 20,000,000 QBIT to the genesis validator
 
 ### Block Rewards
@@ -283,7 +283,7 @@ Reports validator double-signing. Contains two ML-DSA-65 signatures over differe
 
 ## Consensus: Delegated Proof of Stake (dPoS)
 
-As of v0.4.0, QBit Network uses Delegated Proof of Stake with the following properties:
+As of v0.4.0 (finalized in v0.6.0), QBit Network uses Delegated Proof of Stake with the following properties:
 
 ### Staking Model
 

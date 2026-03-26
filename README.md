@@ -1,6 +1,6 @@
 # QBit Network — Post-Quantum Cryptography Blockchain
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 1264](https://img.shields.io/badge/tests-1264-brightgreen)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 1358](https://img.shields.io/badge/tests-1358-brightgreen)
 
 QBit Network is a purpose-built blockchain for document notarization and encrypted data sharing. It replaces all quantum-vulnerable cryptography (ECDSA, ECDH, secp256k1) with NIST-standardized post-quantum alternatives, providing a quantum-resistant foundation for long-lived document proofs and confidential file exchange.
 
@@ -16,7 +16,7 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **11 transaction types**: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER
 - **Delegated Proof of Stake** — stake-weighted validator selection, epoch rotation (every 100 blocks), double-sign slashing
 - **ML-KEM-768 encrypted P2P** — all post-authentication peer messages encrypted with AES-256-GCM
-- **3-step ML-DSA mutual auth** — P2P challenge-response handshake with verify-before-sign
+- **4-step ML-DSA mutual auth** — P2P challenge-response handshake with verify-before-sign (proof in hello_auth, verify-before-sign, counter-challenge, confirm)
 - **REST API** — 36 endpoints at `/api/v1/` with pagination and CORS
 - **WebSocket subscriptions** — real-time `new_block`, `new_tx`, `chain_stats` events at `/ws`
 - **Web dashboard** — single-file SPA at `/dashboard/` with block explorer, validator panel, staking panel, document verifier
@@ -28,7 +28,7 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **Chain pruning** — SQLite-level block removal with indices preserved
 - **QBIT token economy** -- 21M max supply, 5 QBIT block reward with halving, EIP-1559 dynamic fees, epoch delegator rewards
 - **TRANSFER transactions** -- peer-to-peer token transfers with balance checks, pending debit tracking, recipient format validation
-- **16 audit rounds, 0 open issues**
+- **17 audit rounds, 0 open issues**
 
 ## Quick Start
 
@@ -233,7 +233,7 @@ tracker/             AUDIT_LOG.md, ISSUES.md, FEATURES.md, CHANGELOG.md, DEVELOP
 
 ## Security
 
-QBit Network has completed **15 rounds of security audit** covering:
+QBit Network has completed **17 rounds of security audit** covering:
 
 - Cryptographic correctness (PQC primitive usage, key handling, side-channels)
 - Input validation (deserialization, RPC params, P2P messages)
@@ -258,11 +258,11 @@ QBit Network has completed **15 rounds of security audit** covering:
 
 | File | Contents |
 |------|---------|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layer diagram, identity model, all 10 TX types, dPoS, WebSocket, REST API, security limits |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layer diagram, identity model, all 11 TX types, dPoS, WebSocket, REST API, security limits |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Wire formats, consensus rules, P2P handshake spec, WebSocket protocol |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Threat model, audit history, all security controls |
 | [`docs/PAPER.md`](docs/PAPER.md) | Academic paper with benchmarks and formal analysis |
-| [`tracker/CHANGELOG.md`](tracker/CHANGELOG.md) | Release notes v0.1.0 through v0.4.0 |
+| [`tracker/CHANGELOG.md`](tracker/CHANGELOG.md) | Release notes v0.1.0 through v0.6.0 |
 | [`tracker/DEVELOPMENT.md`](tracker/DEVELOPMENT.md) | Setup guide, code conventions, configuration |
 
 ## Contributing

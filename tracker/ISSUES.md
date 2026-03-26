@@ -2,7 +2,7 @@
 
 ## Open Issues
 
-None. All tracked issues are closed as of v0.5.0 (2026-03-26).
+None. All tracked issues are closed as of v0.6.0 (2026-03-26).
 
 ## Closed Issues
 
@@ -26,11 +26,11 @@ None. All tracked issues are closed as of v0.5.0 (2026-03-26).
 | ISS-016 | Security | TLS implemented but self-signed cert UX needs improvement | `TLSManager` auto-generates, renews, and hot-reloads self-signed certificates; `--tls-auto` flag (v0.4.0-sprint3) | 2026-03-25 |
 | ISS-017 | Client | CLI missing STORE/SHARE | CLI store/share commands added in v0.2.1 | 2026-03-25 |
 
-See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (195+ issues across 16 rounds).
+See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (197+ issues across 17 rounds).
 
-## Final Project Summary (v0.5.0, 2026-03-26)
+## Final Project Summary (v0.6.0, 2026-03-26)
 
 - All 17 tracked issues closed
 - 0 open issues, 0 accepted risks with outstanding mitigations
-- 16 audit rounds completed
-- 1264 tests passing
+- 17 audit rounds completed
+- 1358 tests passing
