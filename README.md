@@ -26,7 +26,7 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **TLS auto-provisioning** — `--tls-auto` generates and renews self-signed certificates; hot-reload on SIGHUP
 - **Peer reputation scoring** — 8 event types, score decay, automatic banning
 - **Chain pruning** — SQLite-level block removal with indices preserved
-- **QBIT token economy** -- 1B max supply, 5 QBIT block reward with halving, fee burn (50%), epoch delegator rewards
+- **QBIT token economy** -- 21M max supply, 5 QBIT block reward with halving, fee burn (50%), epoch delegator rewards
 - **TRANSFER transactions** -- peer-to-peer token transfers with balance checks, pending debit tracking, recipient format validation
 - **16 audit rounds, 0 open issues**
 
@@ -270,6 +270,19 @@ QBit Network has completed **15 rounds of security audit** covering:
 1. Read [`tracker/DEVELOPMENT.md`](tracker/DEVELOPMENT.md) for setup and code conventions.
 2. Run the full test suite before submitting: `pytest tests/`
 3. Security issues: run through the audit checklist in [`docs/SECURITY.md`](docs/SECURITY.md).
+
+## Donation
+
+If you find this project useful, consider supporting development:
+
+| Network | Address |
+|---------|---------|
+| **Ethereum / BSC** | `0xa2cb92159210F1253fD3EAac6bACBECFE1060f87` |
+
+## Contact
+
+- Email: hongochai10@icloud.com
+- GitHub: [hongochai10/Qbit-Network](https://github.com/hongochai10/Qbit-Network)
 
 ## License
 
