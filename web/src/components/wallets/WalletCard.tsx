@@ -1,10 +1,13 @@
 "use client";
 
 import { useCallback } from "react";
+import Link from "next/link";
 import { HashDisplay } from "@/components/ui/HashDisplay";
-import { Wallet, Shield, FileText, Send, ArrowDownLeft, Layers } from "lucide-react";
+import { Wallet, Shield, FileText, Send, ArrowDownLeft, Layers, ArrowUpRight } from "lucide-react";
 import { getApi } from "@/lib/api";
 import { useApi } from "@/hooks/useApi";
+import { formatQBIT } from "@/lib/format";
+import type { BalanceInfo } from "@/lib/types";
 
 interface AddressInfo {
   address: string;
@@ -24,6 +27,16 @@ export function WalletCard({ address }: { address: string }) {
   }, [api, address]);
   const { data } = useApi<AddressInfo>(fetcher);
 
+  // Fetch balance
+  const balanceFetcher = useCallback(async (): Promise<BalanceInfo | null> => {
+    try {
+      return await api.getBalance(address);
+    } catch {
+      return null;
+    }
+  }, [api, address]);
+  const { data: balanceData } = useApi(balanceFetcher);
+
   // Also fetch stake info if validator
   const stakeFetcher = useCallback(async (): Promise<{ total_stake: number } | null> => {
     try {
@@ -37,6 +50,7 @@ export function WalletCard({ address }: { address: string }) {
 
   const info = data as AddressInfo | null;
   const totalStake = stakeData?.total_stake ?? 0;
+  const balance = balanceData?.balance ?? 0;
 
   return (
     <div className="bg-card border border-card-border rounded-lg p-5 hover:border-accent/30 transition-colors">
@@ -54,6 +68,30 @@ export function WalletCard({ address }: { address: string }) {
             <Shield size={10} /> Validator
           </span>
         )}
+      </div>
+
+      {/* Balance Display */}
+      <div className="mb-4 p-4 bg-primary/50 rounded-lg border border-card-border">
+        <div className="text-xs text-muted mb-1">Balance</div>
+        <div className="text-2xl font-bold text-foreground font-mono">
+          {formatQBIT(balance)}
+        </div>
+        {totalStake > 0 && (
+          <div className="text-xs text-muted mt-1">
+            Staked: <span className="text-accent font-mono">{formatQBIT(totalStake)}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Actions */}
+      <div className="mb-4">
+        <Link
+          href={`/transfer?from=${encodeURIComponent(address)}`}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-accent/20 text-accent rounded-lg text-sm font-medium hover:bg-accent/30 transition-colors"
+        >
+          <ArrowUpRight size={14} />
+          Send QBIT
+        </Link>
       </div>
 
       {/* Stats Grid */}

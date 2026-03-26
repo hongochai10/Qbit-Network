@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Loading } from "@/components/ui/Loading";
 import { getApi } from "@/lib/api";
 import { useApi } from "@/hooks/useApi";
+import { SupplyWidget } from "@/components/dashboard/SupplyWidget";
 
 export default function DashboardPage() {
   const api = getApi();
@@ -84,6 +85,9 @@ export default function DashboardPage() {
             )}
           </Card>
         </div>
+
+        {/* Supply Overview */}
+        <SupplyWidget />
       </div>
     </div>
   );

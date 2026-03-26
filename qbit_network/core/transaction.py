@@ -84,7 +84,7 @@ class Transaction:
 
     _ALLOWED_KEYS = {
         TxType.REGISTER_KEY: {"encryption_pk"},
-        TxType.REGISTER_VALIDATOR: {"validator_pubkey", "validator_address"},
+        TxType.REGISTER_VALIDATOR: {"validator_pubkey", "validator_address", "commission"},
         TxType.REVOKE_KEY: {"key_type", "reason"},
         TxType.NOTARIZE: {"documentHash", "metadata"},
         TxType.STORE: {"documentHash", "cid", "metadata"},
@@ -176,6 +176,11 @@ class Transaction:
             # Self-registration only: sender must be the validator (T-01)
             if self.sender != vaddr:
                 return False, "REGISTER_VALIDATOR requires sender == validator_address"
+            # Optional commission rate (0-100 integer percent)
+            commission = self.payload.get("commission")
+            if commission is not None:
+                if not isinstance(commission, int) or commission < 0 or commission > 100:
+                    return False, "commission must be an integer 0-100"
 
         elif self.tx_type == TxType.REVOKE_KEY:
             _VALID_KEY_TYPES = {"signing", "encryption", "validator"}

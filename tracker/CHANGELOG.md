@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.5.0-sprint2: Staking Migration + Epoch Rewards + Supply Tracking (2026-03-26)
+
+### New Features
+- **Epoch Reward Distribution**: Block rewards accumulated per-validator during each epoch
+  are distributed to delegators proportionally at epoch boundaries. Validator keeps
+  commission (default 10%), remaining pool split by delegation weight. Integer arithmetic
+  only -- no rounding exploits beyond 1 base unit.
+- **Validator Commission**: Validators can set commission rate (0-100%) via `"commission"`
+  field in REGISTER_VALIDATOR payload. Default is 10%. Queryable via
+  `get_validator_commission()`.
+- **Enhanced Supply Tracking**: `get_total_supply()` now includes `staked` (sum of all
+  locked stakes), `circulating` (minted - burned - staked), and `max_supply` (1B QBIT).
+  Conservation invariant: `circulating + staked + burned == total_minted`.
+- **Epoch Reward Queries**: `get_epoch_rewards(validator_addr)` returns accumulated
+  rewards for current epoch.
+
+### Technical
+- `_epoch_rewards: dict[str, int]` tracks per-validator accumulated block rewards.
+- `_validator_commission: dict[str, int]` stores commission rates.
+- `_last_epoch_distributions: dict[int, list[tuple[str, int]]]` enables rollback of
+  epoch distributions.
+- `_distribute_epoch_rewards()` called at epoch boundary before validator snapshot.
+- Epoch distribution persisted via extended `_persist_balances_after_block()` that
+  includes delegator addresses at epoch boundaries.
+- `DEFAULT_COMMISSION_RATE = 10` added to config.
+- `"commission"` added to REGISTER_VALIDATOR allowed payload keys with validation.
+- Balance persistence moved after epoch transition for correct ordering.
+- 35 new tests covering all features, rollback, and adversarial inputs.
+- Total: 1205 tests passing (was 1170).
+
+## v0.5.0-sprint3: NextJS Financial UI Updates (2026-03-26)
+
+### New Features
+- **QBIT Formatting**: `formatQBIT()` / `parseQBIT()` utilities in `lib/format.ts` for
+  converting between raw qubits (integer) and human-readable QBIT strings (10^8 decimals).
+- **Balance Display**: WalletCard now shows wallet balance prominently with staked amount
+  and a "Send QBIT" action button linking to the transfer page.
+- **Transfer Page**: New `/transfer` route with wallet dropdown, recipient input, decimal
+  amount entry, optional memo (256 char limit), network fee display, and confirmation
+  dialog before submission. Success/error feedback with toast notifications.
+- **Supply Widget**: Dashboard supply overview showing minted/max progress bar and
+  circulating/burned/staked breakdown cards.
+- **StatsBar Supply**: Circulating supply stat added to the stats bar on all pages.
+- **Block Rewards**: BlockDetail now shows the block reward amount for COINBASE/REWARD txs.
+- **Transfer Details**: TxDetail shows amount, memo, and fee prominently for TRANSFER type.
+  All transaction types show fee when present in payload.
+- **API Client**: Added `getBalance()`, `getSupply()`, `transfer()` methods to `QBitAPI`.
+- **Types**: Added `BalanceInfo` and `SupplyInfo` TypeScript interfaces.
+- **Badge Variants**: TRANSFER (emerald) and COINBASE (yellow) type colors.
+- **Sidebar**: Transfer navigation link added between Wallets and Notarize.
+
+### Technical
+- TransferForm extracted to separate component with Suspense boundary for `useSearchParams`
+  SSR compatibility (Next.js 16 requirement).
+- No `dangerouslySetInnerHTML` usage. All user content rendered via React text nodes.
+- Responsive layout maintained across all new components.
+- Build passes with zero TypeScript errors on Next.js 16.2.1 + Turbopack.
+
 ## v0.5.0-sprint1: Core Balance Ledger + TRANSFER + Fees (2026-03-26)
 
 ### New Features

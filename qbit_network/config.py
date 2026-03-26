@@ -44,6 +44,7 @@ MAX_STAKE = 1_000_000
 UNBONDING_PERIOD = 100       # blocks until unstaked weight is released
 EPOCH_LENGTH = 100           # blocks per epoch
 SLASH_PERCENTAGE = 50        # percentage of total stake slashed for misbehaviour
+DEFAULT_COMMISSION_RATE = 10 # percent of epoch rewards kept by validator
 
 # TLS
 TLS_CERT_VALIDITY_DAYS = 365

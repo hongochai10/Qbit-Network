@@ -317,7 +317,8 @@ class TestFees:
         fee = TX_FEES["NOTARIZE"]
         burn = fee - (fee // 2)
         assert supply["total_burned"] == burn
-        assert supply["circulating"] == supply["total_minted"] - supply["total_burned"]
+        assert supply["circulating"] == supply["total_minted"] - supply["total_burned"] - supply["staked"]
+        assert supply["max_supply"] == MAX_SUPPLY
 
     def test_insufficient_balance_for_fee_rejected(self, funded_chain, wallet, wallet_pair):
         """A wallet with zero balance cannot submit fee-bearing txs."""
@@ -604,7 +605,9 @@ class TestSupply:
         genesis_balance = GENESIS_BALANCE_QBIT * QUBIT_PER_QBIT
         assert supply["total_minted"] == genesis_balance
         assert supply["total_burned"] == 0
-        assert supply["circulating"] == genesis_balance
+        assert supply["staked"] == MIN_STAKE  # genesis validator auto-staked
+        assert supply["circulating"] == genesis_balance - MIN_STAKE
+        assert supply["max_supply"] == MAX_SUPPLY
 
     def test_supply_after_blocks(self, funded_chain, wallet):
         bc = funded_chain
@@ -619,6 +622,8 @@ class TestSupply:
         burn = fee - (fee // 2)
         assert supply["total_minted"] == genesis_balance + reward
         assert supply["total_burned"] == burn
+        assert supply["staked"] == MIN_STAKE
+        assert supply["max_supply"] == MAX_SUPPLY
 
 
 # ========== TRANSFER Payload Validation ==========

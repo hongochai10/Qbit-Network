@@ -2,6 +2,52 @@
 
 ## Implemented
 
+### v0.5.0-sprint2 (2026-03-26)
+- [x] Staking Balance Integration (complete)
+  - STAKE/DELEGATE debit sender balance (amount + fee)
+  - UNSTAKE maturity credits balance back via `_process_mature_unbondings()`
+  - `submit_tx()` rejects STAKE/DELEGATE when balance < fee + amount
+  - Pending debit tracking includes stake/delegate amounts
+- [x] Epoch Reward Distribution
+  - `_epoch_rewards` dict accumulates per-validator block rewards each epoch
+  - `_distribute_epoch_rewards()` splits rewards: validator commission + delegator pool
+  - Delegator shares proportional to delegation weight (integer arithmetic)
+  - Distribution triggered at epoch boundary in `_check_epoch_transition()`
+  - `_last_epoch_distributions` recorded for rollback support
+- [x] Validator Commission
+  - `_validator_commission` dict (validator_addr -> percent, default 10)
+  - `DEFAULT_COMMISSION_RATE = 10` in config
+  - Set via `"commission"` field in REGISTER_VALIDATOR payload (optional, 0-100)
+  - `get_validator_commission()` and `get_epoch_rewards()` query methods
+  - Payload validation: integer 0-100 or omitted
+- [x] Supply Tracking Enhancement
+  - `get_total_supply()` now returns `staked`, `circulating`, `max_supply`
+  - `circulating = total_minted - total_burned - total_staked`
+  - `staked` computed from live `_total_stake` values
+  - Conservation law: `circulating + staked + burned == total_minted`
+- [x] Rollback Support
+  - Epoch reward accumulation reversed on block rollback
+  - Epoch distributions reversed on epoch boundary rollback
+  - Stake/delegate balance deductions reversed on rollback
+  - Supply counters restored on rollback
+- [x] 35 new tests (1205 total, all passing)
+
+### v0.5.0-sprint3 (2026-03-26)
+- [x] NextJS Financial UI Updates
+  - `lib/format.ts` -- `formatQBIT()` / `parseQBIT()` helpers (10^8 qubit/QBIT conversion)
+  - `lib/types.ts` -- `BalanceInfo` and `SupplyInfo` TypeScript interfaces
+  - `lib/api.ts` -- `getBalance()`, `getSupply()`, `transfer()` API client methods
+  - `WalletCard` -- prominent balance display, staked amount, "Send QBIT" link
+  - Transfer page (`/transfer`) with wallet dropdown, amount input, memo, fee display, confirmation dialog
+  - `TransferForm` component wrapped in Suspense for SSR compatibility
+  - Sidebar -- "Transfer" link between Wallets and Notarize
+  - `StatsBar` -- circulating supply stat from `/supply` endpoint
+  - `BlockDetail` -- block reward amount for COINBASE/REWARD transactions
+  - `TxDetail` -- amount + memo for TRANSFER type, fee for all types
+  - `SupplyWidget` dashboard component -- minted/max progress bar, circulating/burned/staked breakdown
+  - `Badge` -- TRANSFER and COINBASE type color variants
+  - Build passes (`npm run build`) with Next.js 16.2.1
+
 ### v0.5.0-sprint1 (2026-03-26)
 - [x] Core Balance Ledger
   - `_balances` dict with `_credit()` / `_debit()` as SOLE mutation primitives

@@ -7,6 +7,7 @@ import { HashDisplay } from "@/components/ui/HashDisplay";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { Loading } from "@/components/ui/Loading";
+import { formatQBIT } from "@/lib/format";
 
 export function TxDetail({ txId }: { txId: string }) {
   const api = getApi();
@@ -16,6 +17,16 @@ export function TxDetail({ txId }: { txId: string }) {
   if (loading) return <Loading />;
   if (error) return <div className="text-error p-4">Error: {error}</div>;
   if (!tx) return null;
+
+  const isTransfer = tx.type === "TRANSFER";
+  const amount =
+    typeof tx.payload?.amount === "number" ? tx.payload.amount : null;
+  const fee =
+    typeof tx.payload?.fee === "number" ? tx.payload.fee : null;
+  const memo =
+    typeof tx.payload?.memo === "string" && tx.payload.memo
+      ? tx.payload.memo
+      : null;
 
   return (
     <div className="space-y-6">
@@ -63,6 +74,44 @@ export function TxDetail({ txId }: { txId: string }) {
           </div>
         </dl>
       </Card>
+
+      {/* Amount + Fee card for transfers */}
+      {(isTransfer && amount !== null) && (
+        <Card title="Transfer Details">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-4 bg-primary/50 rounded-lg border border-card-border">
+              <span className="text-muted text-sm">Amount</span>
+              <span className="text-2xl font-bold font-mono text-emerald-400">
+                {formatQBIT(amount)}
+              </span>
+            </div>
+            {fee !== null && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted">Fee</span>
+                <span className="font-mono text-muted">{formatQBIT(fee)}</span>
+              </div>
+            )}
+            {memo && (
+              <div>
+                <div className="text-muted text-sm mb-1">Memo</div>
+                <div className="bg-primary/50 rounded-lg p-3 text-sm text-foreground border border-card-border">
+                  {memo}
+                </div>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Fee for non-transfer types */}
+      {!isTransfer && fee !== null && (
+        <Card title="Fee">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted">Transaction Fee</span>
+            <span className="font-mono text-foreground">{formatQBIT(fee)}</span>
+          </div>
+        </Card>
+      )}
 
       <Card title="Payload">
         <pre className="text-xs font-mono text-muted bg-primary rounded-lg p-4 overflow-x-auto">

@@ -17,7 +17,8 @@ from ..config import (MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH,
                       SLASH_PERCENTAGE, PRUNING_RETENTION,
                       TX_FEES, FEE_BURN_PERCENT, INITIAL_BLOCK_REWARD,
                       HALVING_INTERVAL, MAX_SUPPLY, QUBIT_PER_QBIT,
-                      GENESIS_BALANCE_QBIT, FINANCIAL_ACTIVATION_HEIGHT)
+                      GENESIS_BALANCE_QBIT, FINANCIAL_ACTIVATION_HEIGHT,
+                      DEFAULT_COMMISSION_RATE)
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -121,6 +122,11 @@ class Blockchain:
         self._total_minted: int = 0
         self._total_burned: int = 0
         self._financial_active: bool = False      # set by init_chain or load when genesis balance exists
+
+        # Epoch reward distribution
+        self._epoch_rewards: dict[str, int] = {}           # validator_addr -> accumulated rewards this epoch
+        self._validator_commission: dict[str, int] = {}    # validator_addr -> commission percent (default 10)
+        self._last_epoch_distributions: dict[int, list[tuple[str, int]]] = {}  # epoch -> [(addr, amount)] for rollback
 
         # threading.Lock (not asyncio.Lock) is intentional here: SQLite operations
         # protected by this lock are synchronous and fast (sub-ms), so blocking the
@@ -278,10 +284,13 @@ class Blockchain:
 
     def get_total_supply(self) -> dict:
         """Return supply statistics."""
+        total_staked = sum(self._total_stake.values())
         return {
             "total_minted": self._total_minted,
             "total_burned": self._total_burned,
-            "circulating": self._total_minted - self._total_burned,
+            "circulating": self._total_minted - self._total_burned - total_staked,
+            "staked": total_staked,
+            "max_supply": MAX_SUPPLY,
         }
 
     def _calc_block_reward(self, block_index: int) -> int:
@@ -729,6 +738,9 @@ class Blockchain:
                 if debit_amt > 0:
                     self._debit(block.validator, debit_amt)
                 self._total_minted -= reward
+                # Reverse epoch reward accumulation
+                self._epoch_rewards[block.validator] = max(
+                    0, self._epoch_rewards.get(block.validator, 0) - reward)
 
             # Reverse tx balance changes in reverse order
             for tx in reversed(block.transactions):
@@ -891,6 +903,15 @@ class Blockchain:
         # Revert epoch if rolling back past an epoch boundary
         if EPOCH_LENGTH > 0 and block.index % EPOCH_LENGTH == 0:
             epoch_to_remove = block.index // EPOCH_LENGTH
+            # Reverse epoch reward distributions (epoch_to_remove - 1 was distributed at this boundary)
+            if epoch_to_remove > 0 and self._financial_active:
+                dist_epoch = epoch_to_remove - 1
+                distributions = self._last_epoch_distributions.pop(dist_epoch, [])
+                for delegator_addr, amount in distributions:
+                    bal = self._balances.get(delegator_addr, 0)
+                    debit_amt = min(amount, bal)
+                    if debit_amt > 0:
+                        self._debit(delegator_addr, debit_amt)
             self._epochs.pop(epoch_to_remove, None)
             if epoch_to_remove > 0:
                 self._current_epoch = epoch_to_remove - 1
@@ -1005,6 +1026,10 @@ class Blockchain:
                 if vpk_hex and vaddr:
                     # First-registration-wins: skip if already registered
                     if vaddr in self._validator_registry:
+                        # Allow commission update on re-registration attempt
+                        commission = tx.payload.get("commission")
+                        if isinstance(commission, int) and 0 <= commission <= 100:
+                            self._validator_commission[vaddr] = commission
                         logger.warning(
                             f"Validator {vaddr[:16]}... already registered, "
                             f"skipping duplicate registration (block #{block.index})")
@@ -1012,6 +1037,10 @@ class Blockchain:
                         vpk_bytes = bytes.fromhex(vpk_hex)
                         self._validator_registry[vaddr] = vpk_bytes
                         self.consensus.add_validator(vaddr, vpk_bytes)
+                        # Set commission rate if provided
+                        commission = tx.payload.get("commission")
+                        if isinstance(commission, int) and 0 <= commission <= 100:
+                            self._validator_commission[vaddr] = commission
                         # Persist to SQLite if available
                         if self._store is not None:
                             self._store.put_validator(vaddr, vpk_hex)
@@ -1120,16 +1149,21 @@ class Blockchain:
             if reward > 0:
                 self._credit(block.validator, reward)
                 self._total_minted += reward
+                # Track reward for epoch distribution to delegators
+                self._epoch_rewards[block.validator] = (
+                    self._epoch_rewards.get(block.validator, 0) + reward
+                )
 
         # Process mature unbondings (release_block <= current block index)
         self._process_mature_unbondings(idx)
 
-        # Persist balance changes to SQLite
+        # Epoch transition: snapshot validators at epoch boundaries
+        # (must happen before persist so epoch reward distributions are included)
+        self._check_epoch_transition(idx)
+
+        # Persist balance changes to SQLite (after epoch distribution)
         if self._store is not None and self._financial_active:
             self._persist_balances_after_block(block, idx)
-
-        # Epoch transition: snapshot validators at epoch boundaries
-        self._check_epoch_transition(idx)
 
     def _process_mature_unbondings(self, current_index: int):
         """Remove unbonding entries whose release_block has been reached."""
@@ -1163,6 +1197,12 @@ class Blockchain:
         for entry in self._unbonding:
             if entry["release_block"] <= idx:
                 affected.add(entry["staker"])
+        # Include delegators who received epoch rewards at epoch boundary
+        if EPOCH_LENGTH > 0 and idx > 0 and idx % EPOCH_LENGTH == 0:
+            for validator_addr, stakes in self._stakes.items():
+                for delegator_addr in stakes:
+                    if delegator_addr != validator_addr:
+                        affected.add(delegator_addr)
         for addr in affected:
             self._store.put_balance(addr, self.get_balance(addr))
         self._store.put_supply("total_minted", self._total_minted)
@@ -1283,6 +1323,56 @@ class Blockchain:
     # Signature verification in _process_evidence_tx uses those directly,
     # and validate_payload checks that each header hashes to its block hash.
 
+    def _distribute_epoch_rewards(self, epoch_number: int):
+        """Distribute validator block rewards to delegators proportionally."""
+        distributions: list[tuple[str, int]] = []
+        for validator_addr, stakes in self._stakes.items():
+            if not stakes:
+                continue
+            # Get validator's commission rate (default DEFAULT_COMMISSION_RATE%)
+            commission_rate = self._validator_commission.get(
+                validator_addr, DEFAULT_COMMISSION_RATE)
+
+            # Calculate total delegated (excluding self-stake)
+            total_delegated = sum(
+                amt for addr, amt in stakes.items() if addr != validator_addr)
+            if total_delegated == 0:
+                continue
+
+            # Accumulated rewards for this validator this epoch
+            epoch_rewards = self._epoch_rewards.get(validator_addr, 0)
+            if epoch_rewards == 0:
+                continue
+
+            # Split: validator keeps commission
+            validator_commission = epoch_rewards * commission_rate // 100
+            delegator_pool = epoch_rewards - validator_commission
+
+            # Distribute to delegators proportionally
+            for delegator_addr, delegator_stake in stakes.items():
+                if delegator_addr == validator_addr:
+                    continue
+                share = delegator_pool * delegator_stake // total_delegated
+                if share > 0:
+                    self._credit(delegator_addr, share)
+                    distributions.append((delegator_addr, share))
+
+            # Reset epoch rewards for this validator
+            self._epoch_rewards[validator_addr] = 0
+
+        # Record for rollback
+        self._last_epoch_distributions[epoch_number] = distributions
+
+        logger.info(f"Epoch {epoch_number}: delegator rewards distributed")
+
+    def get_epoch_rewards(self, validator_addr: str) -> int:
+        """Return accumulated epoch rewards for a validator."""
+        return self._epoch_rewards.get(validator_addr, 0)
+
+    def get_validator_commission(self, validator_addr: str) -> int:
+        """Return commission rate for a validator (percent)."""
+        return self._validator_commission.get(validator_addr, DEFAULT_COMMISSION_RATE)
+
     def _check_epoch_transition(self, block_index: int):
         """Check if we've crossed an epoch boundary and snapshot validators."""
         if EPOCH_LENGTH <= 0:
@@ -1290,6 +1380,10 @@ class Blockchain:
 
         new_epoch = block_index // EPOCH_LENGTH
         if new_epoch > self._current_epoch or (block_index == 0 and not self._epochs):
+            # Distribute epoch rewards before transitioning (not on epoch 0)
+            if new_epoch > 0 and self._financial_active:
+                self._distribute_epoch_rewards(new_epoch - 1)
+
             self._current_epoch = new_epoch
             # Snapshot current live validators for this epoch
             live = self._get_live_validators()
@@ -1599,6 +1693,10 @@ class Blockchain:
                         vpk_bytes = bytes.fromhex(vpk_hex)
                         self._validator_registry[vaddr] = vpk_bytes
                         self.consensus.add_validator(vaddr, vpk_bytes)
+                        # Restore commission rate
+                        commission = tx.payload.get("commission")
+                        if isinstance(commission, int) and 0 <= commission <= 100:
+                            self._validator_commission[vaddr] = commission
                 elif tx.tx_type == TxType.REVOKE_KEY:
                     key_type = tx.payload.get("key_type", "")
                     reason = tx.payload.get("reason", "")

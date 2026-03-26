@@ -12,6 +12,8 @@ import type {
   StakesResponse,
   EpochInfo,
   SlashingResponse,
+  BalanceInfo,
+  SupplyInfo,
 } from "./types";
 
 export class QBitAPI {
@@ -105,6 +107,14 @@ export class QBitAPI {
     return this.get<Record<string, unknown>>(`/notarizations/${hash}`);
   }
 
+  // Financial endpoints
+  getBalance(addr: string) {
+    return this.get<BalanceInfo>(`/balance/${addr}`);
+  }
+  getSupply() {
+    return this.get<SupplyInfo>("/supply");
+  }
+
   // Protected endpoints
   verify(documentHash: string) {
     return this.post<{ verified: boolean; proof: unknown }>("/verify", {
@@ -143,6 +153,14 @@ export class QBitAPI {
       wallet_address: wallet,
       validator_address: validator,
       amount,
+    });
+  }
+  transfer(wallet: string, to: string, amount: number, memo?: string) {
+    return this.post<{ tx_id: string }>("/transfer", {
+      wallet_address: wallet,
+      to_address: to,
+      amount,
+      ...(memo ? { memo } : {}),
     });
   }
 }

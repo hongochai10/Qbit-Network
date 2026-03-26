@@ -1,11 +1,30 @@
 "use client";
 
-import { Blocks, ArrowLeftRight, Users, Shield, Clock, Layers } from "lucide-react";
+import { useCallback } from "react";
+import { Blocks, ArrowLeftRight, Users, Shield, Clock, Layers, Coins } from "lucide-react";
 import { useAppStore } from "@/lib/store";
+import { getApi } from "@/lib/api";
+import { useApi } from "@/hooks/useApi";
+import { formatQBIT } from "@/lib/format";
+import type { SupplyInfo } from "@/lib/types";
 
 export function StatsBar() {
   const { chainHeight, pendingTxs, peerCount, validatorCount, currentEpoch } =
     useAppStore();
+
+  const api = getApi();
+  const supplyFetcher = useCallback(async (): Promise<SupplyInfo | null> => {
+    try {
+      return await api.getSupply();
+    } catch {
+      return null;
+    }
+  }, [api]);
+  const { data: supplyData } = useApi(supplyFetcher);
+
+  const circulatingDisplay = supplyData
+    ? formatQBIT(supplyData.circulating)
+    : "--";
 
   const stats = [
     { label: "Chain Height", value: chainHeight, icon: Blocks, color: "text-accent" },
@@ -14,19 +33,20 @@ export function StatsBar() {
     { label: "Validators", value: validatorCount, icon: Shield, color: "text-purple-400" },
     { label: "Epoch", value: currentEpoch, icon: Layers, color: "text-blue-400" },
     { label: "Block Time", value: "~5s", icon: Clock, color: "text-muted" },
+    { label: "Circulating", value: circulatingDisplay, icon: Coins, color: "text-emerald-400" },
   ];
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
       {stats.map(({ label, value, icon: Icon, color }) => (
         <div
           key={label}
           className="bg-card border border-card-border rounded-lg p-4 flex items-center gap-3"
         >
           <Icon size={20} className={color} />
-          <div>
+          <div className="min-w-0">
             <div className="text-xs text-muted">{label}</div>
-            <div className="text-base font-semibold text-foreground font-mono">
+            <div className="text-base font-semibold text-foreground font-mono truncate">
               {value}
             </div>
           </div>

@@ -93,3 +93,17 @@ export interface SlashingResponse {
 export interface StakesResponse {
   stakes: Record<string, StakeInfo>;
 }
+
+export interface BalanceInfo {
+  address: string;
+  balance: number; // qubits
+  formatted: string; // "123.45 QBIT"
+}
+
+export interface SupplyInfo {
+  total_minted: number;
+  total_burned: number;
+  circulating: number;
+  staked: number;
+  max_supply: number;
+}

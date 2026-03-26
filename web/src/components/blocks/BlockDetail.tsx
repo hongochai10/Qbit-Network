@@ -8,6 +8,7 @@ import { HashDisplay } from "@/components/ui/HashDisplay";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { Loading } from "@/components/ui/Loading";
+import { formatQBIT } from "@/lib/format";
 
 export function BlockDetail({ index }: { index: number }) {
   const api = getApi();
@@ -56,6 +57,24 @@ export function BlockDetail({ index }: { index: number }) {
               <HashDisplay hash={block.validator} truncate={12} />
             </dd>
           </div>
+          {/* Block Reward */}
+          {(() => {
+            const coinbaseTx = block.transactions.find(
+              (tx) => tx.type === "COINBASE" || tx.type === "REWARD"
+            );
+            const rewardAmount =
+              coinbaseTx && typeof coinbaseTx.payload?.amount === "number"
+                ? coinbaseTx.payload.amount
+                : null;
+            return rewardAmount !== null ? (
+              <div>
+                <dt className="text-muted mb-1">Block Reward</dt>
+                <dd className="font-mono text-emerald-400 font-semibold">
+                  {formatQBIT(rewardAmount)}
+                </dd>
+              </div>
+            ) : null;
+          })()}
         </dl>
       </Card>
 

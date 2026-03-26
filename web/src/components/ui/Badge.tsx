@@ -6,6 +6,8 @@ const variants: Record<string, string> = {
   STAKE: "bg-orange-500/20 text-orange-400",
   DELEGATE: "bg-blue-500/20 text-blue-400",
   UNSTAKE: "bg-red-500/20 text-red-400",
+  TRANSFER: "bg-emerald-500/20 text-emerald-400",
+  COINBASE: "bg-yellow-500/20 text-yellow-400",
   default: "bg-card-border/50 text-muted",
 };
 
