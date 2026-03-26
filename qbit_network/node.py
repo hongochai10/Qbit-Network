@@ -18,6 +18,7 @@ from .network.p2p import (
 from .network.rpc import RPCServer
 from .network.rest_api import RESTApi
 from .network.websocket import WebSocketManager
+from .network.webhooks import WebhookManager
 from .config import DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, BLOCK_INTERVAL, VERSION
 
 logger = logging.getLogger("qbit_network.node")
@@ -45,6 +46,7 @@ class FullNode:
                              tls_self_signed=tls_self_signed, data_dir=data_dir,
                              tls_auto=tls_auto, tls_hostname=tls_hostname)
         self.ws_manager = WebSocketManager()
+        self.webhook_manager = WebhookManager()
         self.bootstrap = bootstrap or []
         self._running = False
         self._block_task = None
@@ -289,6 +291,9 @@ class FullNode:
         m("qv_newWallet", self._rpc_new_wallet)
         m("qv_listWallets", self._rpc_list_wallets)
         m("qv_getWalletKeys", self._rpc_get_wallet_keys)
+        m("qv_registerWebhook", self._rpc_register_webhook)
+        m("qv_listWebhooks", self._rpc_list_webhooks)
+        m("qv_deleteWebhook", self._rpc_delete_webhook)
 
     async def _rpc_block_number(self):
         return self.blockchain.height
@@ -832,6 +837,31 @@ class FullNode:
             raise ValueError("validator must be string")
         return self.blockchain.get_slashing_events(validator)
 
+    # ---- Webhook RPC ----
+
+    async def _rpc_register_webhook(self, url="", events=None, secret=""):
+        """Register a webhook endpoint (protected)."""
+        if not isinstance(url, str) or not url:
+            raise ValueError("url must be non-empty string")
+        if not isinstance(events, list):
+            raise ValueError("events must be a list")
+        if not isinstance(secret, str) or not secret:
+            raise ValueError("secret must be non-empty string")
+        return self.webhook_manager.register(url, events, secret)
+
+    async def _rpc_list_webhooks(self):
+        """List registered webhooks (protected)."""
+        return self.webhook_manager.list_webhooks()
+
+    async def _rpc_delete_webhook(self, webhook_id=""):
+        """Delete a webhook (protected)."""
+        if not isinstance(webhook_id, str) or not webhook_id:
+            raise ValueError("webhook_id must be non-empty string")
+        deleted = self.webhook_manager.delete(webhook_id)
+        if not deleted:
+            raise ValueError("webhook not found")
+        return {"deleted": True}
+
     async def _rpc_submit_evidence(self, wallet_address="", validator_address="",
                                    block_index=0, block_a_hash="", block_b_hash="",
                                    block_a_sig="", block_b_sig="",
@@ -922,7 +952,7 @@ class FullNode:
         }
 
     async def _ws_notify_block(self, block: Block):
-        """Broadcast a new_block event over WebSocket."""
+        """Broadcast a new_block event over WebSocket and deliver webhooks."""
         try:
             await self.ws_manager.broadcast("new_block", block.to_dict())
         except Exception as e:
@@ -936,6 +966,27 @@ class FullNode:
                 })
         except Exception as e:
             logger.debug(f"WS finalized broadcast error: {e}")
+        # Deliver webhook events for this block
+        try:
+            await self._deliver_block_webhooks(block)
+        except Exception as e:
+            logger.debug(f"Webhook delivery error: {e}")
+
+    async def _deliver_block_webhooks(self, block: Block):
+        """Collect events from block receipts and deliver to webhooks."""
+        events: list[dict] = []
+        for tx in block.transactions:
+            receipt = self.blockchain.get_receipt(tx.tx_id)
+            if receipt is not None:
+                for ev in receipt.events:
+                    events.append({"type": ev["type"], "data": ev.get("data", {}),
+                                   "tx_id": tx.tx_id})
+        # Also include block-level events
+        block_events = self.blockchain.get_block_level_events(block.index)
+        for ev in block_events:
+            events.append({"type": ev["type"], "data": ev.get("data", {})})
+        if events:
+            await self.webhook_manager.deliver(events, block.index)
 
     async def _ws_notify_tx(self, tx: Transaction):
         """Broadcast a new_tx event over WebSocket."""
@@ -1050,6 +1101,7 @@ class FullNode:
         for task in (self._block_task, self._sync_task):
             if task and not task.done():
                 task.cancel()
+        await self.webhook_manager.stop()
         await self.ws_manager.stop()
         await self.p2p.stop()
         await self.rpc.stop()

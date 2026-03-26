@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.7.0-sprint3: OpenAPI Spec + Python SDK + Webhooks (2026-03-26)
+
+### OpenAPI 3.0 Specification
+- **`docs/openapi.yaml`**: Complete REST API spec covering all 35+ endpoints. Includes schemas for Block, Transaction, Wallet, Receipt, Event, BalanceInfo, SupplyInfo, FeeInfo, NodeInfo, StateProof, Webhook, and WebhookRegistration. Defines BearerAuth security scheme, pagination parameters, error response format, and configurable server URLs.
+
+### Python SDK
+- **`sdk/qbit_sdk/`**: pip-installable Python SDK with zero external dependencies (stdlib `urllib.request` only).
+- **`QBitClient`**: Synchronous HTTP client with all public endpoints (get_info, get_block, get_balance, get_supply, get_fee_info, get_validators, get_state_proof, verify_document, get_receipt, get_finalized_height, get_events) and protected endpoints (create_wallet, list_wallets, transfer, notarize, store, share, stake, delegate, unstake, register_validator).
+- **Data models**: `Block`, `Transaction`, `Wallet`, `NodeInfo`, `BalanceInfo`, `SupplyInfo`, `FeeInfo`, `StateProof`, `Receipt`, `Event`, `VerifyResult`, `Webhook` -- all with `from_dict()` classmethods.
+- **Exceptions**: `QBitError` (base), `AuthenticationError` (401), `NotFoundError` (404), `InsufficientBalance` (400), `ValidationError` (400).
+- **WebSocket client** (`qbit_sdk/websocket.py`): `QBitWebSocket` with channel subscriptions, callback dispatch, background thread support.
+- **Webhook management**: `register_webhook()`, `list_webhooks()`, `delete_webhook()`.
+
+### Webhook System
+- **`qbit_network/network/webhooks.py`**: `WebhookManager` with registration, event filtering, async delivery, and lifecycle management.
+- **Registration**: URL validation (http/https required), event type validation (13 valid types matching all TX event types + block-level events), HMAC secret validation. Max 100 webhooks per node.
+- **Delivery**: HTTP POST to registered URL with JSON body `{event, block_index, timestamp}`. `X-QBit-Signature` header: HMAC-SHA256 of body using registered secret. `X-QBit-Webhook-Id` header for correlation.
+- **Retry policy**: 3 attempts with exponential backoff (1s, 5s, 25s). 10s timeout per delivery attempt. Webhook marked `failing` after first delivery failure, `disabled` after 10 consecutive failures.
+- **RPC methods**: `qv_registerWebhook(url, events, secret)` (protected), `qv_listWebhooks()` (protected), `qv_deleteWebhook(webhook_id)` (protected).
+- **REST endpoints**: `POST /api/v1/webhooks`, `GET /api/v1/webhooks`, `DELETE /api/v1/webhooks/{id}` -- all protected with Bearer auth.
+- **Node integration**: Webhook delivery triggered after block processing in `_ws_notify_block`. Events collected from TX receipts and block-level events.
+
+### Tests
+- 65 new tests in `tests/test_sprint3_openapi_sdk_webhooks.py`: 10 OpenAPI spec validation, 9 SDK model deserialization, 4 SDK exception hierarchy, 16 SDK client methods (mocked HTTP), 13 webhook registration/management, 3 HMAC signature, 8 webhook delivery (retry, failure, disable), 1 event type validation, 1 HMAC in delivery.
+
+### Version
+- VERSION bumped to `0.7.0-sprint3`.
+- Total tests: 1507 (1442 existing + 65 new), all passing.
+
 ## v0.7.0-sprint2: Receipt/Event System + Simple Finality (2026-03-26)
 
 ### Receipt System

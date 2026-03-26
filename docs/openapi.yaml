@@ -1,0 +1,1656 @@
+openapi: "3.0.3"
+info:
+  title: QBit Network REST API
+  description: >
+    REST API for the QBit Network post-quantum blockchain.
+    All endpoints are mounted at /api/v1/.
+    Protected endpoints require a Bearer token in the Authorization header.
+  version: "0.7.0"
+  contact:
+    name: QBit Network
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8545/api/v1
+    description: Local development node
+  - url: "{protocol}://{host}:{port}/api/v1"
+    description: Custom node
+    variables:
+      protocol:
+        default: http
+        enum: [http, https]
+      host:
+        default: localhost
+      port:
+        default: "8545"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Bearer token for protected endpoints (same as RPC auth token)
+
+  schemas:
+    # ---------- Envelope ----------
+    SuccessResponse:
+      type: object
+      properties:
+        data:
+          description: Response payload (varies per endpoint)
+        error:
+          type: "null"
+      required: [data, error]
+
+    ErrorResponse:
+      type: object
+      properties:
+        data:
+          type: "null"
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+      required: [data, error]
+
+    ErrorDetail:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 400
+        message:
+          type: string
+          example: "invalid parameter"
+      required: [code, message]
+
+    # ---------- Domain ----------
+    BlockHeader:
+      type: object
+      properties:
+        index:
+          type: integer
+          example: 42
+        timestamp:
+          type: number
+          format: double
+        previous_hash:
+          type: string
+        merkle_root:
+          type: string
+        state_root:
+          type: string
+        receipts_root:
+          type: string
+        base_fee:
+          type: integer
+        validator:
+          type: string
+        signature:
+          type: string
+        block_hash:
+          type: string
+
+    Block:
+      allOf:
+        - $ref: "#/components/schemas/BlockHeader"
+        - type: object
+          properties:
+            transactions:
+              type: array
+              items:
+                $ref: "#/components/schemas/Transaction"
+
+    Transaction:
+      type: object
+      properties:
+        tx_id:
+          type: string
+        tx_type:
+          type: string
+          enum:
+            - NOTARIZE
+            - STORE
+            - SHARE
+            - REGISTER_KEY
+            - REGISTER_VALIDATOR
+            - REVOKE_KEY
+            - STAKE
+            - DELEGATE
+            - UNSTAKE
+            - EVIDENCE
+            - TRANSFER
+        sender:
+          type: string
+        recipient:
+          type: string
+        nonce:
+          type: integer
+        timestamp:
+          type: number
+          format: double
+        payload:
+          type: object
+        signature:
+          type: string
+        public_key:
+          type: string
+        max_fee_per_weight:
+          type: integer
+        max_priority_fee:
+          type: integer
+
+    Wallet:
+      type: object
+      properties:
+        address:
+          type: string
+          example: "qv1abc123..."
+        signing_pk:
+          type: string
+        encryption_pk:
+          type: string
+      required: [address, signing_pk, encryption_pk]
+
+    Receipt:
+      type: object
+      properties:
+        tx_id:
+          type: string
+        status:
+          type: string
+          enum: [confirmed]
+        fee_paid:
+          type: integer
+        block_index:
+          type: integer
+        tx_index:
+          type: integer
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+
+    Event:
+      type: object
+      properties:
+        type:
+          type: string
+        data:
+          type: object
+
+    BalanceInfo:
+      type: object
+      properties:
+        address:
+          type: string
+        balance:
+          type: integer
+        formatted:
+          type: string
+      required: [address, balance, formatted]
+
+    SupplyInfo:
+      type: object
+      properties:
+        total_minted:
+          type: integer
+        total_burned:
+          type: integer
+        circulating:
+          type: integer
+        max_supply:
+          type: integer
+        formatted_circulating:
+          type: string
+        fee_model:
+          type: string
+          enum: [fixed, dynamic]
+
+    FeeInfo:
+      type: object
+      properties:
+        base_fee:
+          type: integer
+        next_base_fee:
+          type: integer
+        suggested_priority_fee:
+          type: integer
+        weights:
+          type: object
+          additionalProperties:
+            type: integer
+        estimated_fees:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              min:
+                type: integer
+              suggested:
+                type: integer
+        fee_model:
+          type: string
+          enum: [fixed, dynamic]
+
+    NodeInfo:
+      type: object
+      properties:
+        version:
+          type: string
+        chain_height:
+          type: integer
+        pending_txs:
+          type: integer
+        peers:
+          type: integer
+        validator:
+          type: string
+          nullable: true
+        validators:
+          type: array
+          items:
+            type: string
+        registered_validators:
+          type: array
+          items:
+            type: string
+        wallets:
+          type: integer
+
+    AddressInfo:
+      type: object
+      properties:
+        address:
+          type: string
+        balance:
+          type: integer
+        next_nonce:
+          type: integer
+        encryption_pk:
+          type: string
+          nullable: true
+        sent_tx_count:
+          type: integer
+        received_tx_count:
+          type: integer
+        notarization_count:
+          type: integer
+        is_validator:
+          type: boolean
+
+    StateProof:
+      type: object
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        proof:
+          type: array
+          items:
+            type: string
+        state_root:
+          type: string
+
+    ValidatorStake:
+      type: object
+      properties:
+        validator:
+          type: string
+        total_stake:
+          type: integer
+
+    StakeDetail:
+      type: object
+      properties:
+        validator_address:
+          type: string
+        total_stake:
+          type: integer
+        stakers:
+          type: object
+          additionalProperties:
+            type: integer
+
+    EpochInfo:
+      type: object
+      properties:
+        epoch:
+          type: integer
+        validators:
+          type: array
+          items:
+            type: object
+            properties:
+              address:
+                type: string
+              stake:
+                type: integer
+
+    WebhookRegistration:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+          example: "https://example.com/webhook"
+        events:
+          type: array
+          items:
+            type: string
+          example: ["Transfer", "Notarize"]
+        secret:
+          type: string
+          description: HMAC-SHA256 secret for payload signing
+      required: [url, events, secret]
+
+    Webhook:
+      type: object
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: number
+          format: double
+        status:
+          type: string
+          enum: [active, failing, disabled]
+        consecutive_failures:
+          type: integer
+
+    PaginatedBlocks:
+      type: object
+      properties:
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlockHeader"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+
+    PaginatedTransactions:
+      type: object
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    LimitParam:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+# ====================================================================
+# Paths
+# ====================================================================
+paths:
+  # ---------- Public: Health & Info ----------
+  /health:
+    get:
+      summary: Health check
+      tags: [Public]
+      operationId: getHealth
+      responses:
+        "200":
+          description: Node is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+              example:
+                data: {status: ok}
+                error: null
+
+  /info:
+    get:
+      summary: Node information
+      tags: [Public]
+      operationId: getInfo
+      responses:
+        "200":
+          description: Node info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/NodeInfo"
+
+  # ---------- Public: Blocks ----------
+  /blocks:
+    get:
+      summary: List blocks (headers only, paginated)
+      tags: [Blocks]
+      operationId: listBlocks
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paginated block headers
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PaginatedBlocks"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /blocks/latest:
+    get:
+      summary: Get latest block (with transactions)
+      tags: [Blocks]
+      operationId: getLatestBlock
+      responses:
+        "200":
+          description: Latest block
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Block"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /blocks/{index}:
+    get:
+      summary: Get block by index (with transactions)
+      tags: [Blocks]
+      operationId: getBlockByIndex
+      parameters:
+        - name: index
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Block at given index
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Block"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /blocks/hash/{hash}:
+    get:
+      summary: Get block by hash
+      tags: [Blocks]
+      operationId: getBlockByHash
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]+$"
+      responses:
+        "200":
+          description: Block with given hash
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Block"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------- Public: Transactions ----------
+  /txs/{txid}:
+    get:
+      summary: Get transaction by ID
+      tags: [Transactions]
+      operationId: getTransaction
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Transaction"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /txs/sender/{addr}:
+    get:
+      summary: List transactions by sender (paginated)
+      tags: [Transactions]
+      operationId: getTxsBySender
+      parameters:
+        - name: addr
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paginated transactions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PaginatedTransactions"
+
+  # ---------- Public: Address ----------
+  /address/{addr}:
+    get:
+      summary: Get address info (balance, nonce, tx counts)
+      tags: [Address]
+      operationId: getAddressInfo
+      parameters:
+        - name: addr
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Address information
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AddressInfo"
+
+  /balance/{addr}:
+    get:
+      summary: Get balance for address
+      tags: [Address]
+      operationId: getBalance
+      parameters:
+        - name: addr
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Balance info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BalanceInfo"
+
+  # ---------- Public: Validators & Staking ----------
+  /validators:
+    get:
+      summary: List all registered validators
+      tags: [Staking]
+      operationId: getValidators
+      responses:
+        "200":
+          description: Validator list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          validators:
+                            type: array
+                            items:
+                              type: string
+                          total:
+                            type: integer
+
+  /stakes:
+    get:
+      summary: Get all validator stakes
+      tags: [Staking]
+      operationId: getAllStakes
+      responses:
+        "200":
+          description: All validator stakes
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          validators:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/ValidatorStake"
+                          total:
+                            type: integer
+
+  /stakes/{validator}:
+    get:
+      summary: Get stake detail for a validator
+      tags: [Staking]
+      operationId: getValidatorStake
+      parameters:
+        - name: validator
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Validator stake detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/StakeDetail"
+
+  /epochs/current:
+    get:
+      summary: Get current epoch info
+      tags: [Staking]
+      operationId: getCurrentEpoch
+      responses:
+        "200":
+          description: Current epoch
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/EpochInfo"
+
+  /slashing-events:
+    get:
+      summary: List slashing events
+      tags: [Staking]
+      operationId: getSlashingEvents
+      parameters:
+        - name: validator
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Slashing events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  # ---------- Public: Supply & Fees ----------
+  /supply:
+    get:
+      summary: Get token supply info
+      tags: [Economics]
+      operationId: getSupply
+      responses:
+        "200":
+          description: Supply info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SupplyInfo"
+
+  /fee:
+    get:
+      summary: Get current fee info (base fee, weights, estimates)
+      tags: [Economics]
+      operationId: getFeeInfo
+      responses:
+        "200":
+          description: Fee info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/FeeInfo"
+
+  # ---------- Public: Pool ----------
+  /pool:
+    get:
+      summary: Transaction pool summary
+      tags: [Pool]
+      operationId: getPoolSummary
+      responses:
+        "200":
+          description: Pool summary with breakdown by type
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          count:
+                            type: integer
+                          by_type:
+                            type: object
+                            additionalProperties:
+                              type: integer
+
+  /pool/count:
+    get:
+      summary: Transaction pool count
+      tags: [Pool]
+      operationId: getPoolCount
+      responses:
+        "200":
+          description: Pool count
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          count:
+                            type: integer
+
+  # ---------- Public: Notarization ----------
+  /notarizations/{hash}:
+    get:
+      summary: Get notarization proof for a document hash
+      tags: [Notarization]
+      operationId: getNotarizationProof
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Notarization proof
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          first_notarization:
+                            type: object
+                          all_notarizations:
+                            type: array
+                            items:
+                              type: object
+                          total:
+                            type: integer
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /verify:
+    post:
+      summary: Verify a document hash exists on-chain
+      tags: [Notarization]
+      operationId: verifyDocument
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                document_hash:
+                  type: string
+              required: [document_hash]
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          verified:
+                            type: boolean
+                          proof:
+                            type: object
+                            nullable: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  # ---------- Public: State Proofs & Receipts ----------
+  /state-proof/{addr}:
+    get:
+      summary: Get Merkle state proof for an address
+      tags: [State]
+      operationId: getStateProof
+      parameters:
+        - name: addr
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: key
+          in: query
+          schema:
+            type: string
+            enum: [balance, nonce]
+            default: balance
+      responses:
+        "200":
+          description: Merkle state proof
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/StateProof"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /state-root:
+    get:
+      summary: Get current state root
+      tags: [State]
+      operationId: getStateRoot
+      responses:
+        "200":
+          description: Current state root hash
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          state_root:
+                            type: string
+
+  /receipt/{txid}:
+    get:
+      summary: Get transaction receipt
+      tags: [Receipts]
+      operationId: getReceipt
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]+$"
+      responses:
+        "200":
+          description: Transaction receipt with events
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Receipt"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /events:
+    get:
+      summary: Query blockchain events
+      tags: [Receipts]
+      operationId: getEvents
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+          description: Filter by event type
+        - name: from
+          in: query
+          schema:
+            type: string
+          description: Filter by sender address (alias "sender")
+        - name: block_index
+          in: query
+          schema:
+            type: integer
+          description: Filter by block index
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Matching events
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          events:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/Event"
+                          total:
+                            type: integer
+
+  /finalized:
+    get:
+      summary: Get finalized block height
+      tags: [State]
+      operationId: getFinalizedHeight
+      responses:
+        "200":
+          description: Finalized height
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          finalized_height:
+                            type: integer
+
+  # ---------- Protected: Wallets ----------
+  /wallets:
+    post:
+      summary: Create a new wallet
+      tags: [Wallets]
+      operationId: createWallet
+      security:
+        - BearerAuth: []
+      responses:
+        "201":
+          description: Wallet created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Wallet"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    get:
+      summary: List wallet addresses
+      tags: [Wallets]
+      operationId: listWallets
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of wallet addresses
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          wallets:
+                            type: array
+                            items:
+                              type: string
+                          total:
+                            type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------- Protected: Transfer ----------
+  /transfer:
+    post:
+      summary: Transfer QBIT tokens
+      tags: [Transactions]
+      operationId: transfer
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wallet_address:
+                  type: string
+                to_address:
+                  type: string
+                amount:
+                  type: integer
+                  minimum: 1
+                memo:
+                  type: string
+                  maxLength: 256
+                  default: ""
+              required: [wallet_address, to_address, amount]
+      responses:
+        "201":
+          description: Transfer submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tx_id:
+                            type: string
+                          amount:
+                            type: integer
+                          to:
+                            type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------- Protected: Notarize ----------
+  /notarize:
+    post:
+      summary: Notarize a document hash on-chain
+      tags: [Notarization]
+      operationId: notarize
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wallet_address:
+                  type: string
+                document_hash:
+                  type: string
+                metadata:
+                  type: string
+                  default: ""
+              required: [wallet_address, document_hash]
+      responses:
+        "201":
+          description: Notarization submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tx_id:
+                            type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------- Protected: Store ----------
+  /store:
+    post:
+      summary: Store a document reference on-chain
+      tags: [Documents]
+      operationId: store
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wallet_address:
+                  type: string
+                document_hash:
+                  type: string
+                cid:
+                  type: string
+                  default: ""
+                metadata:
+                  type: string
+                  default: ""
+              required: [wallet_address, document_hash]
+      responses:
+        "201":
+          description: Store submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tx_id:
+                            type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------- Protected: Share ----------
+  /share:
+    post:
+      summary: Share an encrypted document reference
+      tags: [Documents]
+      operationId: share
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wallet_address:
+                  type: string
+                recipient_address:
+                  type: string
+                cid:
+                  type: string
+                  default: ""
+                recipient_encryption_pk:
+                  type: string
+                  default: ""
+                expires:
+                  type: integer
+                  default: 0
+              required: [wallet_address, recipient_address]
+      responses:
+        "201":
+          description: Share submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tx_id:
+                            type: string
+                          shared_secret_stored:
+                            type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------- Protected: Staking ----------
+  /stake:
+    post:
+      summary: Stake tokens on a validator
+      tags: [Staking]
+      operationId: stake
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wallet_address:
+                  type: string
+                validator_address:
+                  type: string
+                amount:
+                  type: integer
+                  minimum: 1
+              required: [wallet_address, validator_address, amount]
+      responses:
+        "201":
+          description: Stake submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tx_id:
+                            type: string
+                          validator_address:
+                            type: string
+                          amount:
+                            type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /delegate:
+    post:
+      summary: Delegate stake to a validator
+      tags: [Staking]
+      operationId: delegate
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wallet_address:
+                  type: string
+                validator_address:
+                  type: string
+                amount:
+                  type: integer
+                  minimum: 1
+              required: [wallet_address, validator_address, amount]
+      responses:
+        "201":
+          description: Delegation submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tx_id:
+                            type: string
+                          validator_address:
+                            type: string
+                          amount:
+                            type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /unstake:
+    post:
+      summary: Begin unstaking from a validator
+      tags: [Staking]
+      operationId: unstake
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wallet_address:
+                  type: string
+                validator_address:
+                  type: string
+                amount:
+                  type: integer
+                  minimum: 1
+              required: [wallet_address, validator_address, amount]
+      responses:
+        "201":
+          description: Unstake submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tx_id:
+                            type: string
+                          validator_address:
+                            type: string
+                          amount:
+                            type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------- Protected: Register Validator ----------
+  /register-validator:
+    post:
+      summary: Register wallet as validator
+      tags: [Staking]
+      operationId: registerValidator
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wallet_address:
+                  type: string
+              required: [wallet_address]
+      responses:
+        "201":
+          description: Validator registered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tx_id:
+                            type: string
+                          validator_address:
+                            type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------- Protected: Evidence ----------
+  /evidence:
+    post:
+      summary: Submit double-sign evidence for slashing
+      tags: [Staking]
+      operationId: submitEvidence
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                wallet_address:
+                  type: string
+                validator_address:
+                  type: string
+                block_index:
+                  type: integer
+                block_a_hash:
+                  type: string
+                block_b_hash:
+                  type: string
+                block_a_sig:
+                  type: string
+                block_b_sig:
+                  type: string
+                block_a_header:
+                  type: string
+                block_b_header:
+                  type: string
+              required:
+                - wallet_address
+                - validator_address
+                - block_index
+                - block_a_hash
+                - block_b_hash
+                - block_a_sig
+                - block_b_sig
+                - block_a_header
+                - block_b_header
+      responses:
+        "201":
+          description: Evidence submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          tx_id:
+                            type: string
+                          validator_address:
+                            type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------- Webhooks ----------
+  /webhooks:
+    post:
+      summary: Register a webhook
+      tags: [Webhooks]
+      operationId: registerWebhook
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookRegistration"
+      responses:
+        "201":
+          description: Webhook registered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Webhook"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    get:
+      summary: List registered webhooks
+      tags: [Webhooks]
+      operationId: listWebhooks
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          webhooks:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/Webhook"
+                          total:
+                            type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /webhooks/{id}:
+    delete:
+      summary: Delete a webhook
+      tags: [Webhooks]
+      operationId: deleteWebhook
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Webhook deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"

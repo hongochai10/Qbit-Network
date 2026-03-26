@@ -144,6 +144,11 @@ class RESTApi:
         r.add_get("/events", self._get_events)
         r.add_get("/finalized", self._get_finalized)
 
+        # Webhooks (protected)
+        r.add_post("/webhooks", self._register_webhook)
+        r.add_get("/webhooks", self._list_webhooks)
+        r.add_delete("/webhooks/{id}", self._delete_webhook)
+
         # Protected endpoints
         r.add_post("/transfer", self._transfer_rest)
         r.add_post("/txs", self._submit_tx)
@@ -851,4 +856,66 @@ class RESTApi:
             return _err(400, str(e))
         except Exception as e:
             logger.error(f"REST unstake: {e}")
+            return _err(500, "internal server error", status=500)
+
+    # ------------------------------------------------------------------
+    # Webhook handlers
+    # ------------------------------------------------------------------
+
+    async def _register_webhook(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return _err(400, "invalid JSON body")
+        if not isinstance(body, dict):
+            return _err(400, "request body must be a JSON object")
+
+        url = body.get("url", "")
+        events = body.get("events", [])
+        secret = body.get("secret", "")
+
+        if not isinstance(url, str) or not url:
+            return _err(400, "url is required and must be a string")
+        if not isinstance(events, list) or not events:
+            return _err(400, "events is required and must be a non-empty list")
+        if not isinstance(secret, str) or not secret:
+            return _err(400, "secret is required and must be a non-empty string")
+
+        try:
+            result = self._node.webhook_manager.register(url, events, secret)
+            return _ok(result, status=201)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST register_webhook: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _list_webhooks(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            webhooks = self._node.webhook_manager.list_webhooks()
+            return _ok({"webhooks": webhooks, "total": len(webhooks)})
+        except Exception as e:
+            logger.error(f"REST list_webhooks: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _delete_webhook(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        webhook_id = request.match_info.get("id", "")
+        if not webhook_id:
+            return _err(400, "webhook id is required")
+
+        try:
+            deleted = self._node.webhook_manager.delete(webhook_id)
+            if not deleted:
+                return _err(404, "webhook not found", status=404)
+            return _ok({"deleted": True})
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST delete_webhook: {e}")
             return _err(500, "internal server error", status=500)

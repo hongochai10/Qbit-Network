@@ -2,6 +2,35 @@
 
 ## Implemented
 
+### v0.7.0-sprint3: OpenAPI Spec + Python SDK + Webhooks (2026-03-26)
+- [x] OpenAPI 3.0 specification (`docs/openapi.yaml`)
+  - Complete REST API spec with all 35+ endpoints (public + protected)
+  - Request/response schemas with examples
+  - Authentication scheme (Bearer token)
+  - Pagination parameters
+  - Webhook endpoints (POST/GET /webhooks, DELETE /webhooks/{id})
+  - Configurable server URL with variables
+- [x] Python SDK (`sdk/qbit_sdk/`)
+  - `QBitClient` class: sync HTTP client using stdlib `urllib.request` (zero deps)
+  - Public methods: get_info, get_block, get_balance, get_supply, get_fee_info, get_validators, get_state_proof, verify_document, get_receipt, get_finalized_height, get_events
+  - Protected methods: create_wallet, list_wallets, transfer, notarize, store, share, stake, delegate, unstake, register_validator
+  - Webhook management: register_webhook, list_webhooks, delete_webhook
+  - Data models: Block, Transaction, Wallet, NodeInfo, BalanceInfo, SupplyInfo, FeeInfo, StateProof, Receipt, Event, VerifyResult, Webhook
+  - Exceptions: QBitError, AuthenticationError, NotFoundError, InsufficientBalance, ValidationError
+  - WebSocket client (`qbit_sdk/websocket.py`): QBitWebSocket with subscribe/unsubscribe, run_forever, run_in_background
+  - pip-installable: `pyproject.toml` with zero runtime dependencies
+- [x] Webhook system (`qbit_network/network/webhooks.py`)
+  - `WebhookManager`: register, list, delete, deliver with async delivery
+  - Registration: URL validation (http/https), event type validation (13 types), secret validation
+  - Delivery: HTTP POST with JSON body, HMAC-SHA256 signature in `X-QBit-Signature` header
+  - Retry: 3 attempts with exponential backoff (1s, 5s, 25s), 10s timeout per attempt
+  - Failure tracking: `consecutive_failures` counter, `failing` status, auto-disable after 10 failures
+  - Limits: max 100 webhooks, max 20 events per webhook, max 2048 char URL
+  - RPC: `qv_registerWebhook`, `qv_listWebhooks`, `qv_deleteWebhook` (protected)
+  - REST: POST/GET /api/v1/webhooks, DELETE /api/v1/webhooks/{id}
+  - Node integration: webhook delivery after block processing via `_deliver_block_webhooks`
+- [x] 65 new tests (10 OpenAPI, 25 SDK, 30 webhooks)
+
 ### v0.7.0-sprint2: Receipt/Event System + Simple Finality (2026-03-26)
 - [x] Receipt data structure (`qbit_network/core/receipt.py`)
   - `TransactionReceipt` with `__slots__`: tx_id, status, fee_paid, block_index, tx_index, events
@@ -444,17 +473,19 @@
 
 ---
 
-## Planned (v0.7.0+)
-
-### Protocol
-- [ ] Block finality (checkpoint mechanism)
+## Planned (v0.8.0+)
 
 ### Storage
 - [ ] Transaction pool persistence across restarts
 
 ### Client
 - [ ] Human-readable proof PDF export
+- [ ] TypeScript SDK (native)
 
 ### Infrastructure
 - [ ] Light client protocol (Merkle proof verification only)
 - [ ] Cross-chain bridge (hash anchoring)
+- [ ] Multi-asset tokens (ISSUE/MINT_TOKEN/TRANSFER_TOKEN)
+- [ ] Binary P2P (msgpack)
+- [ ] W3C DID method (did:qbit)
+- [ ] PostgreSQL sync bridge
