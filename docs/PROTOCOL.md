@@ -119,7 +119,7 @@ No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 - Balance check: sender must have `amount + fee` available after pending pool debits.
 - Fee: 100,000 qubits (50% to validator, 50% burned).
 
-#### Fee Schedule
+#### Fee Schedule (Legacy Fixed Fees -- Pre-Activation)
 
 | Type | Fee (qubits) |
 |------|-------------|
@@ -133,7 +133,59 @@ No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 | REVOKE_KEY | 0 |
 | EVIDENCE | 0 |
 
-Fee split: `validator_share = fee // 2`, `burn = fee - validator_share`. Integer arithmetic only.
+Legacy fee split: `validator_share = fee // 2`, `burn = fee - validator_share`. Integer arithmetic only.
+
+#### EIP-1559 Dynamic Fees (Post-Activation)
+
+After `DYNAMIC_FEE_ACTIVATION_HEIGHT`, the network uses an EIP-1559-style dynamic fee mechanism.
+
+**Transaction fields:**
+- `maxFeePerWeight`: maximum fee the sender is willing to pay per unit of weight (qubits)
+- `maxPriorityFee`: tip to the validator per unit of weight (qubits)
+
+**Block header field:**
+- `baseFee`: the base fee for this block, computed from the parent block state
+
+**Fee formula:**
+```
+effective_priority = min(maxPriorityFee, maxFeePerWeight - baseFee)
+fee = (baseFee + effective_priority) * weight
+```
+
+**Base fee adjustment:**
+```
+if parent_effective_weight == TARGET_BLOCK_WEIGHT:
+    new_fee = parent_base_fee
+elif parent_effective_weight > TARGET_BLOCK_WEIGHT:
+    fee_delta = max(1, parent_base_fee * delta / target / BASE_FEE_CHANGE_DENOM)
+    new_fee = parent_base_fee + fee_delta
+else:
+    fee_delta = parent_base_fee * delta / target / BASE_FEE_CHANGE_DENOM
+    new_fee = parent_base_fee - fee_delta
+new_fee = clamp(new_fee, MIN_BASE_FEE, MAX_BASE_FEE)
+```
+
+**Weight table:**
+
+| Type | Weight |
+|------|--------|
+| TRANSFER | 100,000 |
+| NOTARIZE | 1,000,000 |
+| STORE | 2,000,000 |
+| SHARE | 1,000,000 |
+| REGISTER_KEY | 10,000,000 |
+| REGISTER_VALIDATOR | 100,000,000 |
+| STAKE / DELEGATE / UNSTAKE | 1,000,000 |
+| REVOKE_KEY | 0 |
+| EVIDENCE | 0 |
+
+**Anti-spam rules:**
+- `MAX_BLOCK_WEIGHT = 20,000,000` -- blocks cannot exceed this total weight
+- `TARGET_BLOCK_WEIGHT = 10,000,000` -- 50% utilization target for base fee stability
+- Validator self-TXs excluded from effective weight (prevents artificial fee inflation)
+- Self-TX weight capped at 25% of total block weight
+- Pool rejects TXs with `maxFeePerWeight < current_base_fee`
+- 100% of fees credited to validator (0% burned post-activation)
 
 #### Block Reward
 

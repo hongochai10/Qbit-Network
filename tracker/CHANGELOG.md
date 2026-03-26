@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.6.0-sprint2+3: EIP-1559 API, NextJS, Docs, Audit (2026-03-26)
+
+### API
+- **`GET /api/v1/fee`** -- new public REST endpoint returning current base_fee, next_base_fee,
+  suggested_priority_fee, TX weight table, and per-type estimated fees.
+- **`qv_getFeeInfo()`** -- new public JSON-RPC method returning same fee info.
+- **TX responses** now include `effectiveFee` for confirmed transactions in dynamic fee blocks.
+- **Block responses** already include `baseFee` (added in Sprint 1).
+- **Supply response** now includes `fee_model: "dynamic"|"fixed"`.
+
+### NextJS Dashboard
+- **`FeeInfo` type** added to `lib/types.ts` for type-safe fee data.
+- **`getFeeInfo()`** method added to `QBitAPI` client.
+- **`estimateFee()`** helper in `lib/format.ts` for fee estimation.
+- **TransferForm** -- fetches dynamic fee info on mount, shows base fee and estimated fee,
+  priority fee slider, and dynamic total cost. Falls back to fixed fee display when dynamic
+  fees are not active.
+- **StatsBar** -- added "Base Fee" stat with current base_fee from `/fee` endpoint.
+- **BlockDetail** -- shows `baseFee` in block information panel when non-zero.
+- **TxDetail** -- shows `maxFeePerWeight`, `maxPriorityFee`, `effectiveFee` in new
+  "Dynamic Fee (EIP-1559)" card when fields are present.
+
+### Documentation
+- **PROTOCOL.md** -- added EIP-1559 fee section with formula, base fee adjustment algorithm,
+  weight table, and anti-spam rules.
+- **ARCHITECTURE.md** -- replaced fixed fee section with dual-model (legacy + EIP-1559) section.
+- **README.md** -- updated fee description to mention EIP-1559 dynamic fees.
+
+### Tests
+- 6 new REST API tests for `/fee` endpoint (public access, required fields, types).
+- 7 new EIP-1559 integration tests (RPC fee info, estimated fees, fee adjustment under load).
+
 ## v0.6.0-sprint1: EIP-1559 Dynamic Fee Engine (2026-03-26)
 
 ### Features

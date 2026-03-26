@@ -107,7 +107,7 @@ FINANCIAL_ACTIVATION_HEIGHT = 0  # Active from genesis for new chains
 GENESIS_BALANCE_QBIT = 2_100_000  # 2.1M QBIT (10% of max supply)
 
 # Version
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 # Pruning
 PRUNING_RETENTION = 10000     # blocks to keep during chain pruning

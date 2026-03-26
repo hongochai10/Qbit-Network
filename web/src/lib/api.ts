@@ -14,6 +14,7 @@ import type {
   SlashingResponse,
   BalanceInfo,
   SupplyInfo,
+  FeeInfo,
 } from "./types";
 
 export class QBitAPI {
@@ -113,6 +114,9 @@ export class QBitAPI {
   }
   getSupply() {
     return this.get<SupplyInfo>("/supply");
+  }
+  getFeeInfo() {
+    return this.get<FeeInfo>("/fee");
   }
 
   // Protected endpoints

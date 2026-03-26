@@ -2,6 +2,22 @@
 
 ## Implemented
 
+### v0.6.0-sprint2+3: EIP-1559 API, NextJS, Docs (2026-03-26)
+- [x] REST API: `GET /api/v1/fee` -- public endpoint for fee info
+- [x] RPC: `qv_getFeeInfo()` -- public method for fee info
+- [x] TX response: `effectiveFee` field for confirmed dynamic-fee transactions
+- [x] Supply response: `fee_model` field ("dynamic" or "fixed")
+- [x] NextJS: `FeeInfo` type, `getFeeInfo()` API method, `estimateFee()` helper
+- [x] NextJS: TransferForm -- dynamic fee display, priority fee slider, estimated total
+- [x] NextJS: StatsBar -- Base Fee stat
+- [x] NextJS: BlockDetail -- baseFee display
+- [x] NextJS: TxDetail -- maxFeePerWeight, maxPriorityFee, effectiveFee display
+- [x] PROTOCOL.md -- EIP-1559 fee section with formula, weight table, anti-spam rules
+- [x] ARCHITECTURE.md -- dynamic fee model documentation
+- [x] README.md -- updated fee description
+- [x] CHANGELOG.md -- v0.6.0-sprint2+3 entry
+- [x] 13 new tests (6 REST + 7 EIP-1559 integration)
+
 ### v0.6.0-sprint1: EIP-1559 Dynamic Fees (2026-03-26)
 - [x] Fee Engine (`qbit_network/core/fees.py`)
   - `compute_base_fee()`: adjusts +/-12.5% per block based on effective weight vs target

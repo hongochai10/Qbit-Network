@@ -179,6 +179,19 @@ class MockNode:
     async def _rpc_submit_evidence(self, **kwargs):
         raise ValueError("evidence submission not supported in mock")
 
+    async def _rpc_get_fee_info(self):
+        from qbit_network.config import TX_WEIGHTS
+        return {
+            "base_fee": 10,
+            "next_base_fee": 11,
+            "suggested_priority_fee": 1,
+            "weights": dict(TX_WEIGHTS),
+            "estimated_fees": {
+                "TRANSFER": {"min": 1_000_000, "suggested": 1_100_000},
+            },
+            "fee_model": "dynamic",
+        }
+
 
 AUTH_TOKEN = "test-token-12345"
 
@@ -1036,3 +1049,53 @@ class TestDPoSRESTEndpoints(AsyncRESTTestCase):
         """/slashing-events does not require auth."""
         resp = await self.client.get("/api/v1/slashing-events")
         self.assertEqual(resp.status, 200)
+
+
+# ===================================================================
+# EIP-1559 Fee endpoint tests
+# ===================================================================
+
+class TestFeeEndpoint(AsyncRESTTestCase):
+    """Tests for GET /api/v1/fee endpoint."""
+
+    async def test_fee_endpoint_returns_200(self):
+        """/fee endpoint returns 200."""
+        resp = await self.client.get("/api/v1/fee")
+        self.assertEqual(resp.status, 200)
+
+    async def test_fee_endpoint_is_public(self):
+        """/fee endpoint does not require auth."""
+        resp = await self.client.get("/api/v1/fee")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIsNone(body["error"])
+
+    async def test_fee_endpoint_has_required_fields(self):
+        """/fee returns all required fee info fields."""
+        resp = await self.client.get("/api/v1/fee")
+        body = await resp.json()
+        data = body["data"]
+        self.assertIn("base_fee", data)
+        self.assertIn("next_base_fee", data)
+        self.assertIn("suggested_priority_fee", data)
+        self.assertIn("weights", data)
+        self.assertIn("estimated_fees", data)
+        self.assertIn("fee_model", data)
+
+    async def test_fee_endpoint_base_fee_is_integer(self):
+        """/fee base_fee is an integer."""
+        resp = await self.client.get("/api/v1/fee")
+        body = await resp.json()
+        self.assertIsInstance(body["data"]["base_fee"], int)
+
+    async def test_fee_endpoint_weights_is_dict(self):
+        """/fee weights is a dict."""
+        resp = await self.client.get("/api/v1/fee")
+        body = await resp.json()
+        self.assertIsInstance(body["data"]["weights"], dict)
+
+    async def test_fee_endpoint_estimated_fees_has_transfer(self):
+        """/fee estimated_fees includes TRANSFER."""
+        resp = await self.client.get("/api/v1/fee")
+        body = await resp.json()
+        self.assertIn("TRANSFER", body["data"]["estimated_fees"])

@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback } from "react";
-import { Blocks, ArrowLeftRight, Users, Shield, Clock, Layers, Coins } from "lucide-react";
+import { Blocks, ArrowLeftRight, Users, Shield, Clock, Layers, Coins, Flame } from "lucide-react";
 import { useAppStore } from "@/lib/store";
 import { getApi } from "@/lib/api";
 import { useApi } from "@/hooks/useApi";
 import { formatQBIT } from "@/lib/format";
-import type { SupplyInfo } from "@/lib/types";
+import type { SupplyInfo, FeeInfo } from "@/lib/types";
 
 export function StatsBar() {
   const { chainHeight, pendingTxs, peerCount, validatorCount, currentEpoch } =
@@ -22,8 +22,21 @@ export function StatsBar() {
   }, [api]);
   const { data: supplyData } = useApi(supplyFetcher);
 
+  const feeFetcher = useCallback(async (): Promise<FeeInfo | null> => {
+    try {
+      return await api.getFeeInfo();
+    } catch {
+      return null;
+    }
+  }, [api]);
+  const { data: feeData } = useApi(feeFetcher);
+
   const circulatingDisplay = supplyData
     ? formatQBIT(supplyData.circulating)
+    : "--";
+
+  const baseFeeDisplay = feeData
+    ? `${feeData.base_fee}`
     : "--";
 
   const stats = [
@@ -34,10 +47,11 @@ export function StatsBar() {
     { label: "Epoch", value: currentEpoch, icon: Layers, color: "text-blue-400" },
     { label: "Block Time", value: "~5s", icon: Clock, color: "text-muted" },
     { label: "Circulating", value: circulatingDisplay, icon: Coins, color: "text-emerald-400" },
+    { label: "Base Fee", value: baseFeeDisplay, icon: Flame, color: "text-orange-400" },
   ];
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
       {stats.map(({ label, value, icon: Icon, color }) => (
         <div
           key={label}

@@ -26,7 +26,7 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **TLS auto-provisioning** — `--tls-auto` generates and renews self-signed certificates; hot-reload on SIGHUP
 - **Peer reputation scoring** — 8 event types, score decay, automatic banning
 - **Chain pruning** — SQLite-level block removal with indices preserved
-- **QBIT token economy** -- 21M max supply, 5 QBIT block reward with halving, fee burn (50%), epoch delegator rewards
+- **QBIT token economy** -- 21M max supply, 5 QBIT block reward with halving, EIP-1559 dynamic fees, epoch delegator rewards
 - **TRANSFER transactions** -- peer-to-peer token transfers with balance checks, pending debit tracking, recipient format validation
 - **16 audit rounds, 0 open issues**
 

@@ -263,6 +263,7 @@ class FullNode:
         m("qv_getSlashingEvents", self._rpc_get_slashing_events)
         m("qv_getBalance", self._rpc_get_balance)
         m("qv_getSupply", self._rpc_get_supply)
+        m("qv_getFeeInfo", self._rpc_get_fee_info)
 
         # Protected (require auth token)
         m("qv_notarize", self._rpc_notarize)
@@ -311,6 +312,21 @@ class FullNode:
         block_idx = self.blockchain.get_tx_block(tx_id)
         result = tx.to_dict()
         result["block_index"] = block_idx
+
+        # Add effective fee for transactions in confirmed blocks
+        if block_idx is not None:
+            from .config import DYNAMIC_FEE_ACTIVATION_HEIGHT
+            from .core.fees import compute_tx_fee, tx_weight
+            if block_idx >= DYNAMIC_FEE_ACTIVATION_HEIGHT:
+                block = self.blockchain.get_block(block_idx)
+                if block is not None:
+                    w = tx_weight(tx.tx_type.value)
+                    if w > 0:
+                        eff_fee = compute_tx_fee(
+                            block.base_fee, tx.max_fee_per_weight,
+                            tx.max_priority_fee, w)
+                        result["effectiveFee"] = eff_fee
+
         return result
 
     async def _rpc_pending_count(self):
@@ -652,14 +668,64 @@ class FullNode:
 
     async def _rpc_get_supply(self):
         """Get total supply info (public)."""
-        from .config import QUBIT_PER_QBIT, TOKEN_SYMBOL, MAX_SUPPLY
+        from .config import (QUBIT_PER_QBIT, TOKEN_SYMBOL, MAX_SUPPLY,
+                             DYNAMIC_FEE_ACTIVATION_HEIGHT)
         supply = self.blockchain.get_total_supply()
+        bc = self.blockchain
+        dynamic_active = (bc.height >= 0
+                          and bc.height + 1 >= DYNAMIC_FEE_ACTIVATION_HEIGHT)
         return {
             "total_minted": supply["total_minted"],
             "total_burned": supply["total_burned"],
             "circulating": supply["circulating"],
             "max_supply": MAX_SUPPLY,
             "formatted_circulating": f"{supply['circulating'] / QUBIT_PER_QBIT:.8f} {TOKEN_SYMBOL}",
+            "fee_model": "dynamic" if dynamic_active else "fixed",
+        }
+
+    async def _rpc_get_fee_info(self):
+        """Get current dynamic fee information (public)."""
+        from .config import (TX_WEIGHTS, DYNAMIC_FEE_ACTIVATION_HEIGHT,
+                             INITIAL_BASE_FEE)
+        from .core.fees import compute_base_fee, effective_block_weight
+
+        bc = self.blockchain
+        dynamic_active = (bc.height >= 0
+                          and bc.height + 1 >= DYNAMIC_FEE_ACTIVATION_HEIGHT)
+
+        if dynamic_active:
+            current_bf = bc._current_base_fee()
+            # Compute next_base_fee from current tip
+            parent = bc.latest_block
+            if parent is not None:
+                parent_eff = effective_block_weight(
+                    parent.transactions, parent.validator)
+                next_bf = compute_base_fee(current_bf, parent_eff)
+            else:
+                next_bf = INITIAL_BASE_FEE
+        else:
+            current_bf = 0
+            next_bf = INITIAL_BASE_FEE
+
+        suggested_priority = max(1, current_bf // 10)
+
+        # Build estimated fees per TX type
+        estimated = {}
+        for tx_type, weight in TX_WEIGHTS.items():
+            if weight == 0:
+                estimated[tx_type] = {"min": 0, "suggested": 0}
+            else:
+                min_fee = current_bf * weight
+                suggested_fee = (current_bf + suggested_priority) * weight
+                estimated[tx_type] = {"min": min_fee, "suggested": suggested_fee}
+
+        return {
+            "base_fee": current_bf,
+            "next_base_fee": next_bf,
+            "suggested_priority_fee": suggested_priority,
+            "weights": dict(TX_WEIGHTS),
+            "estimated_fees": estimated,
+            "fee_model": "dynamic" if dynamic_active else "fixed",
         }
 
     async def _rpc_transfer(self, wallet_address="", to_address="",

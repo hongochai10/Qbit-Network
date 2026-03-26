@@ -73,21 +73,28 @@ The QBit Network has a built-in token economy with the following properties:
 
 ### Transaction Fees
 
-All transaction types have a fee schedule (in qubits):
+QBit supports two fee models, activated by `DYNAMIC_FEE_ACTIVATION_HEIGHT`:
 
-| Type | Fee |
-|------|-----|
-| TRANSFER | 100,000 |
-| NOTARIZE | 1,000,000 |
-| STORE | 2,000,000 |
-| SHARE | 1,000,000 |
-| REGISTER_KEY | 10,000,000 |
-| REGISTER_VALIDATOR | 100,000,000 |
-| STAKE / DELEGATE / UNSTAKE | 1,000,000 |
-| REVOKE_KEY | 0 (free) |
-| EVIDENCE | 0 (free) |
+**Legacy fixed fees** (pre-activation): per-type fee schedule with 50/50 validator/burn split.
 
-**Fee split**: 50% to block validator, 50% burned. Integer arithmetic only -- no rounding exploits.
+**EIP-1559 dynamic fees** (post-activation): base fee adjusts +/-12.5% per block based on
+block weight utilization vs 50% target. Transactions specify `maxFeePerWeight` and
+`maxPriorityFee`. Fee = `(baseFee + effectivePriority) * weight`. 100% to validator.
+
+| Type | Weight | Legacy Fee |
+|------|--------|-----------|
+| TRANSFER | 100,000 | 100,000 |
+| NOTARIZE | 1,000,000 | 1,000,000 |
+| STORE | 2,000,000 | 2,000,000 |
+| SHARE | 1,000,000 | 1,000,000 |
+| REGISTER_KEY | 10,000,000 | 10,000,000 |
+| REGISTER_VALIDATOR | 100,000,000 | 100,000,000 |
+| STAKE / DELEGATE / UNSTAKE | 1,000,000 | 1,000,000 |
+| REVOKE_KEY | 0 | 0 |
+| EVIDENCE | 0 | 0 |
+
+Key constants: `MAX_BLOCK_WEIGHT=20M`, `TARGET_BLOCK_WEIGHT=10M`, `BASE_FEE_CHANGE_DENOM=8`,
+`MIN_BASE_FEE=1`, `MAX_BASE_FEE=10,000`, `INITIAL_BASE_FEE=10`.
 
 ### Balance Ledger
 

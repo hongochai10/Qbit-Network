@@ -6,9 +6,9 @@ import { Card } from "@/components/ui/Card";
 import { Loading } from "@/components/ui/Loading";
 import { getApi } from "@/lib/api";
 import { useApi } from "@/hooks/useApi";
-import { parseQBIT, formatQBIT, TX_FEE_DISPLAY, TX_FEE_QUBITS } from "@/lib/format";
+import { parseQBIT, formatQBIT, estimateFee, TX_FEE_DISPLAY, TX_FEE_QUBITS } from "@/lib/format";
 import { useAppStore } from "@/lib/store";
-import type { WalletsResponse } from "@/lib/types";
+import type { WalletsResponse, FeeInfo } from "@/lib/types";
 import { ArrowUpRight, AlertTriangle, CheckCircle } from "lucide-react";
 
 export function TransferForm() {
@@ -21,10 +21,21 @@ export function TransferForm() {
   const { data: walletsData, loading: walletsLoading } =
     useApi<WalletsResponse>(walletsFetcher);
 
+  // Fetch dynamic fee info
+  const feeFetcher = useCallback(async (): Promise<FeeInfo | null> => {
+    try {
+      return await api.getFeeInfo();
+    } catch {
+      return null;
+    }
+  }, [api]);
+  const { data: feeData } = useApi<FeeInfo | null>(feeFetcher);
+
   const [fromWallet, setFromWallet] = useState("");
   const [toAddress, setToAddress] = useState("");
   const [amountStr, setAmountStr] = useState("");
   const [memo, setMemo] = useState("");
+  const [priorityFee, setPriorityFee] = useState(1);
   const [showConfirm, setShowConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ tx_id: string } | null>(null);
@@ -36,8 +47,22 @@ export function TransferForm() {
     if (from) setFromWallet(from);
   }, [searchParams]);
 
+  // Update suggested priority fee when fee data loads
+  useEffect(() => {
+    if (feeData?.suggested_priority_fee) {
+      setPriorityFee(feeData.suggested_priority_fee);
+    }
+  }, [feeData]);
+
+  const isDynamic = feeData?.fee_model === "dynamic";
+  const baseFee = feeData?.base_fee ?? 0;
+  const transferWeight = feeData?.weights?.TRANSFER ?? 100_000;
+
   const amountQubits = parseQBIT(amountStr);
-  const totalCost = amountQubits + TX_FEE_QUBITS;
+  const dynamicFee = isDynamic
+    ? estimateFee(baseFee, priorityFee, transferWeight)
+    : TX_FEE_QUBITS;
+  const totalCost = amountQubits + dynamicFee;
 
   const canSubmit =
     fromWallet.length > 0 &&
@@ -140,13 +165,50 @@ export function TransferForm() {
                 placeholder="0.00"
                 className="w-full bg-primary border border-card-border rounded-lg px-4 py-2.5 text-sm text-foreground font-mono placeholder:text-muted/50 focus:outline-none focus:border-accent"
               />
-              <div className="mt-2 text-xs text-muted flex items-center justify-between">
-                <span>Network fee: {TX_FEE_DISPLAY}</span>
+              <div className="mt-2 text-xs text-muted space-y-1">
+                {isDynamic ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span>Base fee: {baseFee} qubits/weight</span>
+                      <span>Est. fee: {formatQBIT(dynamicFee)}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <span>Network fee: {TX_FEE_DISPLAY}</span>
+                  </div>
+                )}
                 {amountQubits > 0 && (
-                  <span>Total: {formatQBIT(totalCost)}</span>
+                  <div className="flex items-center justify-between">
+                    <span></span>
+                    <span className="font-medium">Total: {formatQBIT(totalCost)}</span>
+                  </div>
                 )}
               </div>
             </div>
+
+            {/* Priority Fee (dynamic mode) */}
+            {isDynamic && (
+              <div>
+                <label className="block text-sm text-muted mb-2">
+                  Priority Fee <span className="text-muted/50">(qubits/weight)</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(baseFee, 100)}
+                  step={1}
+                  value={priorityFee}
+                  onChange={(e) => setPriorityFee(Number(e.target.value))}
+                  className="w-full accent-accent"
+                />
+                <div className="mt-1 text-xs text-muted flex items-center justify-between">
+                  <span>0</span>
+                  <span className="font-mono">{priorityFee} qubits/weight</span>
+                  <span>{Math.max(baseFee, 100)}</span>
+                </div>
+              </div>
+            )}
 
             {/* Memo */}
             <div>
@@ -233,8 +295,8 @@ export function TransferForm() {
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-muted">Fee</span>
-                <span className="font-mono text-muted">{TX_FEE_DISPLAY}</span>
+                <span className="text-muted">Fee{isDynamic ? " (dynamic)" : ""}</span>
+                <span className="font-mono text-muted">{formatQBIT(dynamicFee)}</span>
               </div>
               <div className="border-t border-card-border pt-2 flex justify-between">
                 <span className="text-muted font-medium">Total</span>

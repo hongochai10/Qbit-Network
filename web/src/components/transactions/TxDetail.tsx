@@ -28,6 +28,14 @@ export function TxDetail({ txId }: { txId: string }) {
       ? tx.payload.memo
       : null;
 
+  // EIP-1559 dynamic fee fields
+  const maxFeePerWeight =
+    typeof tx.maxFeePerWeight === "number" ? tx.maxFeePerWeight : null;
+  const maxPriorityFee =
+    typeof tx.maxPriorityFee === "number" ? tx.maxPriorityFee : null;
+  const effectiveFee =
+    typeof tx.effectiveFee === "number" ? tx.effectiveFee : null;
+
   return (
     <div className="space-y-6">
       <Card title="Transaction Details">
@@ -109,6 +117,32 @@ export function TxDetail({ txId }: { txId: string }) {
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted">Transaction Fee</span>
             <span className="font-mono text-foreground">{formatQBIT(fee)}</span>
+          </div>
+        </Card>
+      )}
+
+      {/* EIP-1559 Dynamic Fee Details */}
+      {(maxFeePerWeight !== null || maxPriorityFee !== null || effectiveFee !== null) && (
+        <Card title="Dynamic Fee (EIP-1559)">
+          <div className="space-y-3 text-sm">
+            {maxFeePerWeight !== null && (
+              <div className="flex items-center justify-between">
+                <span className="text-muted">Max Fee Per Weight</span>
+                <span className="font-mono text-foreground">{maxFeePerWeight} qubits/weight</span>
+              </div>
+            )}
+            {maxPriorityFee !== null && (
+              <div className="flex items-center justify-between">
+                <span className="text-muted">Max Priority Fee</span>
+                <span className="font-mono text-foreground">{maxPriorityFee} qubits/weight</span>
+              </div>
+            )}
+            {effectiveFee !== null && (
+              <div className="flex items-center justify-between">
+                <span className="text-muted">Effective Fee</span>
+                <span className="font-mono text-emerald-400 font-semibold">{formatQBIT(effectiveFee)}</span>
+              </div>
+            )}
           </div>
         </Card>
       )}

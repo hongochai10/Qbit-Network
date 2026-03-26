@@ -132,6 +132,7 @@ class RESTApi:
         r.add_get("/stakes/{validator}", self._validator_stake)
         r.add_get("/balance/{addr}", self._get_balance)
         r.add_get("/supply", self._get_supply)
+        r.add_get("/fee", self._get_fee_info)
         r.add_get("/pool", self._pool_summary)
         r.add_get("/pool/count", self._pool_count)
         r.add_post("/verify", self._verify)  # public -- no auth needed
@@ -359,6 +360,14 @@ class RESTApi:
             return _ok(result)
         except Exception as e:
             logger.error(f"REST get_supply: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _get_fee_info(self, request: web.Request) -> web.Response:
+        try:
+            result = await self._node._rpc_get_fee_info()
+            return _ok(result)
+        except Exception as e:
+            logger.error(f"REST get_fee_info: {e}")
             return _err(500, "internal server error", status=500)
 
     # ------------------------------------------------------------------

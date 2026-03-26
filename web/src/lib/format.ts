@@ -22,8 +22,20 @@ export function parseQBIT(input: string): number {
   return Math.round(num * 1_000_000_000);
 }
 
-/** Standard transaction fee in qubits */
+/** Standard transaction fee in qubits (legacy fixed fee fallback) */
 export const TX_FEE_QUBITS = 1_000_000; // 0.001 QBIT
 
-/** Format the standard fee for display */
+/** Format the standard fee for display (legacy fixed fee fallback) */
 export const TX_FEE_DISPLAY = "0.001 QBIT";
+
+/**
+ * Estimate the fee for a transaction given dynamic fee parameters.
+ * fee = (baseFee + priorityFee) * weight
+ */
+export function estimateFee(
+  baseFee: number,
+  priorityFee: number,
+  weight: number
+): number {
+  return (baseFee + priorityFee) * weight;
+}

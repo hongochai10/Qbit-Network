@@ -57,6 +57,15 @@ export function BlockDetail({ index }: { index: number }) {
               <HashDisplay hash={block.validator} truncate={12} />
             </dd>
           </div>
+          {/* Base Fee */}
+          {typeof block.baseFee === "number" && block.baseFee !== 0 && (
+            <div>
+              <dt className="text-muted mb-1">Base Fee</dt>
+              <dd className="font-mono text-orange-400">
+                {block.baseFee} qubits/weight
+              </dd>
+            </div>
+          )}
           {/* Block Reward */}
           {(() => {
             const coinbaseTx = block.transactions.find(

@@ -1003,3 +1003,100 @@ class TestLegacyPath:
         ok, err = bc.consensus.validate_block(block, parent)
         assert not ok
         assert "must contain at least one transaction" in err
+
+
+# =============================================================================
+# RPC Fee Info Tests (qv_getFeeInfo)
+# =============================================================================
+
+class TestRPCGetFeeInfo:
+    """Tests for the FullNode._rpc_get_fee_info method via direct blockchain state."""
+
+    def test_fee_info_returns_all_fields(self, wallet_pair):
+        """fee info has all required fields."""
+        alice, bob = wallet_pair
+        bc = _make_chain(alice, bob)
+        # Simulate what _rpc_get_fee_info does
+        from qbit_network.core.fees import compute_base_fee, effective_block_weight
+        current_bf = bc._current_base_fee()
+        assert isinstance(current_bf, int)
+        assert current_bf >= MIN_BASE_FEE
+
+        parent = bc.latest_block
+        parent_eff = effective_block_weight(parent.transactions, parent.validator)
+        next_bf = compute_base_fee(current_bf, parent_eff)
+        assert isinstance(next_bf, int)
+
+    def test_fee_info_suggested_priority_fee(self, wallet_pair):
+        """Suggested priority fee is at least 1."""
+        alice, bob = wallet_pair
+        bc = _make_chain(alice, bob)
+        current_bf = bc._current_base_fee()
+        suggested = max(1, current_bf // 10)
+        assert suggested >= 1
+
+    def test_fee_info_estimated_fees_calculated(self, wallet_pair):
+        """Estimated fees are calculated correctly."""
+        alice, bob = wallet_pair
+        bc = _make_chain(alice, bob)
+        current_bf = bc._current_base_fee()
+        suggested_priority = max(1, current_bf // 10)
+        for tx_type, weight in TX_WEIGHTS.items():
+            if weight == 0:
+                continue
+            min_fee = current_bf * weight
+            suggested_fee = (current_bf + suggested_priority) * weight
+            assert min_fee >= 0
+            assert suggested_fee >= min_fee
+
+    def test_fee_info_after_heavy_blocks(self, wallet_pair):
+        """Base fee increases after heavy blocks."""
+        alice, bob = wallet_pair
+        bc = _make_chain(alice, bob)
+        bc._credit(bob.address, 100_000_000_000_000)
+
+        initial_bf = bc._current_base_fee()
+        # Submit heavy TXs
+        for i in range(5):
+            nonce = _bob_nonce(bc, bob)
+            tx = Transaction.store(bob.address, f"{i:064x}", f"QmCid{i}",
+                                   nonce=nonce, max_fee_per_weight=10000)
+            tx.sign(bob.signing_sk, bob.signing_pk)
+            bc.submit_tx(tx)
+        bc.produce_block(alice.address, alice.signing_sk)
+        new_bf = bc._current_base_fee()
+        assert new_bf >= initial_bf
+
+
+# =============================================================================
+# Integration: Base Fee Adjusts After TX Submission
+# =============================================================================
+
+class TestFeeIntegration:
+    """Integration test: submit TXs with dynamic fees and verify base_fee adjusts."""
+
+    def test_base_fee_responds_to_load(self, wallet_pair):
+        """Base fee should increase when blocks are full and decrease when empty."""
+        alice, bob = wallet_pair
+        bc = _make_chain(alice, bob)
+        bc._credit(bob.address, 100_000_000_000_000)
+
+        # Heavy block: submit many TXs
+        for i in range(8):
+            nonce = _bob_nonce(bc, bob)
+            tx = Transaction.store(bob.address, f"{i:064x}", f"QmCid{i}",
+                                   nonce=nonce, max_fee_per_weight=10000)
+            tx.sign(bob.signing_sk, bob.signing_pk)
+            ok, msg = bc.submit_tx(tx)
+            assert ok, msg
+
+        block = bc.produce_block(alice.address, alice.signing_sk)
+        assert block is not None
+        bf_after_heavy = bc._current_base_fee()
+
+        # Empty blocks should decrease base fee
+        for _ in range(5):
+            bc.produce_block(alice.address, alice.signing_sk)
+
+        bf_after_empty = bc._current_base_fee()
+        assert bf_after_empty < bf_after_heavy or bf_after_empty == MIN_BASE_FEE

@@ -3,6 +3,7 @@ export interface BlockHeader {
   hash: string;
   prevHash: string;
   merkleRoot: string;
+  baseFee?: number;
   validator: string;
   timestamp: number;
   signature: string;
@@ -21,6 +22,9 @@ export interface Transaction {
   nonce: number;
   chainId: string;
   payload: Record<string, unknown>;
+  maxFeePerWeight?: number;
+  maxPriorityFee?: number;
+  effectiveFee?: number;
   signature: string;
   sender_pubkey: string;
 }
@@ -106,4 +110,14 @@ export interface SupplyInfo {
   circulating: number;
   staked?: number;
   max_supply: number;
+  fee_model?: "dynamic" | "fixed";
+}
+
+export interface FeeInfo {
+  base_fee: number;
+  next_base_fee: number;
+  suggested_priority_fee: number;
+  weights: Record<string, number>;
+  estimated_fees: Record<string, { min: number; suggested: number }>;
+  fee_model: "dynamic" | "fixed";
 }
