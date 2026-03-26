@@ -56,7 +56,7 @@ export function SupplyWidget() {
     },
     {
       label: "Staked",
-      value: data.staked,
+      value: data.staked ?? 0,
       icon: Lock,
       color: "text-blue-400",
     },

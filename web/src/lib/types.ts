@@ -104,6 +104,6 @@ export interface SupplyInfo {
   total_minted: number;
   total_burned: number;
   circulating: number;
-  staked: number;
+  staked?: number;
   max_supply: number;
 }
