@@ -340,6 +340,7 @@ def cmd_verify_proof(args):
 
     # 2. Verify block header hash
     header_obj = {
+        "baseFee": block.get("baseFee", 0),
         "index": block["index"],
         "merkleRoot": block["merkleRoot"],
         "prevHash": block["prevHash"],

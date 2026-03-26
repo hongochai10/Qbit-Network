@@ -43,6 +43,7 @@ def export_proof(block_dict: dict, tx_index: int, tx_id: str,
             "hash": block_dict["hash"],
             "prevHash": block_dict["prevHash"],
             "merkleRoot": block_dict["merkleRoot"],
+            "baseFee": block_dict.get("baseFee", 0),
             "validator": block_dict["validator"],
             "signature": block_dict["signature"],
             "txCount": len(block_dict["transactions"]),
@@ -93,6 +94,7 @@ def verify_proof(proof: dict) -> tuple[bool, list[str]]:
 
     # 2. Verify block header hash
     header_obj = {
+        "baseFee": block.get("baseFee", 0),
         "index": block["index"],
         "merkleRoot": block["merkleRoot"],
         "prevHash": block["prevHash"],

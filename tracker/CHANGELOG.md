@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.6.0-sprint1: EIP-1559 Dynamic Fee Engine (2026-03-26)
+
+### Features
+- **EIP-1559 dynamic fee mechanism** -- base fee adjusts +/-12.5% per block based on
+  effective block weight utilization vs 50% target. All fees (100%) credited to validator.
+- **New module `qbit_network/core/fees.py`** -- pure fee calculation functions:
+  `compute_base_fee()`, `compute_tx_fee()`, `effective_block_weight()`, `tx_weight()`.
+- **Block header: `base_fee` field** -- included in header hash (hard fork). Serialized
+  as `baseFee` in JSON. Genesis blocks have base_fee=0.
+- **Transaction fee fields** -- `max_fee_per_weight` and `max_priority_fee` added to
+  Transaction. Included in signable bytes (hard fork: changes tx_id). All 11 factory
+  classmethods accept fee parameters.
+- **Consensus validation** -- validates base_fee derivation from parent, block weight
+  limit (MAX_BLOCK_WEIGHT=20M), self-TX ratio cap (25%), per-TX fee sufficiency.
+  Empty blocks allowed post-activation.
+- **Pool admission** -- rejects TXs below current base_fee. Balance check uses
+  worst-case fee (max_fee_per_weight * weight).
+- **Block production** -- sorts senders by descending priority fee while preserving
+  per-sender nonce order. Respects MAX_BLOCK_WEIGHT. Produces empty blocks when pool empty.
+- **Rollback** -- reverses dynamic fees (100% from validator). base_fee restored from parent.
+- **Hard fork activation** -- `DYNAMIC_FEE_ACTIVATION_HEIGHT` config constant. Pre-activation
+  blocks use legacy fixed fee schedule (50% burn). Default is high (inactive) for backward
+  compatibility; set to 0 for new chains.
+
+### Config
+- `PROTOCOL_VERSION` bumped to 3
+- Added: `TX_WEIGHTS`, `MAX_BLOCK_WEIGHT`, `TARGET_BLOCK_WEIGHT`, `BASE_FEE_CHANGE_DENOM`,
+  `INITIAL_BASE_FEE`, `MIN_BASE_FEE`, `MAX_BASE_FEE`, `DYNAMIC_FEE_ACTIVATION_HEIGHT`,
+  `MAX_SELF_TX_WEIGHT_RATIO`
+
+### Tests
+- **83 new tests** in `tests/test_eip1559.py` covering fee engine, block/TX fields,
+  consensus validation, blockchain integration, pool admission, block production,
+  rollback, self-TX anti-spam, base fee adjustment, legacy path.
+- Total: **1347 tests passing** (was 1264).
+
 ## v0.5.0-sprint4: Financial Layer Security Audit + Adversarial Tests (2026-03-26)
 
 ### Security (Round 16 Audit)

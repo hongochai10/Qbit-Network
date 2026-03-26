@@ -18,7 +18,11 @@ from ..config import (MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH,
                       TX_FEES, FEE_BURN_PERCENT, INITIAL_BLOCK_REWARD,
                       HALVING_INTERVAL, MAX_SUPPLY, QUBIT_PER_QBIT,
                       GENESIS_BALANCE_QBIT, FINANCIAL_ACTIVATION_HEIGHT,
-                      DEFAULT_COMMISSION_RATE)
+                      DEFAULT_COMMISSION_RATE,
+                      DYNAMIC_FEE_ACTIVATION_HEIGHT, INITIAL_BASE_FEE,
+                      TX_WEIGHTS, MAX_BLOCK_WEIGHT)
+from .fees import (compute_base_fee, compute_tx_fee, tx_weight,
+                   effective_block_weight)
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -324,11 +328,18 @@ class Blockchain:
 
     def _pending_debits(self, address: str) -> int:
         """Sum of pending transfers + fees in the pool for an address."""
+        dynamic_active = (self._height + 1 >= DYNAMIC_FEE_ACTIVATION_HEIGHT
+                          and self._height >= 0)
         total = 0
         for tx in self.tx_pool:
             if tx.sender != address:
                 continue
-            fee = TX_FEES.get(tx.tx_type.value, 0)
+            if dynamic_active:
+                # Worst-case fee: max_fee_per_weight * weight
+                w = tx_weight(tx.tx_type.value)
+                fee = tx.max_fee_per_weight * w
+            else:
+                fee = TX_FEES.get(tx.tx_type.value, 0)
             total += fee
             if tx.tx_type == TxType.TRANSFER:
                 total += tx.payload.get("amount", 0)
@@ -430,32 +441,74 @@ class Blockchain:
                 return False, (f"insufficient stake: want to unstake {amount}, "
                                f"have {current}")
 
+        # EIP-1559 pool admission: check max_fee_per_weight >= current base_fee
+        _next_idx = self._height + 1
+        _dynamic_active = (_next_idx >= DYNAMIC_FEE_ACTIVATION_HEIGHT
+                           and self._height >= 0)
+        if _dynamic_active:
+            w = tx_weight(tx.tx_type.value)
+            if w > 0:
+                # Compute current base_fee from latest block
+                current_bf = self._current_base_fee()
+                if tx.max_fee_per_weight < current_bf:
+                    return False, (f"max_fee_per_weight {tx.max_fee_per_weight} "
+                                   f"< current base_fee {current_bf}")
+
         # Financial layer balance checks (only when financial layer is active)
         if self._financial_active:
-            # TRANSFER: balance check (fee + amount)
-            if tx.tx_type == TxType.TRANSFER:
-                if not tx.recipient:
-                    return False, "TRANSFER requires a recipient"
-                amount = tx.payload.get("amount", 0)
-                fee = TX_FEES.get("TRANSFER", 0)
-                pending = self._pending_debits(tx.sender)
-                available = self.get_balance(tx.sender) - pending
-                if available < amount + fee:
-                    return False, (f"insufficient balance: need {amount + fee}, "
-                                   f"available {available}")
-
-            # Balance check for fee-bearing types (except TRANSFER handled above)
-            if tx.tx_type != TxType.TRANSFER:
-                fee = TX_FEES.get(tx.tx_type.value, 0)
-                if fee > 0:
+            if _dynamic_active:
+                # Dynamic fee balance check (all fee-bearing types)
+                w = tx_weight(tx.tx_type.value)
+                if w > 0:
+                    worst_case_fee = tx.max_fee_per_weight * w
                     extra_debit = 0
-                    if tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+                    if tx.tx_type == TxType.TRANSFER:
+                        if not tx.recipient:
+                            return False, "TRANSFER requires a recipient"
+                        extra_debit = tx.payload.get("amount", 0)
+                    elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
                         extra_debit = tx.payload.get("amount", 0)
                     pending = self._pending_debits(tx.sender)
                     available = self.get_balance(tx.sender) - pending
-                    if available < fee + extra_debit:
-                        return False, (f"insufficient balance for fee: need {fee + extra_debit}, "
+                    if available < worst_case_fee + extra_debit:
+                        return False, (f"insufficient balance: need {worst_case_fee + extra_debit}, "
                                        f"available {available}")
+                elif tx.tx_type == TxType.TRANSFER:
+                    # Zero-weight TRANSFER still needs amount check
+                    if not tx.recipient:
+                        return False, "TRANSFER requires a recipient"
+                    amount = tx.payload.get("amount", 0)
+                    pending = self._pending_debits(tx.sender)
+                    available = self.get_balance(tx.sender) - pending
+                    if available < amount:
+                        return False, (f"insufficient balance: need {amount}, "
+                                       f"available {available}")
+            else:
+                # Legacy fixed fee balance checks
+                # TRANSFER: balance check (fee + amount)
+                if tx.tx_type == TxType.TRANSFER:
+                    if not tx.recipient:
+                        return False, "TRANSFER requires a recipient"
+                    amount = tx.payload.get("amount", 0)
+                    fee = TX_FEES.get("TRANSFER", 0)
+                    pending = self._pending_debits(tx.sender)
+                    available = self.get_balance(tx.sender) - pending
+                    if available < amount + fee:
+                        return False, (f"insufficient balance: need {amount + fee}, "
+                                       f"available {available}")
+
+                # Balance check for fee-bearing types (except TRANSFER handled above)
+                if tx.tx_type != TxType.TRANSFER:
+                    fee = TX_FEES.get(tx.tx_type.value, 0)
+                    if fee > 0:
+                        extra_debit = 0
+                        if tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+                            extra_debit = tx.payload.get("amount", 0)
+                        pending = self._pending_debits(tx.sender)
+                        available = self.get_balance(tx.sender) - pending
+                        if available < fee + extra_debit:
+                            return False, (f"insufficient balance for fee: need {fee + extra_debit}, "
+                                           f"available {available}")
 
         # EVIDENCE: validator must be registered and not already slashed
         if tx.tx_type == TxType.EVIDENCE:
@@ -495,6 +548,20 @@ class Blockchain:
         self._pool_sender_count[tx.sender] = pending_from_sender + 1
         return True, tx.tx_id
 
+    def _current_base_fee(self) -> int:
+        """Compute the base fee for the next block based on current chain state."""
+        if self._height < 0:
+            return INITIAL_BASE_FEE
+        parent = self._latest_block
+        next_idx = self._height + 1
+        _parent_pre = (parent.index == 0
+                       or parent.index < DYNAMIC_FEE_ACTIVATION_HEIGHT)
+        if next_idx == DYNAMIC_FEE_ACTIVATION_HEIGHT or _parent_pre:
+            return INITIAL_BASE_FEE
+        parent_eff_weight = effective_block_weight(
+            parent.transactions, parent.validator)
+        return compute_base_fee(parent.base_fee, parent_eff_weight)
+
     # ---- Block production ----
 
     def produce_block(self, validator_address: str,
@@ -514,20 +581,90 @@ class Blockchain:
             logger.error(f"Cannot produce block: signing key revoked for {validator_address[:16]}...")
             return None
 
-        txs = self.tx_pool[:MAX_TX_PER_BLOCK]
+        next_idx = parent.index + 1
+        _dynamic_active = (next_idx >= DYNAMIC_FEE_ACTIVATION_HEIGHT
+                           and next_idx > 0)
 
-        if not txs:
+        if _dynamic_active:
+            # Compute base_fee for this block
+            _parent_pre = (parent.index == 0
+                           or parent.index < DYNAMIC_FEE_ACTIVATION_HEIGHT)
+            if next_idx == DYNAMIC_FEE_ACTIVATION_HEIGHT or _parent_pre:
+                base_fee = INITIAL_BASE_FEE
+            else:
+                parent_eff_weight = effective_block_weight(
+                    parent.transactions, parent.validator)
+                base_fee = compute_base_fee(parent.base_fee, parent_eff_weight)
+
+            # Filter pool: only TXs with max_fee_per_weight >= base_fee
+            eligible = []
+            for tx in self.tx_pool:
+                w = TX_WEIGHTS.get(tx.tx_type.value, 0)
+                if w == 0 or tx.max_fee_per_weight >= base_fee:
+                    eligible.append(tx)
+
+            # Group eligible TXs by sender, preserving nonce order
+            from collections import defaultdict
+            sender_queues: dict[str, list[Transaction]] = defaultdict(list)
+            for tx in eligible:
+                sender_queues[tx.sender].append(tx)
+            # Sort each sender's queue by nonce (pool order should already be correct,
+            # but be defensive)
+            for q in sender_queues.values():
+                q.sort(key=lambda t: t.nonce)
+
+            # Compute effective priority per sender (use first TX's priority as representative)
+            def _sender_priority(sender: str) -> int:
+                q = sender_queues[sender]
+                if not q:
+                    return 0
+                # Use the max effective priority across the sender's TXs
+                best = 0
+                for t in q:
+                    w = TX_WEIGHTS.get(t.tx_type.value, 0)
+                    if w > 0:
+                        ep = max(0, min(t.max_priority_fee, t.max_fee_per_weight - base_fee))
+                        best = max(best, ep)
+                return best
+
+            # Sort senders by descending priority
+            sorted_senders = sorted(sender_queues.keys(),
+                                    key=_sender_priority, reverse=True)
+
+            # Select TXs respecting MAX_BLOCK_WEIGHT, MAX_TX_PER_BLOCK, and nonce order
+            txs = []
+            total_weight = 0
+            # Round-robin from highest-priority senders, taking one TX at a time
+            # to interleave fairly. But for simplicity and correctness, take all
+            # TXs from each sender in order.
+            for sender in sorted_senders:
+                for tx in sender_queues[sender]:
+                    if len(txs) >= MAX_TX_PER_BLOCK:
+                        break
+                    w = TX_WEIGHTS.get(tx.tx_type.value, 0)
+                    if total_weight + w > MAX_BLOCK_WEIGHT:
+                        break  # stop for this sender if next TX doesn't fit
+                    txs.append(tx)
+                    total_weight += w
+        else:
+            # Legacy: take from pool in order
+            txs = self.tx_pool[:MAX_TX_PER_BLOCK]
+            base_fee = 0
+
+        # Post-activation: empty blocks are allowed
+        if not txs and not _dynamic_active:
             return None
 
         # Ensure timestamp is strictly after parent
         timestamp = max(int(time.time()), parent.timestamp + 1)
 
         block = Block(
-            index=parent.index + 1,
+            index=next_idx,
             prev_hash=parent.block_hash,
             transactions=txs,
             validator=validator_address,
             timestamp=timestamp,
+            base_fee=base_fee,
         )
         block.sign(validator_sk)
 
@@ -743,9 +880,8 @@ class Blockchain:
                     0, self._epoch_rewards.get(block.validator, 0) - reward)
 
             # Reverse tx balance changes in reverse order
+            _dyn = idx >= DYNAMIC_FEE_ACTIVATION_HEIGHT
             for tx in reversed(block.transactions):
-                fee = TX_FEES.get(tx.tx_type.value, 0)
-
                 # Reverse type-specific balance changes
                 if tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
                     amount = tx.payload.get("amount", 0)
@@ -761,18 +897,32 @@ class Blockchain:
                     self._credit(tx.sender, amount)
 
                 # Reverse fee
-                if fee > 0:
-                    validator_share = fee // 2
-                    burn = fee - validator_share
-                    # Reverse validator fee credit
-                    bal = self._balances.get(block.validator, 0)
-                    debit_amt = min(validator_share, bal)
-                    if debit_amt > 0:
-                        self._debit(block.validator, debit_amt)
-                    # Reverse burn
-                    self._total_burned -= burn
-                    # Reverse sender fee debit
-                    self._credit(tx.sender, fee)
+                if _dyn:
+                    # EIP-1559: 100% was credited to validator
+                    w = tx_weight(tx.tx_type.value)
+                    if w > 0:
+                        fee = compute_tx_fee(block.base_fee,
+                                             tx.max_fee_per_weight,
+                                             tx.max_priority_fee, w)
+                        bal = self._balances.get(block.validator, 0)
+                        debit_amt = min(fee, bal)
+                        if debit_amt > 0:
+                            self._debit(block.validator, debit_amt)
+                        self._credit(tx.sender, fee)
+                else:
+                    fee = TX_FEES.get(tx.tx_type.value, 0)
+                    if fee > 0:
+                        validator_share = fee // 2
+                        burn = fee - validator_share
+                        # Reverse validator fee credit
+                        bal = self._balances.get(block.validator, 0)
+                        debit_amt = min(validator_share, bal)
+                        if debit_amt > 0:
+                            self._debit(block.validator, debit_amt)
+                        # Reverse burn
+                        self._total_burned -= burn
+                        # Reverse sender fee debit
+                        self._credit(tx.sender, fee)
 
         self._block_by_hash.pop(block.block_hash, None)
         for tx in block.transactions:
@@ -990,14 +1140,25 @@ class Blockchain:
             # Genesis block txs are fee-exempt (bootstrapping).
             # Financial layer only active when chain has minted supply.
             if idx > 0 and self._financial_active:
-                fee = TX_FEES.get(tx.tx_type.value, 0)
-                if fee > 0:
-                    self._debit(tx.sender, fee)
-                    # Split fee: validator share (floor division), remainder burned
-                    validator_share = fee // 2
-                    burn = fee - validator_share
-                    self._credit(block.validator, validator_share)
-                    self._total_burned += burn
+                _dyn = idx >= DYNAMIC_FEE_ACTIVATION_HEIGHT
+                if _dyn:
+                    # EIP-1559 dynamic fee: 100% to validator, 0% burned
+                    w = tx_weight(tx.tx_type.value)
+                    if w > 0:
+                        fee = compute_tx_fee(block.base_fee,
+                                             tx.max_fee_per_weight,
+                                             tx.max_priority_fee, w)
+                        self._debit(tx.sender, fee)
+                        self._credit(block.validator, fee)
+                else:
+                    # Legacy fixed fee: 50/50 split validator/burn
+                    fee = TX_FEES.get(tx.tx_type.value, 0)
+                    if fee > 0:
+                        self._debit(tx.sender, fee)
+                        validator_share = fee // 2
+                        burn = fee - validator_share
+                        self._credit(block.validator, validator_share)
+                        self._total_burned += burn
 
                 # Type-specific balance changes
                 if tx.tx_type == TxType.TRANSFER:

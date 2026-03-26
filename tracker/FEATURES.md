@@ -2,6 +2,50 @@
 
 ## Implemented
 
+### v0.6.0-sprint1: EIP-1559 Dynamic Fees (2026-03-26)
+- [x] Fee Engine (`qbit_network/core/fees.py`)
+  - `compute_base_fee()`: adjusts +/-12.5% per block based on effective weight vs target
+  - `compute_tx_fee()`: fee = (base_fee + effective_priority) * weight
+  - `effective_block_weight()`: excludes validator self-TXs (anti-spam)
+  - `tx_weight()`: per-type weight lookup from TX_WEIGHTS config
+  - `block_total_weight()`: total weight including all TXs
+- [x] Block Header Extension
+  - `base_fee` field added to Block __slots__, header bytes, to_dict/from_dict
+  - Block hash now includes baseFee (hard fork change)
+- [x] Transaction Fee Fields
+  - `max_fee_per_weight` and `max_priority_fee` added to Transaction __slots__
+  - Included in _signable_bytes (hard fork: changes tx_id computation)
+  - All 11 factory classmethods accept fee parameters
+  - from_dict validates non-negative integer
+- [x] Consensus Validation
+  - Validates base_fee derivation from parent block
+  - Rejects blocks exceeding MAX_BLOCK_WEIGHT (20M)
+  - Rejects blocks where self-TX weight > 25% of total
+  - Rejects TXs with max_fee_per_weight < block base_fee
+  - Empty blocks allowed post-activation
+- [x] Fee Deduction (100% to validator)
+  - Dynamic fee: (base_fee + effective_priority) * weight credited to validator
+  - 0% burned post-activation
+  - Legacy 50/50 split preserved for pre-activation blocks
+- [x] Pool Admission
+  - Rejects TXs with max_fee_per_weight < current base_fee
+  - Balance check uses worst-case fee (max_fee_per_weight * weight)
+- [x] Block Production
+  - Computes base_fee for new block from parent state
+  - Filters eligible TXs (max_fee >= base_fee)
+  - Sorts senders by descending priority fee, preserves nonce order
+  - Respects MAX_BLOCK_WEIGHT limit
+  - Empty blocks produced when pool is empty post-activation
+- [x] Rollback Support
+  - Reverses dynamic fees (100% from validator) on block rollback
+  - base_fee restored from parent block on reorg
+- [x] Config Constants
+  - TX_WEIGHTS, MAX_BLOCK_WEIGHT (20M), TARGET_BLOCK_WEIGHT (10M)
+  - BASE_FEE_CHANGE_DENOM (8), INITIAL_BASE_FEE (10), MIN/MAX_BASE_FEE (1/10000)
+  - DYNAMIC_FEE_ACTIVATION_HEIGHT (high default for backward compat)
+  - MAX_SELF_TX_WEIGHT_RATIO (25%)
+  - PROTOCOL_VERSION bumped to 3
+
 ### v0.5.0-sprint2 (2026-03-26)
 - [x] Staking Balance Integration (complete)
   - STAKE/DELEGATE debit sender balance (amount + fee)

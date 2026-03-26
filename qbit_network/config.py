@@ -17,7 +17,7 @@ CHAIN_ID = "qbit-mainnet"
 MAX_REORG_DEPTH = 32              # max blocks to reorganize
 
 # Protocol
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 # Network
 DEFAULT_P2P_PORT = 9000
@@ -76,6 +76,29 @@ TX_FEES = {
     "EVIDENCE": 0,
 }
 FEE_BURN_PERCENT = 50
+
+# EIP-1559 Dynamic Fee
+TX_WEIGHTS = {
+    "TRANSFER": 100_000,
+    "NOTARIZE": 1_000_000,
+    "STORE": 2_000_000,
+    "SHARE": 1_000_000,
+    "REGISTER_KEY": 10_000_000,
+    "REGISTER_VALIDATOR": 100_000_000,
+    "STAKE": 1_000_000,
+    "DELEGATE": 1_000_000,
+    "UNSTAKE": 1_000_000,
+    "REVOKE_KEY": 0,
+    "EVIDENCE": 0,
+}
+MAX_BLOCK_WEIGHT = 20_000_000
+TARGET_BLOCK_WEIGHT = MAX_BLOCK_WEIGHT // 2
+BASE_FEE_CHANGE_DENOM = 8
+INITIAL_BASE_FEE = 10
+MIN_BASE_FEE = 1
+MAX_BASE_FEE = 10_000
+DYNAMIC_FEE_ACTIVATION_HEIGHT = 2**63  # set to 0 for new chains; high default preserves legacy behavior
+MAX_SELF_TX_WEIGHT_RATIO = 25  # percent
 
 # Financial activation
 FINANCIAL_ACTIVATION_HEIGHT = 0  # Active from genesis for new chains

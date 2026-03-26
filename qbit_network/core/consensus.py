@@ -3,7 +3,11 @@ import logging
 import time
 from typing import Callable
 from ..crypto import MLDSA, sha3_256
-from ..config import MAX_BLOCK_DRIFT, MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK, MAX_TX_PAYLOAD_SIZE, BLOCK_INTERVAL
+from ..config import (MAX_BLOCK_DRIFT, MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK,
+                      MAX_TX_PAYLOAD_SIZE, BLOCK_INTERVAL,
+                      DYNAMIC_FEE_ACTIVATION_HEIGHT, INITIAL_BASE_FEE,
+                      MAX_BLOCK_WEIGHT, TX_WEIGHTS, MAX_SELF_TX_WEIGHT_RATIO)
+from .fees import compute_base_fee, effective_block_weight, tx_weight
 from .block import Block
 
 logger = logging.getLogger("qbit_network.consensus")
@@ -151,12 +155,43 @@ class ProofOfAuthority:
         if not block.verify_signature(pk):
             return False, "invalid block signature"
 
+        # ---- EIP-1559 dynamic fee validation ----
+        _dynamic_active = block.index >= DYNAMIC_FEE_ACTIVATION_HEIGHT and block.index > 0
+        if _dynamic_active:
+            # Verify base_fee derivation from parent
+            # First dynamic block or parent is pre-activation/genesis: use initial
+            _parent_pre = (parent.index == 0
+                           or parent.index < DYNAMIC_FEE_ACTIVATION_HEIGHT)
+            if block.index == DYNAMIC_FEE_ACTIVATION_HEIGHT or _parent_pre:
+                expected_bf = INITIAL_BASE_FEE
+            else:
+                parent_eff_weight = effective_block_weight(
+                    parent.transactions, parent.validator)
+                expected_bf = compute_base_fee(parent.base_fee, parent_eff_weight)
+            if block.base_fee != expected_bf:
+                return False, (f"base_fee mismatch: expected {expected_bf}, "
+                               f"got {block.base_fee}")
+
+            # Verify total block weight does not exceed MAX_BLOCK_WEIGHT
+            total_weight = sum(TX_WEIGHTS.get(tx.tx_type.value, 0)
+                               for tx in block.transactions)
+            if total_weight > MAX_BLOCK_WEIGHT:
+                return False, (f"block weight {total_weight} > "
+                               f"{MAX_BLOCK_WEIGHT}")
+
+            # Verify self-TX weight ratio (anti-spam)
+            self_weight = sum(TX_WEIGHTS.get(tx.tx_type.value, 0)
+                              for tx in block.transactions
+                              if tx.sender == block.validator)
+            if total_weight > 0 and self_weight * 100 > total_weight * MAX_SELF_TX_WEIGHT_RATIO:
+                return False, "self-tx weight exceeds 25%"
+
         # ---- Tx count limit ----
         if len(block.transactions) > MAX_TX_PER_BLOCK:
             return False, f"too many txs: {len(block.transactions)} > {MAX_TX_PER_BLOCK}"
 
-        # ---- Non-genesis must have transactions ----
-        if not block.transactions:
+        # ---- Non-genesis must have transactions (pre-activation only) ----
+        if not block.transactions and not _dynamic_active:
             return False, "non-genesis block must contain at least one transaction"
 
         # ---- Block size (fast estimate without full serialization) ----
@@ -183,6 +218,13 @@ class ProofOfAuthority:
             ok, err = tx.validate_payload()
             if not ok:
                 return False, f"invalid tx payload: {err}"
+
+            # EIP-1559: TX must offer at least base_fee per weight unit
+            if _dynamic_active:
+                w = TX_WEIGHTS.get(tx.tx_type.value, 0)
+                if w > 0 and tx.max_fee_per_weight < block.base_fee:
+                    return False, (f"max_fee_per_weight {tx.max_fee_per_weight} "
+                                   f"< base_fee {block.base_fee}")
 
             # Revoked signing key cannot submit transactions
             if self._revoked_keys is not None:

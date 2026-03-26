@@ -30,13 +30,15 @@ class Transaction:
     __slots__ = (
         'tx_type', 'sender', 'recipient', 'timestamp', 'payload',
         'signature', 'sender_pubkey', 'nonce', 'chain_id',
+        'max_fee_per_weight', 'max_priority_fee',
         '_cached_signable', '_cached_id',
     )
 
     def __init__(self, tx_type: TxType, sender: str, payload: dict,
                  recipient: str = "", timestamp: int = None,
                  signature: bytes = b'', sender_pubkey: bytes = b'',
-                 nonce: int = 0, chain_id: str = CHAIN_ID):
+                 nonce: int = 0, chain_id: str = CHAIN_ID,
+                 max_fee_per_weight: int = 0, max_priority_fee: int = 0):
         self.tx_type = tx_type
         self.sender = sender
         self.recipient = recipient
@@ -46,6 +48,8 @@ class Transaction:
         self.sender_pubkey = sender_pubkey
         self.nonce = nonce
         self.chain_id = chain_id
+        self.max_fee_per_weight = max_fee_per_weight
+        self.max_priority_fee = max_priority_fee
         self._cached_signable: bytes | None = None
         self._cached_id: str | None = None
 
@@ -54,6 +58,8 @@ class Transaction:
             obj = {
                 "chainId": self.chain_id,
                 "from": self.sender,
+                "maxFeePerWeight": self.max_fee_per_weight,
+                "maxPriorityFee": self.max_priority_fee,
                 "nonce": self.nonce,
                 "payload": self.payload,
                 "timestamp": self.timestamp,
@@ -269,6 +275,8 @@ class Transaction:
             "payload": self.payload,
             "nonce": self.nonce,
             "chainId": self.chain_id,
+            "maxFeePerWeight": self.max_fee_per_weight,
+            "maxPriorityFee": self.max_priority_fee,
             "signature": self.signature.hex(),
             "sender_pubkey": self.sender_pubkey.hex(),
         }
@@ -295,6 +303,12 @@ class Transaction:
             raise ValueError("chainId is required")
         if not isinstance(chain_id, str):
             raise ValueError("chainId must be string")
+        mfpw = data.get("maxFeePerWeight", 0)
+        mpf = data.get("maxPriorityFee", 0)
+        if not isinstance(mfpw, int) or mfpw < 0:
+            raise ValueError("maxFeePerWeight must be non-negative int")
+        if not isinstance(mpf, int) or mpf < 0:
+            raise ValueError("maxPriorityFee must be non-negative int")
         return cls(
             tx_type=TxType(data["type"]),
             sender=data["from"],
@@ -305,58 +319,82 @@ class Transaction:
             chain_id=chain_id,
             signature=sig,
             sender_pubkey=spk,
+            max_fee_per_weight=mfpw,
+            max_priority_fee=mpf,
         )
 
     # ---- Factory methods ----
 
     @classmethod
     def register_key(cls, sender: str, encryption_pk: bytes,
-                     nonce: int = 0) -> 'Transaction':
+                     nonce: int = 0,
+                     max_fee_per_weight: int = 0,
+                     max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.REGISTER_KEY, sender=sender, nonce=nonce,
             payload={"encryption_pk": encryption_pk.hex()},
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
     def register_validator(cls, sender: str, validator_pubkey: bytes,
                            validator_address: str,
-                           nonce: int = 0) -> 'Transaction':
+                           nonce: int = 0,
+                           max_fee_per_weight: int = 0,
+                           max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.REGISTER_VALIDATOR, sender=sender, nonce=nonce,
             payload={
                 "validator_pubkey": validator_pubkey.hex(),
                 "validator_address": validator_address,
             },
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
     def notarize(cls, sender: str, document_hash: str,
-                 metadata: str = "", nonce: int = 0) -> 'Transaction':
+                 metadata: str = "", nonce: int = 0,
+                 max_fee_per_weight: int = 0,
+                 max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.NOTARIZE, sender=sender, nonce=nonce,
             payload={"documentHash": document_hash, "metadata": metadata},
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
     def store(cls, sender: str, document_hash: str,
-              cid: str, metadata: str = "", nonce: int = 0) -> 'Transaction':
+              cid: str, metadata: str = "", nonce: int = 0,
+              max_fee_per_weight: int = 0,
+              max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.STORE, sender=sender, nonce=nonce,
             payload={"documentHash": document_hash, "cid": cid, "metadata": metadata},
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
     def revoke_key(cls, sender: str, key_type: str, reason: str,
-                   nonce: int = 0) -> 'Transaction':
+                   nonce: int = 0,
+                   max_fee_per_weight: int = 0,
+                   max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.REVOKE_KEY, sender=sender, nonce=nonce,
             payload={"key_type": key_type, "reason": reason},
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
     def share(cls, sender: str, recipient: str, cid: str,
               encapsulated_key: bytes, expires: int = 0,
-              nonce: int = 0) -> 'Transaction':
+              nonce: int = 0,
+              max_fee_per_weight: int = 0,
+              max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.SHARE, sender=sender, recipient=recipient, nonce=nonce,
             payload={
@@ -364,41 +402,59 @@ class Transaction:
                 "encapsulatedKey": encapsulated_key.hex(),
                 "expires": expires,
             },
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
     def stake(cls, sender: str, validator_address: str,
-              amount: int, nonce: int = 0) -> 'Transaction':
+              amount: int, nonce: int = 0,
+              max_fee_per_weight: int = 0,
+              max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.STAKE, sender=sender, nonce=nonce,
             payload={"amount": amount, "validator_address": validator_address},
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
     def delegate(cls, sender: str, validator_address: str,
-                 amount: int, nonce: int = 0) -> 'Transaction':
+                 amount: int, nonce: int = 0,
+                 max_fee_per_weight: int = 0,
+                 max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.DELEGATE, sender=sender, nonce=nonce,
             payload={"amount": amount, "validator_address": validator_address},
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
     def unstake(cls, sender: str, validator_address: str,
-                amount: int, nonce: int = 0) -> 'Transaction':
+                amount: int, nonce: int = 0,
+                max_fee_per_weight: int = 0,
+                max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.UNSTAKE, sender=sender, nonce=nonce,
             payload={"amount": amount, "validator_address": validator_address},
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
     def transfer(cls, sender: str, recipient: str, amount: int,
-                 memo: str = "", nonce: int = 0) -> 'Transaction':
+                 memo: str = "", nonce: int = 0,
+                 max_fee_per_weight: int = 0,
+                 max_priority_fee: int = 0) -> 'Transaction':
         payload = {"amount": amount}
         if memo:
             payload["memo"] = memo
         return cls(
             tx_type=TxType.TRANSFER, sender=sender,
             recipient=recipient, nonce=nonce, payload=payload,
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )
 
     @classmethod
@@ -406,7 +462,9 @@ class Transaction:
                  block_index: int, block_a_hash: str, block_b_hash: str,
                  block_a_sig: str, block_b_sig: str,
                  block_a_header: str = "", block_b_header: str = "",
-                 nonce: int = 0) -> 'Transaction':
+                 nonce: int = 0,
+                 max_fee_per_weight: int = 0,
+                 max_priority_fee: int = 0) -> 'Transaction':
         return cls(
             tx_type=TxType.EVIDENCE, sender=sender, nonce=nonce,
             payload={
@@ -420,4 +478,6 @@ class Transaction:
                 "block_index": block_index,
                 "validator_address": validator_address,
             },
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
         )

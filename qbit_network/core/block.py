@@ -10,19 +10,20 @@ class Block:
 
     __slots__ = (
         'index', 'prev_hash', 'transactions', 'validator',
-        'timestamp', 'signature', 'merkle_root',
+        'timestamp', 'signature', 'merkle_root', 'base_fee',
         '_cached_header', '_cached_hash',
     )
 
     def __init__(self, index: int, prev_hash: str, transactions: list[Transaction],
                  validator: str = "", timestamp: int = None,
-                 signature: bytes = b''):
+                 signature: bytes = b'', base_fee: int = 0):
         self.index = index
         self.prev_hash = prev_hash
         self.transactions = transactions
         self.validator = validator
         self.timestamp = timestamp if timestamp is not None else int(time.time())
         self.signature = signature
+        self.base_fee = base_fee
         self._cached_header: bytes | None = None
         self._cached_hash: str | None = None
 
@@ -32,6 +33,7 @@ class Block:
     def _header_bytes(self) -> bytes:
         if self._cached_header is None:
             obj = {
+                "baseFee": self.base_fee,
                 "index": self.index,
                 "merkleRoot": self.merkle_root,
                 "prevHash": self.prev_hash,
@@ -70,6 +72,7 @@ class Block:
             "timestamp": self.timestamp,
             "prevHash": self.prev_hash,
             "merkleRoot": self.merkle_root,
+            "baseFee": self.base_fee,
             "validator": self.validator,
             "transactions": [tx.to_dict() for tx in self.transactions],
             "signature": self.signature.hex(),
@@ -89,6 +92,7 @@ class Block:
             validator=data.get("validator", ""),
             timestamp=data["timestamp"],
             signature=bytes.fromhex(data.get("signature", "")),
+            base_fee=data.get("baseFee", 0),
         )
         # Verify hash integrity if claimed hash is present
         claimed = data.get("hash")
@@ -106,4 +110,5 @@ class Block:
             prev_hash="0" * 64,
             transactions=transactions or [],
             validator=validator,
+            base_fee=0,
         )
