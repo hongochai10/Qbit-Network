@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.5.0-sprint4: Financial Layer Security Audit + Adversarial Tests (2026-03-26)
+
+### Security (Round 16 Audit)
+- **[CRITICAL] R16-003: Epoch reward distribution supply inflation** -- `_distribute_epoch_rewards`
+  credited delegators without debiting validators, creating tokens from nothing. Fixed: validator
+  balance debited by total distributed amount; rollback records include explicit debit/credit
+  entries for clean reversal.
+- **[MEDIUM] R16-001: TRANSFER recipient address not validated** -- funds could be sent to
+  arbitrary string addresses (non-qv1) that are permanently unrecoverable. Fixed:
+  `validate_payload` checks `qv1` prefix, 67-char length, hex-only suffix.
+- **[MEDIUM] R16-005: Rollback block reward partial reversal** -- when validator spent reward
+  before rollback, `_total_minted` decremented by full reward but balance only partially debited.
+  Accepted: defense-in-depth (prevents negative balance); full rebuild on SQLite load resolves.
+- **[LOW] R16-002: `_pending_debits()` O(n) pool scan** -- bounded by MAX_TX_POOL_SIZE (10,000).
+  Accepted for now; precomputed dict optimization tracked for future.
+- **[LOW] R16-004: Negative circulating supply** -- transient condition; no user-facing impact.
+
+### Tests
+- **59 new adversarial tests** in `tests/test_financial_adversarial.py` covering:
+  - Double-spend (pool + replay), overflow/underflow, zero/negative amounts
+  - Self-transfer, fee evasion verification, MINT forgery prevention
+  - Halving boundary, supply cap, rollback balance/burn/minted consistency
+  - Concurrent TRANSFER + STAKE, circular A->B->C->A transfers
+  - Fee-free types (REVOKE_KEY, EVIDENCE), memo length limits
+  - Invalid recipient formats (non-qv1, wrong length, non-hex)
+  - Pending debits accuracy, genesis balance idempotency
+  - Fee burn percentage, nonce ordering, integer arithmetic
+- Total: **1264 tests passing** (was 1205).
+
+### Documentation
+- `docs/ARCHITECTURE.md` -- added Financial Layer section (token economics, fees, rewards, epoch distribution)
+- `docs/PROTOCOL.md` -- added TRANSFER format, fee schedule, block reward specification, TRANSFER rules
+- `docs/SECURITY.md` -- added Round 16 findings and financial layer security controls
+- `tracker/AUDIT_LOG.md` -- added Round 16 (5 issues: 3 fixed, 2 accepted)
+- `tracker/ISSUES.md` -- updated summary (16 rounds, 1264 tests)
+- `tracker/CHANGELOG.md` -- this entry
+- `README.md` -- updated for financial features, 11 tx types, 16 audit rounds
+
 ## v0.5.0-sprint2: Staking Migration + Epoch Rewards + Supply Tracking (2026-03-26)
 
 ### New Features

@@ -55,9 +55,67 @@ Each wallet holds two independent PQC keypairs:
 
 The encryption public key is registered on-chain via `REGISTER_KEY` transactions, enabling other users to look it up for SHARE operations.
 
+## Financial Layer
+
+The QBit Network has a built-in token economy with the following properties:
+
+### Token: QBIT
+
+- **Name**: QBit / **Symbol**: QBIT / **Decimals**: 8 (1 QBIT = 10^8 qubits)
+- **Max supply**: 1,000,000,000 QBIT (10^17 qubits)
+- **Genesis allocation**: 20,000,000 QBIT to the genesis validator
+
+### Block Rewards
+
+- **Initial reward**: 5 QBIT (500,000,000 qubits) per block
+- **Halving interval**: every 2,100,000 blocks
+- **Supply cap**: reward capped to remaining supply; zero after max supply reached
+
+### Transaction Fees
+
+All transaction types have a fee schedule (in qubits):
+
+| Type | Fee |
+|------|-----|
+| TRANSFER | 100,000 |
+| NOTARIZE | 1,000,000 |
+| STORE | 2,000,000 |
+| SHARE | 1,000,000 |
+| REGISTER_KEY | 10,000,000 |
+| REGISTER_VALIDATOR | 100,000,000 |
+| STAKE / DELEGATE / UNSTAKE | 1,000,000 |
+| REVOKE_KEY | 0 (free) |
+| EVIDENCE | 0 (free) |
+
+**Fee split**: 50% to block validator, 50% burned. Integer arithmetic only -- no rounding exploits.
+
+### Balance Ledger
+
+- `_balances: dict[str, int]` tracks per-address balance in qubits
+- `_credit()` / `_debit()` enforce non-negative amounts and insufficient balance checks
+- `_pending_debits()` prevents double-spend by summing pending pool debits
+- Supply tracked via `_total_minted` and `_total_burned` counters
+- Conservation invariant: `circulating + staked + burned == total_minted`
+
+### Epoch Reward Distribution
+
+At each epoch boundary (every 100 blocks), accumulated block rewards are redistributed to delegators:
+- Validator keeps commission (default 10%, configurable 0-100%)
+- Remaining pool distributed proportionally by delegation weight
+- Validator balance debited by the distributed amount to maintain supply conservation
+- Distributions recorded for clean rollback during chain reorganization
+
+### TRANSFER Validation
+
+- Recipient must be a valid `qv1` address (67 characters: 3-char prefix + 64 hex)
+- Self-transfer rejected
+- Amount must be a positive integer
+- Balance check includes pending pool debits (fee + amount)
+- Memo limited to 256 characters
+
 ## Transaction Types
 
-Ten transaction types are defined. All share the same wire format and validation rules; only the `payload` schema differs.
+Eleven transaction types are defined. All share the same wire format and validation rules; only the `payload` schema differs.
 
 ### NOTARIZE
 Proves a document existed at a specific time.

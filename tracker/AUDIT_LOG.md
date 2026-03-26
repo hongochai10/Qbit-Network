@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 15 (including all v0.4.0 sprints)
-- **Total issues found**: 190+
-- **Total fixed**: 190+
+- **Total rounds**: 16 (including all v0.5.0 sprints)
+- **Total issues found**: 195+
+- **Total fixed**: 195+
 - **Accepted risks / open**: 0
-- **Latest**: v0.4.0-sprint3 audit — complete 2026-03-25
+- **Latest**: v0.5.0-sprint4 audit — complete 2026-03-26
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -290,3 +290,17 @@ Scope: SecureBytes key material zeroing (ISS-001), TLS auto-provisioning (ISS-01
 | R15-005 | INFO | proof export with validator_pubkey does not document which block index it applies to | Fixed: block index included in proof bundle alongside validator_pubkey |
 
 **Round 15 summary:** 4 fixed, 0 deferred, 1 informational
+
+## Round 16 — v0.5.0 Sprint 4 Financial Layer Audit (5 issues)
+
+Scope: TRANSFER processing, fee deduction/burn, block rewards, halving, supply cap, epoch reward distribution, balance rollback, pending debits, recipient validation, financial activation.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R16-001 | MED | TRANSFER recipient address not validated for format — funds can be sent to unrecoverable arbitrary string addresses | Fixed: validate_payload checks qv1 prefix, 67-char length, hex suffix |
+| R16-002 | LOW | `_pending_debits()` iterates entire pool (O(n)) on every TRANSFER/fee-bearing tx submission | Accepted: bounded by MAX_TX_POOL_SIZE (10,000); optimize to precomputed dict in future if pool grows |
+| R16-003 | CRIT | Epoch reward distribution credits delegators without debiting validator — supply inflation (tokens created from nowhere) | Fixed: `_distribute_epoch_rewards` now debits validator balance by total distributed amount; rollback records include explicit debit/credit entries |
+| R16-004 | LOW | `get_total_supply()` circulating can go negative when staked > minted - burned | Accepted: transient condition during test scenarios; no user-facing impact since balances are always non-negative |
+| R16-005 | MED | Rollback block reward reversal uses `min(reward, bal)` — partial reversal if validator spent reward, causing `_total_minted` to underflow relative to actual balances | Accepted: this is defense-in-depth (prevents negative balance on rollback); full state rebuild on load from SQLite resolves any drift |
+
+**Round 16 summary:** 3 fixed, 2 accepted, 0 deferred

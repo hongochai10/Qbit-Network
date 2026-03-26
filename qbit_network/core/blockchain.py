@@ -126,7 +126,7 @@ class Blockchain:
         # Epoch reward distribution
         self._epoch_rewards: dict[str, int] = {}           # validator_addr -> accumulated rewards this epoch
         self._validator_commission: dict[str, int] = {}    # validator_addr -> commission percent (default 10)
-        self._last_epoch_distributions: dict[int, list[tuple[str, int]]] = {}  # epoch -> [(addr, amount)] for rollback
+        self._last_epoch_distributions: dict[int, dict] = {}  # epoch -> {"credits": [(addr, amount)], "debits": [(addr, amount)]} for rollback
 
         # threading.Lock (not asyncio.Lock) is intentional here: SQLite operations
         # protected by this lock are synchronous and fast (sub-ms), so blocking the
@@ -906,12 +906,16 @@ class Blockchain:
             # Reverse epoch reward distributions (epoch_to_remove - 1 was distributed at this boundary)
             if epoch_to_remove > 0 and self._financial_active:
                 dist_epoch = epoch_to_remove - 1
-                distributions = self._last_epoch_distributions.pop(dist_epoch, [])
-                for delegator_addr, amount in distributions:
+                dist_record = self._last_epoch_distributions.pop(dist_epoch, {})
+                # Reverse delegator credits
+                for delegator_addr, amount in dist_record.get("credits", []):
                     bal = self._balances.get(delegator_addr, 0)
                     debit_amt = min(amount, bal)
                     if debit_amt > 0:
                         self._debit(delegator_addr, debit_amt)
+                # Reverse validator debits (re-credit validators)
+                for validator_addr, amount in dist_record.get("debits", []):
+                    self._credit(validator_addr, amount)
             self._epochs.pop(epoch_to_remove, None)
             if epoch_to_remove > 0:
                 self._current_epoch = epoch_to_remove - 1
@@ -1324,8 +1328,13 @@ class Blockchain:
     # and validate_payload checks that each header hashes to its block hash.
 
     def _distribute_epoch_rewards(self, epoch_number: int):
-        """Distribute validator block rewards to delegators proportionally."""
-        distributions: list[tuple[str, int]] = []
+        """Distribute validator block rewards to delegators proportionally.
+
+        Debits the distributed amount from the validator's balance to maintain
+        the supply conservation invariant (R16-003).
+        """
+        credits: list[tuple[str, int]] = []
+        debits: list[tuple[str, int]] = []
         for validator_addr, stakes in self._stakes.items():
             if not stakes:
                 continue
@@ -1349,19 +1358,32 @@ class Blockchain:
             delegator_pool = epoch_rewards - validator_commission
 
             # Distribute to delegators proportionally
+            total_distributed = 0
             for delegator_addr, delegator_stake in stakes.items():
                 if delegator_addr == validator_addr:
                     continue
                 share = delegator_pool * delegator_stake // total_delegated
                 if share > 0:
                     self._credit(delegator_addr, share)
-                    distributions.append((delegator_addr, share))
+                    total_distributed += share
+                    credits.append((delegator_addr, share))
+
+            # Debit the distributed amount from validator to maintain supply conservation
+            if total_distributed > 0:
+                val_bal = self._balances.get(validator_addr, 0)
+                debit_amt = min(total_distributed, val_bal)
+                if debit_amt > 0:
+                    self._debit(validator_addr, debit_amt)
+                    debits.append((validator_addr, debit_amt))
 
             # Reset epoch rewards for this validator
             self._epoch_rewards[validator_addr] = 0
 
         # Record for rollback
-        self._last_epoch_distributions[epoch_number] = distributions
+        self._last_epoch_distributions[epoch_number] = {
+            "credits": credits,
+            "debits": debits,
+        }
 
         logger.info(f"Epoch {epoch_number}: delegator rewards distributed")
 

@@ -639,22 +639,22 @@ class TestTransferPayloadValidation:
 
     def test_transfer_amount_float(self):
         tx = Transaction(
-            TxType.TRANSFER, "qv1sender", payload={"amount": 1.5},
-            recipient="qv1recipient")
+            TxType.TRANSFER, "qv1" + "a" * 64, payload={"amount": 1.5},
+            recipient="qv1" + "b" * 64)
         ok, err = tx.validate_payload()
         assert not ok
 
     def test_transfer_amount_zero(self):
         tx = Transaction(
-            TxType.TRANSFER, "qv1sender", payload={"amount": 0},
-            recipient="qv1recipient")
+            TxType.TRANSFER, "qv1" + "a" * 64, payload={"amount": 0},
+            recipient="qv1" + "b" * 64)
         ok, err = tx.validate_payload()
         assert not ok
         assert "positive" in err
 
     def test_transfer_no_recipient(self):
         tx = Transaction(
-            TxType.TRANSFER, "qv1sender", payload={"amount": 100},
+            TxType.TRANSFER, "qv1" + "a" * 64, payload={"amount": 100},
             recipient="")
         ok, err = tx.validate_payload()
         assert not ok
@@ -662,34 +662,34 @@ class TestTransferPayloadValidation:
 
     def test_transfer_self_recipient(self):
         tx = Transaction(
-            TxType.TRANSFER, "qv1sender", payload={"amount": 100},
-            recipient="qv1sender")
+            TxType.TRANSFER, "qv1" + "a" * 64, payload={"amount": 100},
+            recipient="qv1" + "a" * 64)
         ok, err = tx.validate_payload()
         assert not ok
         assert "self" in err.lower()
 
     def test_transfer_memo_not_string(self):
         tx = Transaction(
-            TxType.TRANSFER, "qv1sender",
+            TxType.TRANSFER, "qv1" + "a" * 64,
             payload={"amount": 100, "memo": 123},
-            recipient="qv1recipient")
+            recipient="qv1" + "b" * 64)
         ok, err = tx.validate_payload()
         assert not ok
         assert "memo" in err.lower()
 
     def test_transfer_valid_payload(self):
         tx = Transaction(
-            TxType.TRANSFER, "qv1sender",
+            TxType.TRANSFER, "qv1" + "a" * 64,
             payload={"amount": 100, "memo": "test"},
-            recipient="qv1recipient")
+            recipient="qv1" + "b" * 64)
         ok, err = tx.validate_payload()
         assert ok
 
     def test_transfer_unknown_key_rejected(self):
         tx = Transaction(
-            TxType.TRANSFER, "qv1sender",
+            TxType.TRANSFER, "qv1" + "a" * 64,
             payload={"amount": 100, "extra_field": "bad"},
-            recipient="qv1recipient")
+            recipient="qv1" + "b" * 64)
         ok, err = tx.validate_payload()
         assert not ok
         assert "unknown" in err.lower()

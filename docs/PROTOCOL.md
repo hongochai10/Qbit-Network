@@ -17,9 +17,9 @@ address = "qv1" + hex(SHA3-256(ML-DSA-65 public key))
 ```json
 {
   "id": "SHA3-256 hex of signable content",
-  "type": "NOTARIZE | STORE | SHARE | REGISTER_KEY | REGISTER_VALIDATOR | REVOKE_KEY | STAKE | DELEGATE | UNSTAKE | EVIDENCE",
+  "type": "NOTARIZE | STORE | SHARE | REGISTER_KEY | REGISTER_VALIDATOR | REVOKE_KEY | STAKE | DELEGATE | UNSTAKE | EVIDENCE | TRANSFER",
   "from": "qv1...",
-  "to": "qv1... (recipient, required for SHARE)",
+  "to": "qv1... (recipient, required for SHARE and TRANSFER)",
   "timestamp": 1700000000,
   "nonce": 0,
   "chainId": "qbit-mainnet",
@@ -63,6 +63,7 @@ tx_id = hex(SHA3-256(signable_bytes))
 | `DELEGATE` | `validator_address` (qv1...), `amount` (int, 1-1,000,000) | - |
 | `UNSTAKE` | `validator_address` (qv1...), `amount` (int, 1-1,000,000) | - |
 | `EVIDENCE` | `validator_address` (qv1...), `block_index` (int), `block_hash_1` (hex), `block_hash_2` (hex), `signature_1` (ML-DSA hex), `signature_2` (ML-DSA hex) | - |
+| `TRANSFER` | `amount` (positive int) | `memo` (string, max 256 chars) |
 
 No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 
@@ -108,6 +109,38 @@ No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 - Both `signature_1` and `signature_2` must be valid ML-DSA-65 signatures from the validator's pubkey.
 - The validator must not have been previously slashed (no duplicate evidence processing).
 - EVIDENCE payload uses 32KB size limit (accommodates two ML-DSA-65 signatures).
+
+#### TRANSFER Rules
+
+- `amount` must be a positive integer.
+- `to` field must be a valid `qv1` address (67 characters: 3-char prefix + 64 hex digits).
+- Self-transfer (`to == from`) is rejected.
+- Optional `memo` must be a string, max 256 characters.
+- Balance check: sender must have `amount + fee` available after pending pool debits.
+- Fee: 100,000 qubits (50% to validator, 50% burned).
+
+#### Fee Schedule
+
+| Type | Fee (qubits) |
+|------|-------------|
+| TRANSFER | 100,000 |
+| NOTARIZE | 1,000,000 |
+| STORE | 2,000,000 |
+| SHARE | 1,000,000 |
+| REGISTER_KEY | 10,000,000 |
+| REGISTER_VALIDATOR | 100,000,000 |
+| STAKE / DELEGATE / UNSTAKE | 1,000,000 |
+| REVOKE_KEY | 0 |
+| EVIDENCE | 0 |
+
+Fee split: `validator_share = fee // 2`, `burn = fee - validator_share`. Integer arithmetic only.
+
+#### Block Reward
+
+- Initial reward: 500,000,000 qubits (5 QBIT) per block
+- Halving: `reward = INITIAL_BLOCK_REWARD >> (block_index // HALVING_INTERVAL)`
+- Supply cap: `min(reward, MAX_SUPPLY - total_minted)`
+- Genesis block (index 0) receives no reward
 
 ### Validation Rules
 

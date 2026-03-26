@@ -46,7 +46,7 @@
 
 ## Audit History
 
-15 rounds of security audit, 190+ issues found:
+16 rounds of security audit, 195+ issues found:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -66,8 +66,18 @@
 | 13 Sprint 2 | v0.3.0 Sprint 2 (SQLite-primary, REVOKE_KEY, REST API, WebSocket) | 16 |
 | 14 | v0.4.0 Sprint 1-2 (dPoS, epochs, slashing, P2P encryption, dedup) | 9 |
 | 15 | v0.4.0 Sprint 3 (SecureBytes, TLS auto-provisioning, reputation, pruning) | 5 |
+| 16 | v0.5.0 Sprint 4 Financial layer security (TRANSFER, fees, rewards, supply) | 5 |
 
 See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
+
+### Financial Layer Security (Round 16)
+
+- **Supply conservation**: epoch reward distribution now debits validator balance (R16-003 fix prevents inflation)
+- **Recipient validation**: TRANSFER recipient must be a valid `qv1` address format (67 chars, hex suffix) -- prevents funds sent to unrecoverable addresses
+- **Double-spend prevention**: `_pending_debits()` sums all pending pool debits before allowing new transfers
+- **Fee atomicity**: fees deducted sequentially during block processing with `_debit()` balance checks
+- **Integer arithmetic only**: all balance operations use Python `int`, no floating-point
+- **Rollback correctness**: epoch distribution rollback uses explicit credit/debit records for clean reversal
 
 ## Key Security Controls
 

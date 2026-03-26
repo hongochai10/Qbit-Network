@@ -218,6 +218,12 @@ class Transaction:
                 return False, "TRANSFER requires a recipient"
             if self.recipient == self.sender:
                 return False, "cannot transfer to self"
+            # Validate recipient address format (R16-001)
+            from ..config import ADDRESS_PREFIX
+            if (not self.recipient.startswith(ADDRESS_PREFIX) or
+                    len(self.recipient) != 67 or
+                    not _HEX_RE.match(self.recipient[3:])):
+                return False, "recipient must be a valid qv1 address (67 chars)"
 
         elif self.tx_type == TxType.EVIDENCE:
             et = self.payload.get("evidence_type", "")

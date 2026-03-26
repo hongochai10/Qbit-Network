@@ -1,6 +1,6 @@
 # QBit Network — Post-Quantum Cryptography Blockchain
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 1080+](https://img.shields.io/badge/tests-1080%2B-brightgreen)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 1264](https://img.shields.io/badge/tests-1264-brightgreen)
 
 QBit Network is a purpose-built blockchain for document notarization and encrypted data sharing. It replaces all quantum-vulnerable cryptography (ECDSA, ECDH, secp256k1) with NIST-standardized post-quantum alternatives, providing a quantum-resistant foundation for long-lived document proofs and confidential file exchange.
 
@@ -13,7 +13,7 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 
 ## Features
 
-- **10 transaction types**: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE
+- **11 transaction types**: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER
 - **Delegated Proof of Stake** — stake-weighted validator selection, epoch rotation (every 100 blocks), double-sign slashing
 - **ML-KEM-768 encrypted P2P** — all post-authentication peer messages encrypted with AES-256-GCM
 - **3-step ML-DSA mutual auth** — P2P challenge-response handshake with verify-before-sign
@@ -26,7 +26,9 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **TLS auto-provisioning** — `--tls-auto` generates and renews self-signed certificates; hot-reload on SIGHUP
 - **Peer reputation scoring** — 8 event types, score decay, automatic banning
 - **Chain pruning** — SQLite-level block removal with indices preserved
-- **15 audit rounds, 0 open issues**
+- **QBIT token economy** -- 1B max supply, 5 QBIT block reward with halving, fee burn (50%), epoch delegator rewards
+- **TRANSFER transactions** -- peer-to-peer token transfers with balance checks, pending debit tracking, recipient format validation
+- **16 audit rounds, 0 open issues**
 
 ## Quick Start
 
