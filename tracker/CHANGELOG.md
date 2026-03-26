@@ -1,5 +1,90 @@
 # Changelog
 
+## v0.7.0-sprint2: Receipt/Event System + Simple Finality (2026-03-26)
+
+### Receipt System
+- **`TransactionReceipt`** (`qbit_network/core/receipt.py`): immutable record of TX execution result with `__slots__` (tx_id, status, fee_paid, block_index, tx_index, events). SHA3-256 `receipt_hash` property for Merkle tree. `to_dict`/`from_dict` with full input validation.
+- **`receipts_root()`**: Merkle root of receipt hashes using the same SHA3-256 binary tree as transaction Merkle root.
+- **`build_event()`**: typed event constructor for all TX types.
+
+### Event Types
+- All 11 TX types emit structured events: Transfer, Notarize, Store, Share, Stake, Delegate, Unstake, KeyRegistered, ValidatorRegistered, KeyRevoked, Slashed.
+- Block-level events: BlockReward (validator, amount), EpochTransition (epoch).
+
+### Block Header
+- **`receipts_root`** field added to Block `__slots__`, `__init__`, `_header_bytes`, `to_dict`, `from_dict`. Included in block hash only when non-empty (same backward-compatible activation gate as stateRoot).
+
+### Blockchain Integration
+- Receipts generated inside `_append_block_inner` alongside TX processing. Each TX's fee_paid tracked and events built per TX type.
+- Receipt rollback in `_rollback_block`: receipts, event indices, and block-level events cleaned up.
+- `get_receipt(tx_id)`: look up receipt by TX ID (in-memory + SQLite fallback).
+- `get_events(event_type, block_index, sender, limit)`: filtered event query.
+- `get_block_level_events(block_index)`: BlockReward and EpochTransition events.
+
+### Simple Finality
+- **`_update_finality()`**: walks backward from latest block, accumulates unique validator stake. Block finalized when >2/3 of total stake represented.
+- **`get_finalized_height()`**: returns latest finalized block index (-1 if none).
+- Finality reset on rollback past finalized height.
+- Only active when financial layer is enabled and total stake > 0.
+
+### SQLite Persistence
+- New tables: `receipts` (tx_id PK, status, fee_paid, block_index, tx_index, events_json) and `events` (id PK, block_index, tx_id, event_type, event_data).
+- Indices: `idx_receipts_block`, `idx_events_type`, `idx_events_block`.
+- `put_receipt()`, `get_receipt()`, `get_receipts_for_block()`, `delete_receipts_for_block()`, `query_events()` methods on SQLiteStore.
+- Cleanup in `delete_blocks_from()` for rollback.
+
+### RPC
+- **`qv_getReceipt(tx_id)`** -- public, returns receipt dict or null.
+- **`qv_getFinalized()`** -- public, returns `{finalized_height: int}`.
+- **`qv_getLogs(event_type, block_index, sender, limit)`** -- public, returns filtered event list.
+
+### REST API
+- **`GET /api/v1/receipt/{txid}`** -- receipt with events.
+- **`GET /api/v1/events?type=...&from=...&limit=...`** -- event query with pagination.
+- **`GET /api/v1/finalized`** -- current finalized height.
+
+### WebSocket
+- **`finalized`** channel added to `VALID_CHANNELS`. Emits `{finalized_height: int}` when finalized height changes after a new block.
+
+### Tests
+- 48 new tests in `tests/test_receipts_events.py`: receipt CRUD, all event types, receiptsRoot in block header, SQLite persistence, event filtering, finality advance/rollback, block-level events, RPC methods, WS channel.
+
+### Version
+- VERSION bumped to `0.7.0-sprint2`.
+
+## v0.7.0-sprint1: State Root in Block Header (2026-03-26)
+
+### State Tree
+- **StateTrie** (`qbit_network/core/state_tree.py`): sorted key-value Merkle trie using SHA3-256 with domain-separated hashing. Covers `balance:{address}` and `nonce:{address}` entries. Supports proof generation, static verification, snapshot/restore for rollback.
+
+### Block Header
+- **`state_root`** field added to Block `__slots__`, `__init__`, `_header_bytes`, `to_dict`, `from_dict`. Included in block hash computation only when non-empty, preserving backward compatibility with pre-existing blocks (state_root="").
+- **`receipts_root`** field also handled with same backward-compatible pattern.
+
+### Blockchain Integration
+- State trie rebuilt from `_balances` and `_sender_nonce` after every block append (`_rebuild_state_trie()`).
+- Self-produced blocks (genesis via `init_chain`, subsequent via `produce_block`) are stamped with `state_root` and re-signed before storage.
+- Received blocks verified: computed state root logged as warning if mismatch (consensus is the gatekeeper).
+- Trie snapshots saved per block index for O(1) rollback via `_rollback_block`.
+- `activate_financial_layer()` rebuilds trie and updates snapshot after genesis balance allocation.
+
+### RPC / REST API
+- `qv_getStateProof(address, key_type)` — public JSON-RPC method returning Merkle inclusion proof.
+- `qv_getStateRoot()` — public JSON-RPC method returning current state root hex.
+- `GET /api/v1/state-proof/{addr}?key=balance|nonce` — REST endpoint for state proofs.
+- `GET /api/v1/state-root` — REST endpoint for current state root.
+
+### Proof System
+- `export_proof()` and `verify_proof()` in `qbit_network/core/proof.py` updated to include `stateRoot` and `receiptsRoot` in block header reconstruction.
+- CLI `verify-proof` command updated for backward-compatible header hash verification.
+
+### Storage
+- `SQLiteStore.update_block()` added for re-signing blocks after state root stamping.
+
+### Tests
+- 37 new tests in `tests/test_state_trie.py`: trie basics, snapshots, proof generation/verification, blockchain integration, state proof RPC, adversarial inputs.
+- All 1442 existing + new tests passing.
+
 ## v0.6.0 Round 17 Security Audit Fixes (2026-03-26)
 
 ### Security (Round 17 Audit)

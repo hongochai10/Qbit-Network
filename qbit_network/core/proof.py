@@ -44,6 +44,8 @@ def export_proof(block_dict: dict, tx_index: int, tx_id: str,
             "prevHash": block_dict["prevHash"],
             "merkleRoot": block_dict["merkleRoot"],
             "baseFee": block_dict.get("baseFee", 0),
+            "stateRoot": block_dict.get("stateRoot", ""),
+            "receiptsRoot": block_dict.get("receiptsRoot", ""),
             "validator": block_dict["validator"],
             "signature": block_dict["signature"],
             "txCount": len(block_dict["transactions"]),
@@ -102,6 +104,11 @@ def verify_proof(proof: dict) -> tuple[bool, list[str]]:
         "txCount": block.get("txCount", 0),
         "validator": block["validator"],
     }
+    # Include optional header fields only when present (backward-compatible)
+    if block.get("receiptsRoot"):
+        header_obj["receiptsRoot"] = block["receiptsRoot"]
+    if block.get("stateRoot"):
+        header_obj["stateRoot"] = block["stateRoot"]
     header_bytes = json.dumps(header_obj, sort_keys=True, separators=(",", ":")).encode()
     computed_hash = sha3_256(header_bytes).hex()
     claimed_hash = block.get("hash", "")

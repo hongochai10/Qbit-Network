@@ -264,6 +264,11 @@ class FullNode:
         m("qv_getBalance", self._rpc_get_balance)
         m("qv_getSupply", self._rpc_get_supply)
         m("qv_getFeeInfo", self._rpc_get_fee_info)
+        m("qv_getStateProof", self._rpc_get_state_proof)
+        m("qv_getStateRoot", self._rpc_get_state_root)
+        m("qv_getReceipt", self._rpc_get_receipt)
+        m("qv_getFinalized", self._rpc_get_finalized)
+        m("qv_getLogs", self._rpc_get_logs)
 
         # Protected (require auth token)
         m("qv_notarize", self._rpc_notarize)
@@ -728,6 +733,23 @@ class FullNode:
             "fee_model": "dynamic" if dynamic_active else "fixed",
         }
 
+    async def _rpc_get_state_proof(self, address="", key_type="balance"):
+        """Get a Merkle state proof for an address (public)."""
+        if not isinstance(address, str) or not address:
+            raise ValueError("address must be a non-empty string")
+        if not isinstance(key_type, str):
+            raise ValueError("key_type must be a string")
+        if key_type not in ("balance", "nonce"):
+            raise ValueError("key_type must be 'balance' or 'nonce'")
+        proof = self.blockchain.get_state_proof(address, key_type)
+        if proof is None:
+            return {"error": "key not found in state trie"}
+        return proof
+
+    async def _rpc_get_state_root(self):
+        """Get the current state root (public)."""
+        return {"state_root": self.blockchain.get_state_root()}
+
     async def _rpc_transfer(self, wallet_address="", to_address="",
                             amount=0, memo=""):
         """Transfer QBIT tokens (protected)."""
@@ -759,6 +781,39 @@ class FullNode:
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
         await self._ws_notify_tx(tx)
         return {"tx_id": result, "amount": amount, "to": to_address}
+
+    # ---- Receipt & Finality RPC ----
+
+    async def _rpc_get_receipt(self, tx_id=""):
+        """Get transaction receipt (public)."""
+        if not isinstance(tx_id, str) or not tx_id:
+            raise ValueError("tx_id must be a non-empty string")
+        receipt = self.blockchain.get_receipt(tx_id)
+        if receipt is None:
+            return None
+        return receipt.to_dict()
+
+    async def _rpc_get_finalized(self):
+        """Get finalized block height (public)."""
+        return {"finalized_height": self.blockchain.get_finalized_height()}
+
+    async def _rpc_get_logs(self, event_type="", block_index=None,
+                            sender="", limit=20):
+        """Query events (public)."""
+        if not isinstance(event_type, str):
+            raise ValueError("event_type must be a string")
+        if block_index is not None and not isinstance(block_index, int):
+            raise ValueError("block_index must be an integer or null")
+        if not isinstance(sender, str):
+            raise ValueError("sender must be a string")
+        if not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        return self.blockchain.get_events(
+            event_type=event_type,
+            block_index=block_index,
+            sender=sender,
+            limit=limit,
+        )
 
     # ---- Epoch & Slashing RPC ----
 
@@ -872,6 +927,15 @@ class FullNode:
             await self.ws_manager.broadcast("new_block", block.to_dict())
         except Exception as e:
             logger.debug(f"WS new_block broadcast error: {e}")
+        # Notify finalized height if it changed
+        try:
+            fh = self.blockchain.get_finalized_height()
+            if fh >= 0:
+                await self.ws_manager.broadcast("finalized", {
+                    "finalized_height": fh,
+                })
+        except Exception as e:
+            logger.debug(f"WS finalized broadcast error: {e}")
 
     async def _ws_notify_tx(self, tx: Transaction):
         """Broadcast a new_tx event over WebSocket."""

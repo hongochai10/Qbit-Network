@@ -11,12 +11,14 @@ class Block:
     __slots__ = (
         'index', 'prev_hash', 'transactions', 'validator',
         'timestamp', 'signature', 'merkle_root', 'base_fee',
+        'state_root', 'receipts_root',
         '_cached_header', '_cached_hash',
     )
 
     def __init__(self, index: int, prev_hash: str, transactions: list[Transaction],
                  validator: str = "", timestamp: int = None,
-                 signature: bytes = b'', base_fee: int = 0):
+                 signature: bytes = b'', base_fee: int = 0,
+                 state_root: str = "", receipts_root: str = ""):
         self.index = index
         self.prev_hash = prev_hash
         self.transactions = transactions
@@ -24,6 +26,8 @@ class Block:
         self.timestamp = timestamp if timestamp is not None else int(time.time())
         self.signature = signature
         self.base_fee = base_fee
+        self.state_root = state_root
+        self.receipts_root = receipts_root
         self._cached_header: bytes | None = None
         self._cached_hash: str | None = None
 
@@ -41,6 +45,12 @@ class Block:
                 "txCount": len(self.transactions),
                 "validator": self.validator,
             }
+            # Include stateRoot/receiptsRoot only when present so that
+            # pre-existing blocks produce the same hash as before.
+            if self.receipts_root:
+                obj["receiptsRoot"] = self.receipts_root
+            if self.state_root:
+                obj["stateRoot"] = self.state_root
             self._cached_header = json.dumps(
                 obj, sort_keys=True, separators=(',', ':')).encode()
         return self._cached_header
@@ -66,17 +76,20 @@ class Block:
             bytes.fromhex(tx_id), proof, bytes.fromhex(self.merkle_root))
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "hash": self.block_hash,
             "index": self.index,
             "timestamp": self.timestamp,
             "prevHash": self.prev_hash,
             "merkleRoot": self.merkle_root,
             "baseFee": self.base_fee,
+            "stateRoot": self.state_root,
+            "receiptsRoot": self.receipts_root,
             "validator": self.validator,
             "transactions": [tx.to_dict() for tx in self.transactions],
             "signature": self.signature.hex(),
         }
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Block':
@@ -93,6 +106,8 @@ class Block:
             timestamp=data["timestamp"],
             signature=bytes.fromhex(data.get("signature", "")),
             base_fee=data.get("baseFee", 0),
+            state_root=data.get("stateRoot", ""),
+            receipts_root=data.get("receiptsRoot", ""),
         )
         # Verify hash integrity if claimed hash is present
         claimed = data.get("hash")

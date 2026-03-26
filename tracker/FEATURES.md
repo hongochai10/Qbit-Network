@@ -2,6 +2,49 @@
 
 ## Implemented
 
+### v0.7.0-sprint2: Receipt/Event System + Simple Finality (2026-03-26)
+- [x] Receipt data structure (`qbit_network/core/receipt.py`)
+  - `TransactionReceipt` with `__slots__`: tx_id, status, fee_paid, block_index, tx_index, events
+  - `receipt_hash` property: SHA3-256 hash of receipt fields (deterministic)
+  - `to_dict()` / `from_dict()` with full input validation
+  - `receipts_root()`: Merkle root of receipt hashes using SHA3-256 binary tree
+  - `build_event()`: typed event constructor
+- [x] Event types emitted for all 11 TX types
+  - TRANSFER -> Transfer; NOTARIZE -> Notarize; STORE -> Store; SHARE -> Share
+  - STAKE -> Stake; DELEGATE -> Delegate; UNSTAKE -> Unstake
+  - REGISTER_KEY -> KeyRegistered; REGISTER_VALIDATOR -> ValidatorRegistered
+  - REVOKE_KEY -> KeyRevoked; EVIDENCE -> Slashed
+- [x] Block-level events: BlockReward, EpochTransition
+- [x] `receiptsRoot` in Block header (same activation gate as stateRoot)
+- [x] Receipt generation in `_append_block_inner` alongside TX processing
+- [x] Receipt rollback in `_rollback_block`
+- [x] Simple finality rule: block finalized when >2/3 of total stake has built on it
+- [x] SQLite persistence: receipts + events tables with indexed queries
+- [x] RPC: `qv_getReceipt`, `qv_getFinalized`, `qv_getLogs`
+- [x] REST: `GET /api/v1/receipt/{txid}`, `GET /api/v1/events`, `GET /api/v1/finalized`
+- [x] WebSocket: `finalized` channel
+- [x] 48 new tests
+
+### v0.7.0-sprint1: State Root in Block Header (2026-03-26)
+- [x] `StateTrie` — sorted key-value Merkle trie for state commitments (`qbit_network/core/state_tree.py`)
+  - SHA3-256 leaf hashing with domain-separated Merkle tree
+  - Deterministic root: same state always produces same root regardless of mutation order
+  - `set(key, value)` / `delete(key)` / `root()` / `get_proof(key)` / `verify_proof()`
+  - `snapshot()` / `restore()` for rollback support
+- [x] Block header: `state_root` field in `__slots__`, `_header_bytes`, `to_dict`, `from_dict`
+  - Included in block hash only when non-empty (backward-compatible with legacy blocks)
+- [x] Blockchain integration: `_rebuild_state_trie()` called after every block append
+  - Trie covers: `balance:{address}` and `nonce:{address}` (8-byte big-endian values)
+  - State root stamped on self-produced blocks (genesis + `produce_block`)
+  - Trie snapshots saved per block for O(1) rollback
+- [x] State proof RPC: `qv_getStateProof(address, key_type)` — public
+- [x] State root RPC: `qv_getStateRoot()` — public
+- [x] REST API: `GET /api/v1/state-proof/{addr}?key=balance|nonce`
+- [x] REST API: `GET /api/v1/state-root`
+- [x] Proof verification: `export_proof` / `verify_proof` / CLI `verify-proof` updated for stateRoot + receiptsRoot
+- [x] Rollback support: trie restored from snapshot on `_rollback_block`
+- [x] 37 new tests (8 trie unit, 2 snapshot, 8 proof, 8 blockchain integration, 6 state proof, 5 adversarial)
+
 ### v0.6.0-sprint2+3: EIP-1559 API, NextJS, Docs (2026-03-26)
 - [x] REST API: `GET /api/v1/fee` -- public endpoint for fee info
 - [x] RPC: `qv_getFeeInfo()` -- public method for fee info

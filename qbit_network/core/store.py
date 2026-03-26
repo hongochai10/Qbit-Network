@@ -84,11 +84,29 @@ CREATE TABLE IF NOT EXISTS supply (
     key TEXT PRIMARY KEY,
     value INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS receipts (
+    tx_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    fee_paid INTEGER NOT NULL,
+    block_index INTEGER NOT NULL,
+    tx_index INTEGER NOT NULL,
+    events_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    block_index INTEGER NOT NULL,
+    tx_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    event_data TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_txs_sender ON txs(sender, nonce);
 CREATE INDEX IF NOT EXISTS idx_txs_recipient ON txs(recipient);
 CREATE INDEX IF NOT EXISTS idx_notarizations_first ON notarizations(doc_hash, is_first);
 CREATE INDEX IF NOT EXISTS idx_unbonding_release ON unbonding(release_block);
 CREATE INDEX IF NOT EXISTS idx_slashing_validator ON slashing_events(validator);
+CREATE INDEX IF NOT EXISTS idx_receipts_block ON receipts(block_index);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_block ON events(block_index);
 """
 
 
@@ -152,6 +170,14 @@ class SQLiteStore:
         except Exception:
             self._db.rollback()
             raise
+
+    def update_block(self, block: Block):
+        """Update a block's serialized data and hash in-place (e.g. after re-signing)."""
+        block_json = json.dumps(block.to_dict(), separators=(",", ":"))
+        self._db.execute(
+            "UPDATE blocks SET hash=?, data=? WHERE idx=?",
+            (block.block_hash, block_json, block.index))
+        self._db.commit()
 
     def get_block(self, index: int) -> Block | None:
         row = self._db.execute("SELECT data FROM blocks WHERE idx=?", (index,)).fetchone()
@@ -466,6 +492,89 @@ class SQLiteStore:
             (key,)).fetchone()
         return row[0] if row else 0
 
+    # ---- Receipt / event storage ----
+
+    def put_receipt(self, receipt, commit: bool = True):
+        """Persist a TransactionReceipt to SQLite."""
+        events_json = json.dumps(receipt.events, separators=(",", ":"))
+        c = self._db.cursor()
+        try:
+            c.execute(
+                "INSERT OR REPLACE INTO receipts "
+                "(tx_id, status, fee_paid, block_index, tx_index, events_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (receipt.tx_id, receipt.status, receipt.fee_paid,
+                 receipt.block_index, receipt.tx_index, events_json))
+            # Also insert into events table for indexed queries
+            for ev in receipt.events:
+                ev_type = ev.get("type", "")
+                if ev_type:
+                    ev_data = json.dumps(ev, separators=(",", ":"))
+                    c.execute(
+                        "INSERT INTO events "
+                        "(block_index, tx_id, event_type, event_data) "
+                        "VALUES (?, ?, ?, ?)",
+                        (receipt.block_index, receipt.tx_id, ev_type, ev_data))
+            if commit:
+                self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
+
+    def get_receipt(self, tx_id: str):
+        """Retrieve a receipt by tx_id. Returns TransactionReceipt or None."""
+        row = self._db.execute(
+            "SELECT tx_id, status, fee_paid, block_index, tx_index, events_json "
+            "FROM receipts WHERE tx_id=?", (tx_id,)).fetchone()
+        if not row:
+            return None
+        from .receipt import TransactionReceipt
+        return TransactionReceipt(
+            tx_id=row[0], status=row[1], fee_paid=row[2],
+            block_index=row[3], tx_index=row[4],
+            events=json.loads(row[5]))
+
+    def get_receipts_for_block(self, block_index: int) -> list:
+        """Retrieve all receipts for a block."""
+        rows = self._db.execute(
+            "SELECT tx_id, status, fee_paid, block_index, tx_index, events_json "
+            "FROM receipts WHERE block_index=? ORDER BY tx_index",
+            (block_index,)).fetchall()
+        from .receipt import TransactionReceipt
+        return [TransactionReceipt(
+            tx_id=r[0], status=r[1], fee_paid=r[2],
+            block_index=r[3], tx_index=r[4],
+            events=json.loads(r[5])) for r in rows]
+
+    def delete_receipts_for_block(self, block_index: int, commit: bool = True):
+        """Remove all receipts and events for a given block (for rollback)."""
+        self._db.execute(
+            "DELETE FROM events WHERE block_index >= ?", (block_index,))
+        self._db.execute(
+            "DELETE FROM receipts WHERE block_index >= ?", (block_index,))
+        if commit:
+            self._db.commit()
+
+    def query_events(self, event_type: str = "", block_index: int | None = None,
+                     limit: int = 20) -> list[dict]:
+        """Query events table with optional filters."""
+        conditions = []
+        params: list = []
+        if event_type:
+            conditions.append("event_type = ?")
+            params.append(event_type)
+        if block_index is not None:
+            conditions.append("block_index = ?")
+            params.append(block_index)
+        where = " AND ".join(conditions) if conditions else "1=1"
+        params.append(min(max(limit, 1), 100))
+        rows = self._db.execute(
+            f"SELECT block_index, tx_id, event_type, event_data "
+            f"FROM events WHERE {where} ORDER BY id DESC LIMIT ?",
+            tuple(params)).fetchall()
+        return [{"block_index": r[0], "tx_id": r[1],
+                 "event_type": r[2], "event": json.loads(r[3])} for r in rows]
+
     def prune_blocks(self, before_index: int) -> int:
         """Delete block data and associated txs for blocks with idx < before_index.
 
@@ -550,6 +659,8 @@ class SQLiteStore:
                             revocations_to_remove.append((sender, kt))
 
             # Delete block data and cascading indices
+            c.execute("DELETE FROM receipts WHERE block_index >= ?", (from_index,))
+            c.execute("DELETE FROM events WHERE block_index >= ?", (from_index,))
             c.execute("DELETE FROM txs WHERE block_idx >= ?", (from_index,))
             c.execute("DELETE FROM notarizations WHERE tx_id NOT IN (SELECT tx_id FROM txs)")
             c.execute("DELETE FROM key_registry WHERE address || ':' || seq NOT IN "

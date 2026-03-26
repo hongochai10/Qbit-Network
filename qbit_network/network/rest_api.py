@@ -138,6 +138,11 @@ class RESTApi:
         r.add_post("/verify", self._verify)  # public -- no auth needed
         r.add_get("/epochs/current", self._current_epoch)
         r.add_get("/slashing-events", self._slashing_events)
+        r.add_get("/state-proof/{addr}", self._state_proof)
+        r.add_get("/state-root", self._state_root)
+        r.add_get("/receipt/{txid}", self._get_receipt)
+        r.add_get("/events", self._get_events)
+        r.add_get("/finalized", self._get_finalized)
 
         # Protected endpoints
         r.add_post("/transfer", self._transfer_rest)
@@ -341,6 +346,29 @@ class RESTApi:
         result = await self._node._rpc_get_slashing_events(validator)
         return _ok(result)
 
+    async def _state_proof(self, request: web.Request) -> web.Response:
+        addr = request.match_info.get("addr", "")
+        if not addr:
+            return _err(400, "address is required")
+        key_type = request.query.get("key", "balance")
+        try:
+            result = await self._node._rpc_get_state_proof(
+                address=addr, key_type=key_type)
+            return _ok(result)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST state_proof: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _state_root(self, request: web.Request) -> web.Response:
+        try:
+            result = await self._node._rpc_get_state_root()
+            return _ok(result)
+        except Exception as e:
+            logger.error(f"REST state_root: {e}")
+            return _err(500, "internal server error", status=500)
+
     async def _get_balance(self, request: web.Request) -> web.Response:
         addr = request.match_info.get("addr", "")
         if not addr:
@@ -368,6 +396,60 @@ class RESTApi:
             return _ok(result)
         except Exception as e:
             logger.error(f"REST get_fee_info: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _get_receipt(self, request: web.Request) -> web.Response:
+        txid = request.match_info.get("txid", "")
+        if not txid:
+            return _err(400, "txid is required")
+        # Validate hex-only
+        if not re.match(r'^[0-9a-fA-F]+$', txid):
+            return _err(400, "invalid txid format")
+        try:
+            result = await self._node._rpc_get_receipt(tx_id=txid)
+            if result is None:
+                return _err(404, f"receipt for {txid[:16]}... not found", status=404)
+            return _ok(result)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST get_receipt: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _get_events(self, request: web.Request) -> web.Response:
+        event_type = request.query.get("type", "")
+        sender = request.query.get("from", request.query.get("sender", ""))
+        try:
+            limit = int(request.query.get("limit", 20))
+        except (ValueError, TypeError):
+            return _err(400, "limit must be an integer")
+        block_index_str = request.query.get("block_index")
+        block_index = None
+        if block_index_str is not None:
+            try:
+                block_index = int(block_index_str)
+            except (ValueError, TypeError):
+                return _err(400, "block_index must be an integer")
+        try:
+            result = await self._node._rpc_get_logs(
+                event_type=event_type,
+                block_index=block_index,
+                sender=sender,
+                limit=limit,
+            )
+            return _ok({"events": result, "total": len(result)})
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST get_events: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _get_finalized(self, request: web.Request) -> web.Response:
+        try:
+            result = await self._node._rpc_get_finalized()
+            return _ok(result)
+        except Exception as e:
+            logger.error(f"REST get_finalized: {e}")
             return _err(500, "internal server error", status=500)
 
     # ------------------------------------------------------------------

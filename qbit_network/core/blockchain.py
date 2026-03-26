@@ -12,6 +12,7 @@ import logging
 from .block import Block
 from .transaction import Transaction, TxType
 from .consensus import ProofOfAuthority
+from .state_tree import StateTrie
 from ..config import (MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH,
                       CHAIN_ID, MIN_STAKE, UNBONDING_PERIOD, EPOCH_LENGTH,
                       SLASH_PERCENTAGE, PRUNING_RETENTION,
@@ -23,6 +24,7 @@ from ..config import (MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH,
                       TX_WEIGHTS, MAX_BLOCK_WEIGHT)
 from .fees import (compute_base_fee, compute_tx_fee, tx_weight,
                    effective_block_weight)
+from .receipt import TransactionReceipt, receipts_root, build_event
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -131,6 +133,18 @@ class Blockchain:
         self._epoch_rewards: dict[str, int] = {}           # validator_addr -> accumulated rewards this epoch
         self._validator_commission: dict[str, int] = {}    # validator_addr -> commission percent (default 10)
         self._last_epoch_distributions: dict[int, dict] = {}  # epoch -> {"credits": [(addr, amount)], "debits": [(addr, amount)]} for rollback
+
+        # State trie -- sorted key-value Merkle trie for state root in block header
+        self._state_trie = StateTrie()
+        self._state_snapshots: dict[int, dict[str, bytes]] = {}  # block_index -> trie snapshot (for rollback)
+
+        # Receipt / event system
+        self._receipts: dict[str, TransactionReceipt] = {}  # tx_id -> receipt
+        self._events_by_type: dict[str, list[str]] = {}     # event_type -> [tx_id, ...]
+        self._events_by_block: dict[int, list[str]] = {}    # block_index -> [tx_id, ...]
+
+        # Simple finality rule
+        self._finalized_height: int = -1
 
         # threading.Lock (not asyncio.Lock) is intentional here: SQLite operations
         # protected by this lock are synchronous and fast (sub-ms), so blocking the
@@ -325,6 +339,58 @@ class Blockchain:
             logger.info(
                 f"Financial layer activated: {validator_address[:16]}... "
                 f"allocated {genesis_balance} qubits")
+        # Rebuild state trie so proofs reflect the genesis allocation
+        self._rebuild_state_trie()
+        # Update genesis snapshot so rollback restores correctly
+        if self._height >= 0:
+            self._state_snapshots[self._height] = self._state_trie.snapshot()
+
+    # ---- State trie ----
+
+    def _rebuild_state_trie(self):
+        """Rebuild the state trie from current balances and nonces.
+
+        This is called at the end of _append_block_inner after all state
+        mutations are complete.  The trie covers:
+          - balance:{address} -> 8-byte big-endian int
+          - nonce:{address}   -> 8-byte big-endian int
+        """
+        trie = self._state_trie
+        # Clear and rebuild -- simple and correct for QBit's scale.
+        trie._entries.clear()
+        for addr, bal in self._balances.items():
+            trie.set(f"balance:{addr}", bal.to_bytes(8, 'big'))
+        for addr, nonce in self._sender_nonce.items():
+            # Nonces are always >= 0 in normal operation.
+            # During rollback edge cases nonce can be -1 (no confirmed txs);
+            # skip negative nonces to avoid encoding errors.
+            if nonce >= 0:
+                trie.set(f"nonce:{addr}", nonce.to_bytes(8, 'big'))
+
+    def get_state_proof(self, address: str, key_type: str = "balance") -> dict | None:
+        """Generate a Merkle state proof for an address.
+
+        Parameters
+        ----------
+        address : str
+            The account address.
+        key_type : str
+            Either ``"balance"`` or ``"nonce"``.
+
+        Returns
+        -------
+        dict or None
+            Proof dict with keys: key, value, proof, root.
+            None if the key is not in the trie.
+        """
+        if key_type not in ("balance", "nonce"):
+            return None
+        trie_key = f"{key_type}:{address}"
+        return self._state_trie.get_proof(trie_key)
+
+    def get_state_root(self) -> str:
+        """Return the current state root as a hex string."""
+        return self._state_trie.root().hex()
 
     def _pending_debits(self, address: str) -> int:
         """Sum of pending transfers + fees in the pool for an address."""
@@ -382,6 +448,22 @@ class Blockchain:
             self._total_stake[validator_address] = MIN_STAKE
             if self._store is not None:
                 self._store.put_stake(validator_address, validator_address, MIN_STAKE)
+
+        # Stamp state_root and receipts_root on genesis, then re-sign.
+        old_hash = genesis.block_hash
+        genesis.state_root = self._state_trie.root().hex()
+        genesis.receipts_root = getattr(self, '_last_computed_receipts_root', '')
+        genesis._cached_header = None
+        genesis._cached_hash = None
+        genesis.sign(validator_sk)
+        self._block_by_hash.pop(old_hash, None)
+        self._block_by_hash[genesis.block_hash] = genesis.index
+        if self._chain_list is not None and genesis.index < len(self._chain_list):
+            self._chain_list[genesis.index] = genesis
+        self._latest_block = genesis
+        if self._store is not None:
+            self._store.update_block(genesis)
+        self.consensus.set_genesis_hash(genesis.block_hash)
 
         # Genesis balance allocation -- only when explicitly requested
         # (production code calls activate_financial_layer after init_chain)
@@ -666,6 +748,9 @@ class Blockchain:
             timestamp=timestamp,
             base_fee=base_fee,
         )
+        # Sign without state_root first so consensus can validate the block
+        # structure (tx sigs, nonces, fees).  state_root="" is excluded from
+        # the header, preserving backward-compatible validation.
         block.sign(validator_sk)
 
         # Validate own block through consensus before committing
@@ -674,7 +759,31 @@ class Blockchain:
             logger.error(f"Self-produced block failed validation: {err}")
             return None
 
+        # _append_block processes TXs and rebuilds the state trie.
+        # The block is appended with state_root="" initially.
         self._append_block(block)
+
+        # Stamp state_root and receipts_root computed by _append_block_inner,
+        # then re-sign.
+        old_hash = block.block_hash
+        block.state_root = self._state_trie.root().hex()
+        block.receipts_root = getattr(self, '_last_computed_receipts_root', '')
+        block._cached_header = None
+        block._cached_hash = None
+        block.sign(validator_sk)
+
+        # Update block hash index: remove old hash, register new one.
+        self._block_by_hash.pop(old_hash, None)
+        self._block_by_hash[block.block_hash] = block.index
+
+        # Update stored block in SQLite with the new signature + hash.
+        if self._store is not None:
+            self._store.update_block(block)
+        # Update in-memory chain list if applicable.
+        if self._chain_list is not None and block.index < len(self._chain_list):
+            self._chain_list[block.index] = block
+        self._latest_block = block
+
         self._drain_pool(block)
 
         logger.info(
@@ -856,6 +965,27 @@ class Blockchain:
     def _rollback_block(self, block: Block, displaced: list[Transaction]):
         """Rollback a single block's indices and collect displaced transactions."""
         idx = block.index
+
+        # --- Reverse receipts / events ---
+        for tx in block.transactions:
+            receipt = self._receipts.pop(tx.tx_id, None)
+            if receipt:
+                for ev in receipt.events:
+                    ev_type = ev.get("type", "")
+                    if ev_type and ev_type in self._events_by_type:
+                        tx_list = self._events_by_type[ev_type]
+                        if tx.tx_id in tx_list:
+                            tx_list.remove(tx.tx_id)
+        self._events_by_block.pop(idx, None)
+        # Remove block-level events
+        ble = getattr(self, '_block_level_events', {})
+        ble.pop(idx, None)
+        # Reset finalized height if we rolled back past it
+        if self._finalized_height >= idx:
+            self._finalized_height = idx - 1
+        # Remove receipts from SQLite
+        if self._store is not None:
+            self._store.delete_receipts_for_block(idx)
 
         # --- Reverse balance changes (financial layer) ---
         if idx > 0 and self._financial_active:
@@ -1074,6 +1204,15 @@ class Blockchain:
                 self._current_epoch = 0
                 self._epoch_validators = []
 
+        # Restore state trie to the previous block's snapshot
+        self._state_snapshots.pop(block.index, None)
+        prev_idx = block.index - 1
+        if prev_idx >= 0 and prev_idx in self._state_snapshots:
+            self._state_trie.restore(self._state_snapshots[prev_idx])
+        else:
+            # No snapshot available -- rebuild from current state
+            self._rebuild_state_trie()
+
         # Update cached height and latest block
         self._height -= 1
         if self._height >= 0:
@@ -1122,6 +1261,9 @@ class Blockchain:
         self._latest_block = block
         self._block_by_hash[block.block_hash] = idx
 
+        # Receipt accumulator: tx_idx -> (fee_paid, events)
+        _receipt_data: list[tuple[int, str, int, list[dict]]] = []
+
         for tx_idx, tx in enumerate(block.transactions):
             self._tx_by_id[tx.tx_id] = (idx, tx_idx)
             self.consensus._chain_tx_ids.add(tx.tx_id)
@@ -1139,6 +1281,7 @@ class Blockchain:
             # --- Fee deduction (sequential, checked against running balance) ---
             # Genesis block txs are fee-exempt (bootstrapping).
             # Financial layer only active when chain has minted supply.
+            _tx_fee_paid = 0
             if idx > 0 and self._financial_active:
                 _dyn = idx >= DYNAMIC_FEE_ACTIVATION_HEIGHT
                 if _dyn:
@@ -1150,6 +1293,7 @@ class Blockchain:
                                              tx.max_priority_fee, w)
                         self._debit(tx.sender, fee)
                         self._credit(block.validator, fee)
+                        _tx_fee_paid = fee
                 else:
                     # Legacy fixed fee: 50/50 split validator/burn
                     fee = TX_FEES.get(tx.tx_type.value, 0)
@@ -1159,6 +1303,7 @@ class Blockchain:
                         burn = fee - validator_share
                         self._credit(block.validator, validator_share)
                         self._total_burned += burn
+                        _tx_fee_paid = fee
 
                 # Type-specific balance changes
                 if tx.tx_type == TxType.TRANSFER:
@@ -1307,13 +1452,40 @@ class Blockchain:
             elif tx.tx_type == TxType.EVIDENCE:
                 self._process_evidence_tx(tx, idx)
 
+            # --- Build events for receipt ---
+            _tx_events = self._build_tx_events(tx, idx)
+            _receipt_data.append((tx_idx, tx.tx_id, _tx_fee_paid, _tx_events))
+
+        # --- Generate receipts for all TXs in block ---
+        block_receipts: list[TransactionReceipt] = []
+        for tx_idx_r, tx_id_r, fee_r, events_r in _receipt_data:
+            receipt = TransactionReceipt(
+                tx_id=tx_id_r,
+                status="success",
+                fee_paid=fee_r,
+                block_index=idx,
+                tx_index=tx_idx_r,
+                events=events_r,
+            )
+            block_receipts.append(receipt)
+            self._receipts[tx_id_r] = receipt
+            # Index events by type and block
+            for ev in events_r:
+                ev_type = ev.get("type", "")
+                if ev_type:
+                    self._events_by_type.setdefault(ev_type, []).append(tx_id_r)
+            self._events_by_block.setdefault(idx, []).append(tx_id_r)
+
         # Apply block reward (MINT is implicit -- not a user tx)
         # Only active when chain has minted supply (financial layer active)
+        _block_level_events: list[dict] = []
         if idx > 0 and self._financial_active:
             reward = self._calc_block_reward(idx)
             if reward > 0:
                 self._credit(block.validator, reward)
                 self._total_minted += reward
+                _block_level_events.append(
+                    build_event("BlockReward", validator=block.validator, amount=reward))
                 # Track reward for epoch distribution to delegators
                 self._epoch_rewards[block.validator] = (
                     self._epoch_rewards.get(block.validator, 0) + reward
@@ -1328,11 +1500,231 @@ class Blockchain:
 
         # Epoch transition: snapshot validators at epoch boundaries
         # (must happen before persist so epoch reward distributions are included)
+        epoch_before = self._current_epoch
         self._check_epoch_transition(idx)
+        if self._current_epoch > epoch_before:
+            _block_level_events.append(
+                build_event("EpochTransition", epoch=self._current_epoch))
+
+        # Store block-level events (not tied to any specific TX)
+        self._block_level_events: dict[int, list[dict]] = getattr(
+            self, '_block_level_events', {})
+        self._block_level_events[idx] = _block_level_events
+
+        # --- Compute receiptsRoot from block receipts ---
+        computed_receipts_root = receipts_root(block_receipts)
+        # Cache the computed receipts root for produce_block to stamp later.
+        self._last_computed_receipts_root = computed_receipts_root
+
+        if block.receipts_root and block.receipts_root != computed_receipts_root:
+            logger.warning(
+                f"Block #{idx} receiptsRoot mismatch: claimed "
+                f"{block.receipts_root[:16]}... vs computed "
+                f"{computed_receipts_root[:16]}...")
+
+        # --- State trie: rebuild from current balances + nonces ---
+        self._rebuild_state_trie()
+        computed_root = self._state_trie.root().hex()
+
+        if block.state_root and block.state_root != computed_root:
+            # Received block claims a state_root that disagrees with ours.
+            logger.warning(
+                f"Block #{idx} state_root mismatch: claimed {block.state_root[:16]}... "
+                f"vs computed {computed_root[:16]}...")
+
+        # NOTE: we do NOT stamp state_root onto the block here.
+        # produce_block() handles stamping + re-signing for self-produced blocks.
+        # Received blocks already carry the producer's state_root.
+        # Blocks without state_root (legacy/test) keep state_root="" which
+        # is excluded from the header, preserving their original hash.
+
+        # Save trie snapshot for rollback (lightweight dict copy)
+        self._state_snapshots[idx] = self._state_trie.snapshot()
 
         # Persist balance changes to SQLite (after epoch distribution)
         if self._store is not None and self._financial_active:
             self._persist_balances_after_block(block, idx, matured_stakers)
+
+        # Persist receipts to SQLite
+        if self._store is not None:
+            for receipt in block_receipts:
+                self._store.put_receipt(receipt)
+
+        # Update finality
+        self._update_finality(idx)
+
+    def _build_tx_events(self, tx: Transaction, block_index: int) -> list[dict]:
+        """Build event list for a transaction based on its type."""
+        events: list[dict] = []
+        tt = tx.tx_type
+
+        if tt == TxType.TRANSFER:
+            events.append(build_event(
+                "Transfer",
+                sender=tx.sender, recipient=tx.recipient,
+                amount=tx.payload.get("amount", 0)))
+
+        elif tt == TxType.NOTARIZE:
+            events.append(build_event(
+                "Notarize",
+                sender=tx.sender,
+                documentHash=tx.payload.get("documentHash", "")))
+
+        elif tt == TxType.STORE:
+            events.append(build_event(
+                "Store",
+                sender=tx.sender,
+                documentHash=tx.payload.get("documentHash", ""),
+                cid=tx.payload.get("cid", "")))
+
+        elif tt == TxType.SHARE:
+            events.append(build_event(
+                "Share",
+                sender=tx.sender,
+                recipient=tx.recipient))
+
+        elif tt == TxType.STAKE:
+            events.append(build_event(
+                "Stake",
+                staker=tx.sender,
+                validator=tx.payload.get("validator_address", ""),
+                amount=tx.payload.get("amount", 0)))
+
+        elif tt == TxType.DELEGATE:
+            events.append(build_event(
+                "Delegate",
+                delegator=tx.sender,
+                validator=tx.payload.get("validator_address", ""),
+                amount=tx.payload.get("amount", 0)))
+
+        elif tt == TxType.UNSTAKE:
+            events.append(build_event(
+                "Unstake",
+                staker=tx.sender,
+                validator=tx.payload.get("validator_address", ""),
+                amount=tx.payload.get("amount", 0)))
+
+        elif tt == TxType.REGISTER_KEY:
+            events.append(build_event(
+                "KeyRegistered",
+                address=tx.sender))
+
+        elif tt == TxType.REGISTER_VALIDATOR:
+            events.append(build_event(
+                "ValidatorRegistered",
+                address=tx.payload.get("validator_address", tx.sender)))
+
+        elif tt == TxType.REVOKE_KEY:
+            events.append(build_event(
+                "KeyRevoked",
+                address=tx.sender,
+                key_type=tx.payload.get("key_type", "")))
+
+        elif tt == TxType.EVIDENCE:
+            vaddr = tx.payload.get("validator_address", "")
+            total = self._total_stake.get(vaddr, 0)
+            # Compute approximate slash amount (same logic as _process_evidence_tx)
+            slash_amount = (total * SLASH_PERCENTAGE) // 100
+            if slash_amount <= 0 and total > 0:
+                slash_amount = 1
+            events.append(build_event(
+                "Slashed",
+                validator=vaddr,
+                amount=slash_amount))
+
+        return events
+
+    def _update_finality(self, new_block_index: int):
+        """Check if any unfinalized blocks can now be finalized.
+
+        A block is finalized when subsequent blocks whose validators represent
+        >2/3 of total stake have been built on top of it.
+        """
+        if not self._financial_active:
+            return
+        total_stake = sum(self._total_stake.values())
+        if total_stake == 0:
+            return
+
+        # Walk backward from the new block, accumulating unique validator stake
+        seen_validators: set[str] = set()
+        cumulative_stake = 0
+        for block_idx in range(new_block_index, max(self._finalized_height, -1), -1):
+            block = self._get_block_by_index(block_idx)
+            if not block:
+                break
+            v = block.validator
+            if v not in seen_validators:
+                seen_validators.add(v)
+                v_stake = self._total_stake.get(v, 0)
+                cumulative_stake += v_stake
+            if cumulative_stake * 3 > total_stake * 2:  # >2/3
+                # All blocks up to this point are finalized
+                new_finalized = block_idx
+                if new_finalized > self._finalized_height:
+                    self._finalized_height = new_finalized
+                break
+
+    def get_finalized_height(self) -> int:
+        """Return the height of the latest finalized block."""
+        return self._finalized_height
+
+    def get_receipt(self, tx_id: str) -> TransactionReceipt | None:
+        """Look up a receipt by tx_id."""
+        receipt = self._receipts.get(tx_id)
+        if receipt:
+            return receipt
+        # Fallback to SQLite
+        if self._store is not None:
+            return self._store.get_receipt(tx_id)
+        return None
+
+    def get_events(self, event_type: str = "", block_index: int | None = None,
+                   sender: str = "", limit: int = 20) -> list[dict]:
+        """Query events with optional filters."""
+        results: list[dict] = []
+        limit = max(1, min(limit, 100))
+
+        # Determine candidate tx_ids based on filters
+        if event_type and event_type in self._events_by_type:
+            candidate_tx_ids = self._events_by_type[event_type]
+        elif block_index is not None and block_index in self._events_by_block:
+            candidate_tx_ids = self._events_by_block[block_index]
+        else:
+            # All receipts
+            candidate_tx_ids = list(self._receipts.keys())
+
+        for tx_id in candidate_tx_ids:
+            if len(results) >= limit:
+                break
+            receipt = self._receipts.get(tx_id)
+            if not receipt:
+                continue
+            if block_index is not None and receipt.block_index != block_index:
+                continue
+            for ev in receipt.events:
+                if len(results) >= limit:
+                    break
+                if event_type and ev.get("type") != event_type:
+                    continue
+                if sender:
+                    # Check if sender matches any address field in the event
+                    ev_sender = ev.get("sender", ev.get("staker",
+                                 ev.get("delegator", ev.get("address", ""))))
+                    if ev_sender != sender:
+                        continue
+                results.append({
+                    "tx_id": tx_id,
+                    "block_index": receipt.block_index,
+                    "event": ev,
+                })
+
+        return results
+
+    def get_block_level_events(self, block_index: int) -> list[dict]:
+        """Return block-level events (BlockReward, EpochTransition) for a block."""
+        ble = getattr(self, '_block_level_events', {})
+        return ble.get(block_index, [])
 
     def _process_mature_unbondings(self, current_index: int):
         """Remove unbonding entries whose release_block has been reached."""

@@ -348,6 +348,11 @@ def cmd_verify_proof(args):
         "txCount": block.get("txCount", 0),
         "validator": block["validator"],
     }
+    # Include optional header fields only when present (backward-compatible)
+    if block.get("receiptsRoot"):
+        header_obj["receiptsRoot"] = block["receiptsRoot"]
+    if block.get("stateRoot"):
+        header_obj["stateRoot"] = block["stateRoot"]
     header_bytes = json.dumps(header_obj, sort_keys=True, separators=(",", ":")).encode()
     computed_hash = sha3_256(header_bytes).hex()
     claimed_hash = block.get("hash", "")
