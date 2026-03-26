@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 import urllib.request
 import urllib.error
 from typing import Any
@@ -64,7 +65,9 @@ class QBitClient:
         """Make an HTTP request and return the ``data`` field from the response."""
         url = f"{self._base_url}{path}"
         if params:
-            qs = "&".join(f"{k}={v}" for k, v in params.items() if v is not None)
+            # URL-encode parameter values to prevent injection (R18-002)
+            qs = urllib.parse.urlencode(
+                {k: v for k, v in params.items() if v is not None})
             if qs:
                 url = f"{url}?{qs}"
 

@@ -428,6 +428,8 @@ class RESTApi:
             limit = int(request.query.get("limit", 20))
         except (ValueError, TypeError):
             return _err(400, "limit must be an integer")
+        if limit < 1 or limit > _MAX_LIMIT:
+            return _err(400, f"limit must be 1-{_MAX_LIMIT}")
         block_index_str = request.query.get("block_index")
         block_index = None
         if block_index_str is not None:

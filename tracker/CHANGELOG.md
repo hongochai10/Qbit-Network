@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.7.0: State Proofs, Receipts, SDK, Webhooks, Finality (2026-03-26)
+
+### Summary
+
+QBit Network v0.7.0 adds Merkle state proofs (`stateRoot` + `receiptsRoot` in block headers), a transaction receipt and event system, simple finality (>2/3 stake), a webhook event delivery system with HMAC-SHA256 signatures, a zero-dependency Python SDK, and an OpenAPI 3.0 specification. Four sprints, 150 new tests (1507 total), 18 audit rounds with 202+ issues found and fixed.
+
+### Round 18 Security Audit (Sprint 4)
+
+5 issues found, 4 fixed, 1 accepted:
+- **R18-001 (HIGH)**: Webhook SSRF -- private/loopback/metadata URL blocking via `ipaddress` validation
+- **R18-002 (HIGH)**: SDK query parameter injection -- proper URL encoding via `urllib.parse.urlencode()`
+- **R18-003 (MED)**: State snapshot memory growth -- pruning beyond `MAX_REORG_DEPTH`
+- **R18-004 (MED)**: REST `/events` endpoint limit bypass -- validated to 1-100 range
+- **R18-005 (LOW)**: Webhook delivery task accumulation -- accepted (bounded by design)
+
+### Version
+- VERSION = `0.7.0`
+- Total tests: 1507, all passing
+- Total audit rounds: 18
+- Total issues found and fixed: 202+
+
+---
+
 ## v0.7.0-sprint3: OpenAPI Spec + Python SDK + Webhooks (2026-03-26)
 
 ### OpenAPI 3.0 Specification

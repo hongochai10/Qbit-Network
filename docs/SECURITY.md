@@ -46,7 +46,7 @@
 
 ## Audit History
 
-17 rounds of security audit, 197+ issues found:
+18 rounds of security audit, 202+ issues found:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -68,8 +68,17 @@
 | 15 | v0.4.0 Sprint 3 (SecureBytes, TLS auto-provisioning, reputation, pruning) | 5 |
 | 16 | v0.5.0 Sprint 4 Financial layer security (TRANSFER, fees, rewards, supply) | 5 |
 | 17 | v0.6.0 EIP-1559 + auth bypass (CRITICAL auth bypass, unbonding persistence) | 2 |
+| 18 | v0.7.0 State proofs, receipts, webhooks, SDK (SSRF, injection, memory) | 5 |
 
 See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
+
+### State Proofs, Receipts, Webhooks, SDK Security (Round 18)
+
+- **[HIGH] Webhook SSRF**: Webhook registration now blocks private/loopback/link-local/metadata IP addresses, preventing Server-Side Request Forgery via webhook URL targeting internal services.
+- **[HIGH] SDK query parameter injection**: SDK client now URL-encodes all query parameters via `urllib.parse.urlencode()`, preventing injection of extra parameters or path traversal.
+- **[MEDIUM] State snapshot memory growth**: State trie snapshots are now pruned beyond `MAX_REORG_DEPTH`, preventing unbounded memory growth on long-running nodes.
+- **[MEDIUM] REST events endpoint limit bypass**: The `/events` endpoint now enforces the same `1-100` limit range as other paginated endpoints.
+- **[LOW] Webhook delivery task list accumulation**: Delivery task cleanup uses `done_callback` with safe removal; bounded by MAX_WEBHOOKS * MAX_EVENTS_PER_HOOK * RETRY_DELAYS.
 
 ### EIP-1559 and Auth Security (Round 17)
 

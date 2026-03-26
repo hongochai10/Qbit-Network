@@ -1,6 +1,6 @@
 # QBit Network — Post-Quantum Cryptography Blockchain
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 1358](https://img.shields.io/badge/tests-1358-brightgreen)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 1507](https://img.shields.io/badge/tests-1507-brightgreen) ![Version 0.7.0](https://img.shields.io/badge/version-0.7.0-blue)
 
 QBit Network is a purpose-built blockchain for document notarization and encrypted data sharing. It replaces all quantum-vulnerable cryptography (ECDSA, ECDH, secp256k1) with NIST-standardized post-quantum alternatives, providing a quantum-resistant foundation for long-lived document proofs and confidential file exchange.
 
@@ -28,7 +28,13 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **Chain pruning** — SQLite-level block removal with indices preserved
 - **QBIT token economy** -- 21M max supply, 5 QBIT block reward with halving, EIP-1559 dynamic fees, epoch delegator rewards
 - **TRANSFER transactions** -- peer-to-peer token transfers with balance checks, pending debit tracking, recipient format validation
-- **17 audit rounds, 0 open issues**
+- **State proofs** -- Merkle state trie with `stateRoot` and `receiptsRoot` in block headers, verifiable inclusion proofs for balance and nonce
+- **Transaction receipts** -- structured execution results with typed events for all 11 TX types, block-level events (BlockReward, EpochTransition)
+- **Simple finality** -- blocks finalized when >2/3 of total stake has built on them
+- **Webhook system** -- event-driven HTTP callbacks with HMAC-SHA256 signatures, retry with exponential backoff, auto-disable on persistent failure
+- **Python SDK** -- `qbit_sdk` package with zero external dependencies, sync HTTP client, WebSocket client, typed data models
+- **OpenAPI 3.0 spec** -- complete REST API specification at `docs/openapi.yaml`
+- **18 audit rounds, 0 open issues**
 
 ## Quick Start
 

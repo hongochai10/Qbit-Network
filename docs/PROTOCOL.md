@@ -215,24 +215,52 @@ new_fee = clamp(new_fee, MIN_BASE_FEE, MAX_BASE_FEE)
   "timestamp": 1700000000,
   "prevHash": "0000...0000 (64 hex chars for genesis)",
   "merkleRoot": "hex of Merkle root of tx_ids",
+  "stateRoot": "hex of Merkle root of state trie (balance + nonce entries)",
+  "receiptsRoot": "hex of Merkle root of transaction receipt hashes",
+  "baseFee": 10,
   "validator": "qv1...",
   "transactions": [ ... ],
   "signature": "ML-DSA hex"
 }
 ```
 
+`stateRoot` and `receiptsRoot` are included in the block hash only when non-empty, preserving backward compatibility with pre-v0.7.0 blocks.
+
 ### Header Bytes (Canonical)
 
 ```python
-json.dumps({
+header = {
     "index": index,
     "merkleRoot": merkle_root,
     "prevHash": prev_hash,
     "timestamp": timestamp,
     "txCount": len(transactions),
     "validator": validator,
-}, sort_keys=True, separators=(',',':'))
+}
+# Included only when non-empty (backward-compatible activation):
+if state_root:
+    header["stateRoot"] = state_root
+if receipts_root:
+    header["receiptsRoot"] = receipts_root
+if base_fee:
+    header["baseFee"] = base_fee
+json.dumps(header, sort_keys=True, separators=(',',':'))
 ```
+
+### State Proof Format
+
+A Merkle inclusion proof for a state entry (balance or nonce):
+
+```json
+{
+  "key": "balance:qv1...",
+  "value": "hex-encoded 8-byte big-endian integer",
+  "proof": [["hex sibling hash", true/false], ...],
+  "root": "hex state root"
+}
+```
+
+Verification: `leaf = SHA3-256(key_bytes + value_bytes)`, then walk the proof path to reconstruct the root.
 
 ### Block Hash
 

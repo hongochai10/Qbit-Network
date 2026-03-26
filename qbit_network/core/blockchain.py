@@ -1540,6 +1540,10 @@ class Blockchain:
 
         # Save trie snapshot for rollback (lightweight dict copy)
         self._state_snapshots[idx] = self._state_trie.snapshot()
+        # Prune old snapshots beyond MAX_REORG_DEPTH to prevent unbounded memory growth (R18-003)
+        prune_before = idx - MAX_REORG_DEPTH - 1
+        if prune_before >= 0:
+            self._state_snapshots.pop(prune_before, None)
 
         # Persist balance changes to SQLite (after epoch distribution)
         if self._store is not None and self._financial_active:

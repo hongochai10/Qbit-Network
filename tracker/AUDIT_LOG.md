@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 17 (including all v0.6.0 sprints)
-- **Total issues found**: 197+
-- **Total fixed**: 197+
+- **Total rounds**: 18 (including all v0.7.0 sprints)
+- **Total issues found**: 202+
+- **Total fixed**: 202+
 - **Accepted risks / open**: 0
-- **Latest**: v0.6.0 audit (Round 17) — complete 2026-03-26
+- **Latest**: v0.7.0 audit (Round 18) — complete 2026-03-26
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -315,3 +315,17 @@ Scope: EIP-1559 dynamic fee engine, HELLO_AUTH 4-step verify-before-sign, unbond
 | R17-002 | MED | Unbonding entries not persisted correctly across restarts — mature unbondings could be skipped after node restart | Fixed: `_process_mature_unbondings()` called on chain reload from SQLite; unbonding state fully rebuilt from SQLite `unbonding` table |
 
 **Round 17 summary:** 2 fixed, 0 accepted, 0 deferred
+
+## Round 18 — v0.7.0 State Proofs, Receipts, Webhooks, SDK (5 issues)
+
+Scope: StateTrie proof correctness, TransactionReceipt system, WebhookManager SSRF/HMAC, SDK client injection, REST events limit, state snapshot memory growth, finality edge cases.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R18-001 | HIGH | Webhook SSRF — `register()` accepts private/loopback/metadata URLs, enabling server-side request forgery to internal services via webhook delivery | Fixed: URL hostname validated against `ipaddress.is_private`, `is_loopback`, `is_link_local`, `is_reserved`; explicit blocklist for `localhost`, `127.0.0.1`, `::1`, `0.0.0.0`, `metadata.google.internal`, `169.254.169.254` |
+| R18-002 | HIGH | SDK query parameter injection — `_request()` builds query strings via f-string interpolation without URL-encoding, allowing parameter injection (e.g., `key=balance&admin=true`) | Fixed: replaced manual f-string with `urllib.parse.urlencode()` for proper percent-encoding |
+| R18-003 | MED | State snapshot unbounded memory growth — `_state_snapshots` dict grows by one entry per block with no pruning, causing OOM on long-running nodes | Fixed: snapshots pruned beyond `MAX_REORG_DEPTH` (32) in `_append_block_inner()` |
+| R18-004 | MED | REST `/events` endpoint limit not validated — negative or very large `limit` values bypass the `_MAX_LIMIT=100` cap applied to other paginated endpoints | Fixed: `limit` validated to `1-100` range matching `_parse_pagination()` behavior |
+| R18-005 | LOW | Webhook delivery task list accumulation — `_delivery_tasks` list uses `done_callback` for removal but `lambda` captures stale `t` reference in edge cases | Accepted: bounded by MAX_WEBHOOKS (100) * concurrent deliveries; `stop()` cancels all on shutdown |
+
+**Round 18 summary:** 4 fixed, 1 accepted, 0 deferred

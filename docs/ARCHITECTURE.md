@@ -120,6 +120,46 @@ At each epoch boundary (every 100 blocks), accumulated block rewards are redistr
 - Balance check includes pending pool debits (fee + amount)
 - Memo limited to 256 characters
 
+### State Trie
+
+`StateTrie` (`qbit_network/core/state_tree.py`) is a sorted key-value Merkle trie for state commitments.
+
+- **Keys**: `balance:{address}` and `nonce:{address}` (8-byte big-endian encoded values)
+- **Leaf hash**: `SHA3-256(key_bytes + value_bytes)` sorted lexicographically by key
+- **Root**: SHA3-256 binary Merkle tree over sorted leaves; empty state returns `SHA3-256(b"empty_state")`
+- **Proofs**: `get_proof(key)` returns Merkle inclusion proof (sibling hashes + position)
+- **Verification**: `verify_proof(key, value, proof, root)` -- static, no trie instance needed
+- **Snapshots**: `snapshot()` / `restore()` for O(1) rollback; snapshots pruned beyond MAX_REORG_DEPTH
+
+The `stateRoot` is stamped on self-produced blocks (genesis + `produce_block`) after all state mutations. Received blocks log a warning on mismatch but do not reject (consensus is the gatekeeper).
+
+### Receipt System
+
+`TransactionReceipt` (`qbit_network/core/receipt.py`) records execution results for every processed transaction.
+
+- **Fields**: tx_id, status (`success`/`failure`), fee_paid, block_index, tx_index, events
+- **receipt_hash**: SHA3-256 of canonical JSON (sorted keys, compact separators)
+- **receiptsRoot**: Merkle root of receipt hashes, stamped on block header alongside stateRoot
+- **Events**: typed dicts emitted per TX type (Transfer, Notarize, Store, Share, Stake, Delegate, Unstake, KeyRegistered, ValidatorRegistered, KeyRevoked, Slashed)
+- **Block-level events**: BlockReward (validator, amount), EpochTransition (epoch)
+- **SQLite**: `receipts` and `events` tables with indexed queries
+- **Rollback**: receipts and event indices cleaned up in `_rollback_block`
+
+### Finality
+
+Simple finality rule: a block is finalized when subsequent blocks whose validators represent >2/3 of total stake have been built on top of it. `get_finalized_height()` returns the latest finalized block index.
+
+### Webhook System
+
+`WebhookManager` (`qbit_network/network/webhooks.py`) provides event-driven HTTP callbacks.
+
+- **Registration**: URL (http/https, SSRF-protected), event types (13 valid types), HMAC secret
+- **Delivery**: HTTP POST with JSON `{event, block_index, timestamp}`, HMAC-SHA256 signature in `X-QBit-Signature` header
+- **Retry**: 3 attempts with exponential backoff (1s, 5s, 25s), 10s timeout per attempt
+- **Lifecycle**: `active` -> `failing` -> `disabled` after 10 consecutive failures
+- **Limits**: max 100 webhooks, max 20 events per webhook, max 2048-char URL
+- **Security**: SSRF protection blocks private/loopback/link-local/metadata URLs
+
 ## Transaction Types
 
 Eleven transaction types are defined. All share the same wire format and validation rules; only the `payload` schema differs.

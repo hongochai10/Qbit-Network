@@ -2,6 +2,17 @@
 
 ## Implemented
 
+### v0.7.0-sprint4: Round 18 Audit + Final Release (2026-03-26)
+- [x] Round 18 security audit — 5 issues found, 4 fixed, 1 accepted
+  - [x] R18-001 (HIGH): Webhook SSRF — private/loopback/metadata URL blocking
+  - [x] R18-002 (HIGH): SDK query parameter injection — `urllib.parse.urlencode()`
+  - [x] R18-003 (MED): State snapshot memory pruning beyond MAX_REORG_DEPTH
+  - [x] R18-004 (MED): REST `/events` limit validation (1-100 range)
+  - [x] R18-005 (LOW): Webhook delivery task accumulation — accepted (bounded)
+- [x] VERSION bumped to `0.7.0`
+- [x] All documentation updated for v0.7.0 final
+- [x] 1507 tests passing
+
 ### v0.7.0-sprint3: OpenAPI Spec + Python SDK + Webhooks (2026-03-26)
 - [x] OpenAPI 3.0 specification (`docs/openapi.yaml`)
   - Complete REST API spec with all 35+ endpoints (public + protected)

@@ -2,11 +2,13 @@
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import secrets
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -53,6 +55,30 @@ class WebhookManager:
             raise ValueError(f"url exceeds {MAX_URL_LENGTH} characters")
         if not url.startswith("http://") and not url.startswith("https://"):
             raise ValueError("url must start with http:// or https://")
+
+        # SSRF protection: block private/loopback/link-local URLs (R18-001)
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname or ""
+            if not hostname:
+                raise ValueError("url must contain a valid hostname")
+            # Reject obvious loopback and metadata endpoints
+            _lower = hostname.lower()
+            if _lower in ("localhost", "127.0.0.1", "::1", "[::1]",
+                          "0.0.0.0", "metadata.google.internal",
+                          "169.254.169.254"):
+                raise ValueError("webhook url must not target localhost or metadata endpoints")
+            # Reject private/reserved IP addresses
+            try:
+                addr = ipaddress.ip_address(hostname)
+                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                    raise ValueError("webhook url must not target private/loopback/link-local addresses")
+            except ValueError as ip_err:
+                # Not a bare IP — hostname is fine (DNS resolution happens at delivery time)
+                if "must not target" in str(ip_err):
+                    raise
+        except ValueError:
+            raise
 
         # Validate events
         if not isinstance(events, list) or not events:
