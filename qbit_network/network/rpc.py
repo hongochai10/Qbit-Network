@@ -86,6 +86,9 @@ class RPCServer:
         "qv_getSharedSecret", "qv_decapsulateShared",
         "qv_getSharedWithMe",
         "qv_submitEvidence",
+        "qv_registerValidator", "qv_revokeKey",
+        "qv_stake", "qv_delegate", "qv_unstake",
+        "qv_transfer",
     }
 
     # Methods that MUST NOT be served over plain HTTP (secret-returning)

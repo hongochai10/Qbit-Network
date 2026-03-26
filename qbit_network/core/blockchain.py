@@ -1158,6 +1158,10 @@ class Blockchain:
                     self._epoch_rewards.get(block.validator, 0) + reward
                 )
 
+        # Collect matured stakers BEFORE processing removes them from _unbonding
+        matured_stakers = {e["staker"] for e in self._unbonding
+                          if e["release_block"] <= idx}
+
         # Process mature unbondings (release_block <= current block index)
         self._process_mature_unbondings(idx)
 
@@ -1167,7 +1171,7 @@ class Blockchain:
 
         # Persist balance changes to SQLite (after epoch distribution)
         if self._store is not None and self._financial_active:
-            self._persist_balances_after_block(block, idx)
+            self._persist_balances_after_block(block, idx, matured_stakers)
 
     def _process_mature_unbondings(self, current_index: int):
         """Remove unbonding entries whose release_block has been reached."""
@@ -1186,7 +1190,8 @@ class Blockchain:
                 remaining.append(entry)
         self._unbonding = remaining
 
-    def _persist_balances_after_block(self, block: Block, idx: int):
+    def _persist_balances_after_block(self, block: Block, idx: int,
+                                      matured_stakers: set[str] | None = None):
         """Persist balance changes to SQLite after processing a block."""
         if self._store is None:
             return
@@ -1197,10 +1202,9 @@ class Blockchain:
             affected.add(tx.sender)
             if tx.recipient:
                 affected.add(tx.recipient)
-        # Also include matured unbonding stakers (already processed)
-        for entry in self._unbonding:
-            if entry["release_block"] <= idx:
-                affected.add(entry["staker"])
+        # Include matured unbonding stakers (collected before processing)
+        if matured_stakers:
+            affected.update(matured_stakers)
         # Include delegators who received epoch rewards at epoch boundary
         if EPOCH_LENGTH > 0 and idx > 0 and idx % EPOCH_LENGTH == 0:
             for validator_addr, stakes in self._stakes.items():
