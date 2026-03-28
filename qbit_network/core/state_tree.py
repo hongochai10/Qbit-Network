@@ -19,10 +19,12 @@ _EMPTY_STATE_TAG = b"empty_state"
 class StateTrie:
     """Simple sorted key-value Merkle trie for state commitments."""
 
-    __slots__ = ('_entries',)
+    __slots__ = ('_entries', '_dirty', '_cached_root')
 
     def __init__(self):
         self._entries: dict[str, bytes] = {}
+        self._dirty: bool = True
+        self._cached_root: bytes | None = None
 
     # ------------------------------------------------------------------
     # Mutation
@@ -30,11 +32,16 @@ class StateTrie:
 
     def set(self, key: str, value: bytes):
         """Insert or update a key-value pair."""
-        self._entries[key] = value
+        old = self._entries.get(key)
+        if old is None or old != value:
+            self._entries[key] = value
+            self._dirty = True
 
     def delete(self, key: str):
         """Remove a key. No-op if the key does not exist."""
-        self._entries.pop(key, None)
+        if key in self._entries:
+            del self._entries[key]
+            self._dirty = True
 
     # ------------------------------------------------------------------
     # Root computation
@@ -45,11 +52,20 @@ class StateTrie:
 
         Returns a 32-byte SHA3-256 hash.  When the trie is empty the root
         is ``sha3_256(b"empty_state")``.
+
+        The result is cached and only recomputed when entries have changed
+        (tracked via a dirty flag).  This avoids O(n) recomputation on
+        repeated calls when the state has not mutated (R19-PERF-002).
         """
+        if not self._dirty and self._cached_root is not None:
+            return self._cached_root
         if not self._entries:
-            return sha3_256(_EMPTY_STATE_TAG)
-        leaves = self._sorted_leaves()
-        return merkle_root(leaves)
+            self._cached_root = sha3_256(_EMPTY_STATE_TAG)
+        else:
+            leaves = self._sorted_leaves()
+            self._cached_root = merkle_root(leaves)
+        self._dirty = False
+        return self._cached_root
 
     # ------------------------------------------------------------------
     # Proof generation
@@ -108,6 +124,7 @@ class StateTrie:
     def restore(self, entries: dict[str, bytes]):
         """Replace internal entries with *entries* (for rollback)."""
         self._entries = dict(entries)
+        self._dirty = True
 
     # ------------------------------------------------------------------
     # Internals

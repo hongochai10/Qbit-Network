@@ -2,6 +2,17 @@
 
 ## Implemented
 
+### Round 19: Combined 5-Agent Audit (2026-03-26)
+- [x] R19-PROTO-003/SEC-004 (HIGH): State root/receipts root mismatch now rejects blocks
+- [x] R19-PERF-001 (HIGH): Cached state root in _append_block_inner, reused in produce_block
+- [x] R19-PERF-002 (HIGH): StateTrie dirty-flag caching -- O(1) root() when unchanged
+- [x] R19-PERF-003 (HIGH): Batched receipt SQLite commits (single commit per block)
+- [x] R19-SEC-001 (MED): State trie rebuilt after _load_from_sqlite()
+- [x] R19-SEC-002 (MED): Events/receipts indices rebuilt from SQLite on load
+- [x] R19-SEC-005 (MED): _block_level_events pruned beyond MAX_REORG_DEPTH
+- [x] R19-DOC: Fixed fee tables, genesis allocation, block reward, env vars, audit round count
+- [x] 19 audit rounds, 0 open issues
+
 ### v0.7.0-sprint4: Round 18 Audit + Final Release (2026-03-26)
 - [x] Round 18 security audit — 5 issues found, 4 fixed, 1 accepted
   - [x] R18-001 (HIGH): Webhook SSRF — private/loopback/metadata URL blocking

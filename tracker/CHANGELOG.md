@@ -1,5 +1,25 @@
 # Changelog
 
+## Round 19 Audit Fixes (2026-03-26)
+
+### Critical / High
+- **R19-PROTO-003/SEC-004**: State root and receipts root mismatches now reject blocks (was only a warning)
+- **R19-PERF-001**: Cached computed state root in `_append_block_inner` -- `produce_block` reuses it instead of calling `root()` twice
+- **R19-PERF-002**: `StateTrie.root()` now uses dirty-flag caching -- O(1) when state unchanged
+- **R19-PERF-003**: Receipt SQLite persistence batched -- single commit per block instead of N+1
+
+### Medium
+- **R19-SEC-001**: State trie rebuilt after `_load_from_sqlite()` so trie is populated on node restart
+- **R19-SEC-002**: Events and receipts indices rebuilt from SQLite on load
+- **R19-SEC-005**: `_block_level_events` pruned beyond `MAX_REORG_DEPTH` to prevent unbounded memory
+- **R19-DOC**: Fixed fee tables (PROTOCOL.md, ARCHITECTURE.md), genesis allocation (2.1M not 20M), block reward qubits (5B not 500M), env var prefix (`QBIT_` not `QVAULT_`), audit round count (19)
+
+### Stats
+- Total audit rounds: 19
+- Issues found: 13, fixed: 13
+
+---
+
 ## v0.7.0: State Proofs, Receipts, SDK, Webhooks, Finality (2026-03-26)
 
 ### Summary

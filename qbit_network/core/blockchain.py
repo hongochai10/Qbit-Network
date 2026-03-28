@@ -766,7 +766,7 @@ class Blockchain:
         # Stamp state_root and receipts_root computed by _append_block_inner,
         # then re-sign.
         old_hash = block.block_hash
-        block.state_root = self._state_trie.root().hex()
+        block.state_root = getattr(self, '_last_computed_state_root', self._state_trie.root().hex())
         block.receipts_root = getattr(self, '_last_computed_receipts_root', '')
         block._cached_header = None
         block._cached_hash = None
@@ -806,7 +806,11 @@ class Blockchain:
             ok, err = self.consensus.validate_block(block, parent)
             if not ok:
                 return False, err
-            self._append_block(block)
+            try:
+                self._append_block(block)
+            except ValueError as exc:
+                logger.warning("Block #%d rejected: %s", block.index, exc)
+                return False, str(exc)
             self._drain_pool(block)
             return True, ""
 
@@ -865,7 +869,15 @@ class Blockchain:
                 for orig_block in saved_chain:
                     self._append_block(orig_block)
                 return False, f"fork block #{fb.index} invalid: {err}"
-            self._append_block(fb)
+            try:
+                self._append_block(fb)
+            except ValueError as exc:
+                # State/receipts root mismatch -- rollback and restore
+                if applied:
+                    self._rollback_to(fork_start)
+                for orig_block in saved_chain:
+                    self._append_block(orig_block)
+                return False, f"fork block #{fb.index} rejected: {exc}"
             applied.append(fb)
             parent = fb
 
@@ -1510,6 +1522,10 @@ class Blockchain:
         self._block_level_events: dict[int, list[dict]] = getattr(
             self, '_block_level_events', {})
         self._block_level_events[idx] = _block_level_events
+        # Prune old block-level events beyond MAX_REORG_DEPTH (R19-SEC-005)
+        ble_prune_before = idx - MAX_REORG_DEPTH - 1
+        if ble_prune_before >= 0:
+            self._block_level_events.pop(ble_prune_before, None)
 
         # --- Compute receiptsRoot from block receipts ---
         computed_receipts_root = receipts_root(block_receipts)
@@ -1517,7 +1533,7 @@ class Blockchain:
         self._last_computed_receipts_root = computed_receipts_root
 
         if block.receipts_root and block.receipts_root != computed_receipts_root:
-            logger.warning(
+            raise ValueError(
                 f"Block #{idx} receiptsRoot mismatch: claimed "
                 f"{block.receipts_root[:16]}... vs computed "
                 f"{computed_receipts_root[:16]}...")
@@ -1525,10 +1541,12 @@ class Blockchain:
         # --- State trie: rebuild from current balances + nonces ---
         self._rebuild_state_trie()
         computed_root = self._state_trie.root().hex()
+        # Cache for produce_block to reuse without recomputing (R19-PERF-001)
+        self._last_computed_state_root = computed_root
 
         if block.state_root and block.state_root != computed_root:
             # Received block claims a state_root that disagrees with ours.
-            logger.warning(
+            raise ValueError(
                 f"Block #{idx} state_root mismatch: claimed {block.state_root[:16]}... "
                 f"vs computed {computed_root[:16]}...")
 
@@ -1549,10 +1567,11 @@ class Blockchain:
         if self._store is not None and self._financial_active:
             self._persist_balances_after_block(block, idx, matured_stakers)
 
-        # Persist receipts to SQLite
+        # Persist receipts to SQLite (batch commit to avoid N+1, R19-PERF-003)
         if self._store is not None:
             for receipt in block_receipts:
-                self._store.put_receipt(receipt)
+                self._store.put_receipt(receipt, commit=False)
+            self._store.commit()
 
         # Update finality
         self._update_finality(idx)
@@ -2358,6 +2377,21 @@ class Blockchain:
             self._total_burned = self._store.get_supply("total_burned")
             if self._total_minted > 0:
                 self._financial_active = True
+
+        # Rebuild events indices from SQLite receipts (R19-SEC-002)
+        if self._store is not None:
+            for i in range(store_height + 1):
+                receipts = self._store.get_receipts_for_block(i)
+                for receipt in receipts:
+                    self._receipts[receipt.tx_id] = receipt
+                    for ev in receipt.events:
+                        ev_type = ev.get("type", "")
+                        if ev_type:
+                            self._events_by_type.setdefault(ev_type, []).append(receipt.tx_id)
+                    self._events_by_block.setdefault(i, []).append(receipt.tx_id)
+
+        # Rebuild state trie from loaded balances and nonces (R19-SEC-001)
+        self._rebuild_state_trie()
 
         logger.info(f"Loaded {self._height + 1} blocks from SQLite")
         return True

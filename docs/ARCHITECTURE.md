@@ -63,11 +63,11 @@ The QBit Network has a built-in token economy with the following properties:
 
 - **Name**: QBit / **Symbol**: QBIT / **Decimals**: 9 (1 QBIT = 10^9 qubits)
 - **Max supply**: 21,000,000 QBIT
-- **Genesis allocation**: 20,000,000 QBIT to the genesis validator
+- **Genesis allocation**: 2,100,000 QBIT to the genesis validator
 
 ### Block Rewards
 
-- **Initial reward**: 5 QBIT (500,000,000 qubits) per block
+- **Initial reward**: 5 QBIT (5,000,000,000 qubits) per block
 - **Halving interval**: every 2,100,000 blocks
 - **Supply cap**: reward capped to remaining supply; zero after max supply reached
 
@@ -81,15 +81,15 @@ QBit supports two fee models, activated by `DYNAMIC_FEE_ACTIVATION_HEIGHT`:
 block weight utilization vs 50% target. Transactions specify `maxFeePerWeight` and
 `maxPriorityFee`. Fee = `(baseFee + effectivePriority) * weight`. 100% to validator.
 
-| Type | Weight | Legacy Fee |
+| Type | Weight | Legacy Fee (qubits) |
 |------|--------|-----------|
-| TRANSFER | 100,000 | 100,000 |
-| NOTARIZE | 1,000,000 | 1,000,000 |
-| STORE | 2,000,000 | 2,000,000 |
-| SHARE | 1,000,000 | 1,000,000 |
-| REGISTER_KEY | 10,000,000 | 10,000,000 |
-| REGISTER_VALIDATOR | 100,000,000 | 100,000,000 |
-| STAKE / DELEGATE / UNSTAKE | 1,000,000 | 1,000,000 |
+| TRANSFER | 100,000 | 1,000,000 |
+| NOTARIZE | 1,000,000 | 10,000,000 |
+| STORE | 2,000,000 | 20,000,000 |
+| SHARE | 1,000,000 | 10,000,000 |
+| REGISTER_KEY | 10,000,000 | 100,000,000 |
+| REGISTER_VALIDATOR | 100,000,000 | 1,000,000,000 |
+| STAKE / DELEGATE / UNSTAKE | 1,000,000 | 10,000,000 |
 | REVOKE_KEY | 0 | 0 |
 | EVIDENCE | 0 | 0 |
 

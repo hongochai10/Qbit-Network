@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 18 (including all v0.7.0 sprints)
-- **Total issues found**: 202+
-- **Total fixed**: 202+
+- **Total rounds**: 19 (including all v0.7.0 sprints)
+- **Total issues found**: 215+
+- **Total fixed**: 215+
 - **Accepted risks / open**: 0
-- **Latest**: v0.7.0 audit (Round 18) — complete 2026-03-26
+- **Latest**: Round 19 combined audit — complete 2026-03-26
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -329,3 +329,24 @@ Scope: StateTrie proof correctness, TransactionReceipt system, WebhookManager SS
 | R18-005 | LOW | Webhook delivery task list accumulation — `_delivery_tasks` list uses `done_callback` for removal but `lambda` captures stale `t` reference in edge cases | Accepted: bounded by MAX_WEBHOOKS (100) * concurrent deliveries; `stop()` cancels all on shutdown |
 
 **Round 18 summary:** 4 fixed, 1 accepted, 0 deferred
+
+## Round 19 — Combined 5-Agent Audit (13 issues)
+
+Scope: State root validation enforcement, SQLite reload consistency, StateTrie performance, receipt persistence batching, block-level event memory, documentation accuracy (fees, genesis allocation, block reward, env vars, audit round count).
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R19-PROTO-003 / R19-SEC-004 | HIGH | State root mismatch only warned, not rejected -- blocks with incorrect `stateRoot` or `receiptsRoot` accepted into chain | Fixed: changed `logger.warning` to `raise ValueError` in `_append_block_inner()` so mismatched blocks are rejected |
+| R19-PERF-001 | HIGH | `StateTrie.root()` called twice per self-produced block -- once in `_append_block_inner()`, once in `produce_block()` for stamping | Fixed: `_append_block_inner` caches computed root in `_last_computed_state_root`; `produce_block` reuses it |
+| R19-PERF-002 | HIGH | `StateTrie.root()` O(n) recomputation on every call even when state unchanged | Fixed: added `_dirty` flag and `_cached_root` to `StateTrie`; root only recomputed when entries change |
+| R19-PERF-003 | HIGH | N+1 SQLite commits for receipt persistence -- each `put_receipt()` commits individually | Fixed: `put_receipt(commit=False)` in loop, single `commit()` at end of block |
+| R19-SEC-001 | MED | State trie not rebuilt after `_load_from_sqlite()` -- trie empty until first block appended | Fixed: added `self._rebuild_state_trie()` at end of `_load_from_sqlite()` |
+| R19-SEC-002 | MED | Events and receipts not rebuilt from SQLite -- `_events_by_type`, `_events_by_block`, `_receipts` empty after reload | Fixed: iterate `get_receipts_for_block()` for all blocks during `_load_from_sqlite()` to rebuild indices |
+| R19-SEC-005 | MED | `_block_level_events` dict grows unbounded -- no pruning for old entries | Fixed: prune entries older than `MAX_REORG_DEPTH` in `_append_block_inner()` |
+| R19-PROTO-002 / R19-DOC-004/005 | MED | Fee tables in PROTOCOL.md and ARCHITECTURE.md show TX_WEIGHTS values instead of actual TX_FEES | Fixed: updated both tables to match `config.py` TX_FEES values |
+| R19-DOC-003 | MED | ARCHITECTURE.md genesis allocation says 20,000,000 QBIT, should be 2,100,000 | Fixed: corrected to 2,100,000 QBIT |
+| R19-DOC-006 | MED | ARCHITECTURE.md block reward says 500,000,000 qubits, should be 5,000,000,000 | Fixed: corrected to 5,000,000,000 qubits |
+| R19-DOC-001/002 | MED | README.md uses stale `QVAULT_` env var prefix instead of `QBIT_` | Fixed: updated to `QBIT_DATA_DIR` and `QBIT_ALLOW_PRIVATE_PEERS` |
+| R19-DOC-012/018 | LOW | README and CLAUDE.md audit round count inconsistent (shows 18) | Fixed: updated to 19 across all files |
+
+**Round 19 summary:** 13 found, 13 fixed, 0 accepted, 0 deferred

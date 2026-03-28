@@ -751,6 +751,10 @@ class SQLiteStore:
             self._db.rollback()
             raise
 
+    def commit(self):
+        """Explicit commit for batched operations."""
+        self._db.commit()
+
     def close(self):
         self._db.close()
 

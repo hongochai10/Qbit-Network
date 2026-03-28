@@ -117,19 +117,19 @@ No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 - Self-transfer (`to == from`) is rejected.
 - Optional `memo` must be a string, max 256 characters.
 - Balance check: sender must have `amount + fee` available after pending pool debits.
-- Fee: 100,000 qubits (legacy: 50% to validator, 50% burned; dynamic fee mode: 100% to validator).
+- Fee: 1,000,000 qubits (legacy: 50% to validator, 50% burned; dynamic fee mode: 100% to validator).
 
 #### Fee Schedule (Legacy Fixed Fees -- Pre-Activation)
 
 | Type | Fee (qubits) |
 |------|-------------|
-| TRANSFER | 100,000 |
-| NOTARIZE | 1,000,000 |
-| STORE | 2,000,000 |
-| SHARE | 1,000,000 |
-| REGISTER_KEY | 10,000,000 |
-| REGISTER_VALIDATOR | 100,000,000 |
-| STAKE / DELEGATE / UNSTAKE | 1,000,000 |
+| TRANSFER | 1,000,000 |
+| NOTARIZE | 10,000,000 |
+| STORE | 20,000,000 |
+| SHARE | 10,000,000 |
+| REGISTER_KEY | 100,000,000 |
+| REGISTER_VALIDATOR | 1,000,000,000 |
+| STAKE / DELEGATE / UNSTAKE | 10,000,000 |
 | REVOKE_KEY | 0 |
 | EVIDENCE | 0 |
 

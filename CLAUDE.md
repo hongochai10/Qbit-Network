@@ -5,7 +5,7 @@ Post-quantum cryptography blockchain for document notarization and encrypted sha
 - **Language:** Python 3.11+
 - **PQC:** ML-DSA-65 + ML-KEM-768 via liboqs
 - **Framework:** asyncio + aiohttp
-- **Version:** v0.7.0 (complete) — 11 TX types, dPoS, state proofs, receipts, SDK, webhooks, 1507 tests, 18 audit rounds, 0 open issues
+- **Version:** v0.7.0 (complete) — 11 TX types, dPoS, state proofs, receipts, SDK, webhooks, 1507 tests, 19 audit rounds, 0 open issues
 
 ## Agents Team
 
@@ -81,7 +81,7 @@ python3 run_node.py
 python3 run_node.py --rpc-port 8546 --p2p-port 9001 --data-dir ./testchain
 
 # Allow LAN peers (for testing)
-QVAULT_ALLOW_PRIVATE_PEERS=1 python3 run_node.py --peers 192.168.1.2:9000
+QBIT_ALLOW_PRIVATE_PEERS=1 python3 run_node.py --peers 192.168.1.2:9000
 ```
 
 ## File Layout

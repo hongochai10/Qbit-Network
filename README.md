@@ -34,7 +34,7 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **Webhook system** -- event-driven HTTP callbacks with HMAC-SHA256 signatures, retry with exponential backoff, auto-disable on persistent failure
 - **Python SDK** -- `qbit_sdk` package with zero external dependencies, sync HTTP client, WebSocket client, typed data models
 - **OpenAPI 3.0 spec** -- complete REST API specification at `docs/openapi.yaml`
-- **18 audit rounds, 0 open issues**
+- **19 audit rounds, 0 open issues**
 
 ## Quick Start
 
@@ -97,8 +97,8 @@ curl http://localhost:8545 -d '{"jsonrpc":"2.0","method":"qv_nodeInfo","id":1}'
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `QVAULT_DATA_DIR` | `~/.qvault` | Chain and wallet storage |
-| `QVAULT_ALLOW_PRIVATE_PEERS` | `false` | Allow P2P connections to RFC 1918 addresses |
+| `QBIT_DATA_DIR` | `~/.qbit` | Chain and wallet storage |
+| `QBIT_ALLOW_PRIVATE_PEERS` | `false` | Allow P2P connections to RFC 1918 addresses |
 
 ## CLI Usage
 
