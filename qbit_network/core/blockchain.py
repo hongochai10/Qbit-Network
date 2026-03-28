@@ -3,9 +3,7 @@
 Sprint 2: SQLite-primary storage. In-memory chain list removed for SQLite-backed
 blockchains. In-memory mode (no data_dir) retains a list for tests/ephemeral use.
 """
-import json
 import os
-import tempfile
 import threading
 import time
 import logging
@@ -28,6 +26,8 @@ from .query import QueryMixin
 from .receipt_ops import ReceiptMixin
 from .persistence import PersistenceMixin
 from .rollback import RollbackMixin
+from .tx_pool import TxPoolMixin
+from .state_ops import StateTrieMixin
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -73,7 +73,7 @@ class _ChainProxy:
 
 
 class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
-                 PersistenceMixin, RollbackMixin):
+                 PersistenceMixin, RollbackMixin, TxPoolMixin, StateTrieMixin):
     """The QBit Network blockchain."""
 
     def __init__(self, data_dir: str = ""):
@@ -202,53 +202,6 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         """Return the next expected nonce for an address."""
         return self.get_next_nonce(address)
 
-    # ---- State trie ----
-
-    def _rebuild_state_trie(self):
-        """Rebuild the state trie from current balances and nonces.
-
-        This is called at the end of _append_block_inner after all state
-        mutations are complete.  The trie covers:
-          - balance:{address} -> 8-byte big-endian int
-          - nonce:{address}   -> 8-byte big-endian int
-        """
-        trie = self._state_trie
-        # Clear and rebuild -- simple and correct for QBit's scale.
-        trie._entries.clear()
-        for addr, bal in self._balances.items():
-            trie.set(f"balance:{addr}", bal.to_bytes(8, 'big'))
-        for addr, nonce in self._sender_nonce.items():
-            # Nonces are always >= 0 in normal operation.
-            # During rollback edge cases nonce can be -1 (no confirmed txs);
-            # skip negative nonces to avoid encoding errors.
-            if nonce >= 0:
-                trie.set(f"nonce:{addr}", nonce.to_bytes(8, 'big'))
-
-    def get_state_proof(self, address: str, key_type: str = "balance") -> dict | None:
-        """Generate a Merkle state proof for an address.
-
-        Parameters
-        ----------
-        address : str
-            The account address.
-        key_type : str
-            Either ``"balance"`` or ``"nonce"``.
-
-        Returns
-        -------
-        dict or None
-            Proof dict with keys: key, value, proof, root.
-            None if the key is not in the trie.
-        """
-        if key_type not in ("balance", "nonce"):
-            return None
-        trie_key = f"{key_type}:{address}"
-        return self._state_trie.get_proof(trie_key)
-
-    def get_state_root(self) -> str:
-        """Return the current state root as a hex string."""
-        return self._state_trie.root().hex()
-
     # ---- Genesis ----
 
     def init_chain(self, validator_address: str, validator_sk: bytes,
@@ -306,179 +259,6 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         # This keeps existing tests backward-compatible.
 
         logger.info(f"Genesis: {genesis.block_hash[:16]}...")
-
-    # ---- Transaction pool ----
-
-    def submit_tx(self, tx: Transaction) -> tuple[bool, str]:
-        """Submit a signed transaction to the pool."""
-        # Pool size limit (#S08)
-        if len(self.tx_pool) >= MAX_TX_POOL_SIZE:
-            return False, "tx pool full"
-
-        # Chain ID validation (T-03) — before signature check
-        if tx.chain_id != CHAIN_ID:
-            return False, f"wrong chain_id: expected {CHAIN_ID}"
-
-        # Revoked signing key cannot submit any transactions
-        if self.is_key_revoked(tx.sender, "signing"):
-            return False, "sender signing key has been revoked"
-
-        if not tx.verify():
-            return False, "invalid signature"
-
-        # Payload validation (#S10, #S15)
-        ok, err = tx.validate_payload()
-        if not ok:
-            return False, f"invalid payload: {err}"
-
-        if tx.tx_id in self._tx_by_id:
-            return False, "duplicate (already in chain)"
-
-        if tx.tx_id in self._pool_ids:
-            return False, "duplicate (already in pool)"
-
-        if tx.tx_type == TxType.SHARE and not tx.recipient:
-            return False, "SHARE tx requires recipient"
-
-        # STAKE / DELEGATE: target validator must be registered and not slashed
-        if tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
-            vaddr = tx.payload.get("validator_address", "")
-            if not self.is_registered_validator(vaddr):
-                return False, f"validator not registered: {vaddr[:16]}..."
-            if vaddr in self._slashed_validators:
-                return False, f"cannot stake to slashed validator: {vaddr[:16]}..."
-
-        # UNSTAKE: target must be registered, sender must have enough stake
-        if tx.tx_type == TxType.UNSTAKE:
-            vaddr = tx.payload.get("validator_address", "")
-            if not self.is_registered_validator(vaddr):
-                return False, f"validator not registered: {vaddr[:16]}..."
-            amount = tx.payload.get("amount", 0)
-            current = self.get_staker_info(tx.sender, vaddr)
-            if amount > current:
-                return False, (f"insufficient stake: want to unstake {amount}, "
-                               f"have {current}")
-
-        # EIP-1559 pool admission: check max_fee_per_weight >= current base_fee
-        _next_idx = self._height + 1
-        _dynamic_active = (_next_idx >= DYNAMIC_FEE_ACTIVATION_HEIGHT
-                           and self._height >= 0)
-        if _dynamic_active:
-            w = tx_weight(tx.tx_type.value)
-            if w > 0:
-                # Compute current base_fee from latest block
-                current_bf = self._current_base_fee()
-                if tx.max_fee_per_weight < current_bf:
-                    return False, (f"max_fee_per_weight {tx.max_fee_per_weight} "
-                                   f"< current base_fee {current_bf}")
-
-        # Financial layer balance checks (only when financial layer is active)
-        if self._financial_active:
-            if _dynamic_active:
-                # Dynamic fee balance check (all fee-bearing types)
-                w = tx_weight(tx.tx_type.value)
-                if w > 0:
-                    worst_case_fee = tx.max_fee_per_weight * w
-                    extra_debit = 0
-                    if tx.tx_type == TxType.TRANSFER:
-                        if not tx.recipient:
-                            return False, "TRANSFER requires a recipient"
-                        extra_debit = tx.payload.get("amount", 0)
-                    elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
-                        extra_debit = tx.payload.get("amount", 0)
-                    pending = self._pending_debits(tx.sender)
-                    available = self.get_balance(tx.sender) - pending
-                    if available < worst_case_fee + extra_debit:
-                        return False, (f"insufficient balance: need {worst_case_fee + extra_debit}, "
-                                       f"available {available}")
-                elif tx.tx_type == TxType.TRANSFER:
-                    # Zero-weight TRANSFER still needs amount check
-                    if not tx.recipient:
-                        return False, "TRANSFER requires a recipient"
-                    amount = tx.payload.get("amount", 0)
-                    pending = self._pending_debits(tx.sender)
-                    available = self.get_balance(tx.sender) - pending
-                    if available < amount:
-                        return False, (f"insufficient balance: need {amount}, "
-                                       f"available {available}")
-            else:
-                # Legacy fixed fee balance checks
-                # TRANSFER: balance check (fee + amount)
-                if tx.tx_type == TxType.TRANSFER:
-                    if not tx.recipient:
-                        return False, "TRANSFER requires a recipient"
-                    amount = tx.payload.get("amount", 0)
-                    fee = TX_FEES.get("TRANSFER", 0)
-                    pending = self._pending_debits(tx.sender)
-                    available = self.get_balance(tx.sender) - pending
-                    if available < amount + fee:
-                        return False, (f"insufficient balance: need {amount + fee}, "
-                                       f"available {available}")
-
-                # Balance check for fee-bearing types (except TRANSFER handled above)
-                if tx.tx_type != TxType.TRANSFER:
-                    fee = TX_FEES.get(tx.tx_type.value, 0)
-                    if fee > 0:
-                        extra_debit = 0
-                        if tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
-                            extra_debit = tx.payload.get("amount", 0)
-                        pending = self._pending_debits(tx.sender)
-                        available = self.get_balance(tx.sender) - pending
-                        if available < fee + extra_debit:
-                            return False, (f"insufficient balance for fee: need {fee + extra_debit}, "
-                                           f"available {available}")
-
-        # EVIDENCE: validator must be registered and not already slashed
-        if tx.tx_type == TxType.EVIDENCE:
-            vaddr = tx.payload.get("validator_address", "")
-            if not self.is_registered_validator(vaddr):
-                return False, f"evidence target not a registered validator: {vaddr[:16]}..."
-            if vaddr in self._processed_evidence:
-                return False, f"validator already slashed: {vaddr[:16]}..."
-
-        # REVOKE_KEY: idempotency + genesis validator safety
-        if tx.tx_type == TxType.REVOKE_KEY:
-            key_type = tx.payload.get("key_type", "")
-            if self.is_key_revoked(tx.sender, key_type):
-                return False, f"{key_type} key already revoked for this address"
-            # Genesis validator cannot revoke signing or validator keys (K-01)
-            if key_type in ("validator", "signing") and self._height >= 0:
-                genesis_block = self._get_block_by_index(0)
-                if genesis_block and tx.sender == genesis_block.validator:
-                    return False, "cannot revoke genesis validator keys"
-
-        # Nonce check -- O(1) via _pool_sender_count
-        expected_nonce = self.get_nonce(tx.sender)
-        pending_from_sender = self._pool_sender_count.get(tx.sender, 0)
-        if tx.nonce != expected_nonce + pending_from_sender:
-            return False, (f"invalid nonce: expected {expected_nonce + pending_from_sender}, "
-                           f"got {tx.nonce}")
-
-        # Timestamp sanity
-        now = int(time.time())
-        if tx.timestamp > now + 300:
-            return False, "tx timestamp too far in future"
-        if tx.timestamp < now - 86400:
-            return False, "tx timestamp too old (>24h)"
-
-        self.tx_pool.append(tx)
-        self._pool_ids.add(tx.tx_id)
-        self._pool_sender_count[tx.sender] = pending_from_sender + 1
-        return True, tx.tx_id
-
-    def _current_base_fee(self) -> int:
-        """Compute the base fee for the next block based on current chain state."""
-        if self._height < 0:
-            return INITIAL_BASE_FEE
-        parent = self._latest_block
-        next_idx = self._height + 1
-        _parent_pre = (parent.index == 0
-                       or parent.index < DYNAMIC_FEE_ACTIVATION_HEIGHT)
-        if next_idx == DYNAMIC_FEE_ACTIVATION_HEIGHT or _parent_pre:
-            return INITIAL_BASE_FEE
-        parent_eff_weight = effective_block_weight(
-            parent.transactions, parent.validator)
-        return compute_base_fee(parent.base_fee, parent_eff_weight)
 
     # ---- Block production ----
 
