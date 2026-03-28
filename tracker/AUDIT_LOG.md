@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 22 (including all v0.8.0 sprints)
-- **Total issues found**: 232+
-- **Total fixed**: 231+
-- **Accepted risks / open**: 1 (informational)
-- **Latest**: Round 22 v0.8.0 final verification — complete 2026-03-28
+- **Total rounds**: 23 (including all v0.8.0 sprints)
+- **Total issues found**: 239+
+- **Total fixed**: 237+
+- **Accepted risks / open**: 2 (R21-010 informational, R23-002 latent/safe)
+- **Latest**: Round 23 PQC deep-dive + issue hunt — complete 2026-03-29
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -396,3 +396,21 @@ Scope: Verify all 10 Round 21 fixes are correct. Sweep for new issues introduced
 | R22-002 | LOW | `_rpc_issue_token` missing `max_supply` type validation at RPC level — inconsistent with other parameters | Fixed: added `isinstance(max_supply, int) and >= 0` check |
 
 **Round 22 summary:** 2 found, 2 fixed, 0 accepted, 0 deferred
+
+## Round 23 — PQC Deep-Dive + Issue Hunt (7 issues)
+
+Scope: PQC resistance verification (researcher), focused security audit on race conditions, state consistency, token edge cases, network attacks, persistence, financial edge cases (security auditor).
+
+**PQC Analysis Result:** Blockchain is quantum-resistant for ALL consensus/identity/data operations. Only TLS cert (SECP256R1) is classical — transport-only, acceptable tradeoff.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R23-001 | HIGH | Partial block application on state/receipts root mismatch — `_append_block_inner` mutates state before validation, leaving corrupted state on failure | Fixed: wrapped in `_append_block_inner_safe()` with rollback-on-failure via `_rollback_block` + `delete_blocks_from` |
+| R23-002 | MED | Race between block production and block reception — no chain-level asyncio.Lock | Accepted: currently safe (all mutations synchronous in event loop), noted for future async refactoring |
+| R23-003 | MED | `_rpc_send_raw_tx` bypasses per-address locking — nonce race possible | Fixed: wrapped with `_lock_for(tx.sender)` |
+| R23-004 | MED | Token TXs not gated by TOKEN_ACTIVATION_HEIGHT at pool admission — fees charged for no-op pre-activation | Fixed: added activation height check in `submit_tx()` |
+| R23-005 | LOW | Chain state not rolled back on `_append_block_inner` failure (subsumed by R23-001) | Fixed by R23-001 |
+| R23-006 | LOW | `_rpc_get_logs` limit not capped at RPC level — memory exhaustion possible | Fixed: `limit = min(limit, 100)` |
+| R23-007 | LOW | `_wallet_locks` eviction can delete actively held lock | Fixed: only evict unlocked entries |
+
+**Round 23 summary:** 7 found, 6 fixed, 1 accepted (latent/safe), 0 deferred

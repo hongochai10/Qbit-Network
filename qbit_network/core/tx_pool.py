@@ -164,6 +164,12 @@ class TxPoolMixin:
                 if genesis_block and tx.sender == genesis_block.validator:
                     return False, "cannot revoke genesis validator keys"
 
+        # R23-004: Token operations gated by activation height at pool admission
+        if tx.tx_type in (TxType.ISSUE_TOKEN, TxType.MINT_TOKEN, TxType.TRANSFER_TOKEN):
+            from . import blockchain as _bc_mod
+            if self._height + 1 < _bc_mod.TOKEN_ACTIVATION_HEIGHT:
+                return False, "token operations not yet active"
+
         # R21-002: ISSUE_TOKEN symbol uniqueness check at pool admission
         if tx.tx_type == TxType.ISSUE_TOKEN:
             symbol = tx.payload.get("symbol", "")

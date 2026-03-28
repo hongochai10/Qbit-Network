@@ -549,9 +549,30 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
     def _append_block(self, block: Block):
         if self._store is not None:
             with self._db_lock:
-                self._append_block_inner(block)
+                self._append_block_inner_safe(block)
         else:
+            self._append_block_inner_safe(block)
+
+    def _append_block_inner_safe(self, block: Block):
+        """Wrapper that rolls back partial state on failure (R23-001)."""
+        try:
             self._append_block_inner(block)
+        except ValueError:
+            # _append_block_inner mutates state before validation checks.
+            # On failure, undo all changes to prevent corrupted state.
+            displaced: list = []
+            self._rollback_block(block, displaced)
+            # Restore height and latest block
+            self._height -= 1
+            if self._chain_list is not None and self._chain_list and self._chain_list[-1] is block:
+                self._chain_list.pop()
+            if self._store is not None:
+                self._store.delete_blocks_from(block.index)
+            if self._height >= 0:
+                self._latest_block = self._get_block_by_index(self._height)
+            else:
+                self._latest_block = None
+            raise
 
     def _append_block_inner(self, block: Block):
         idx = self._height + 1

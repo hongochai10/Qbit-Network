@@ -642,7 +642,9 @@ class FullNode:
         if not isinstance(tx_data, dict):
             raise ValueError("tx_data must be a JSON object")
         tx = Transaction.from_dict(tx_data)
-        ok, result = self.blockchain.submit_tx(tx)
+        # R23-003: acquire per-address lock to prevent nonce races
+        async with self._lock_for(tx.sender):
+            ok, result = self.blockchain.submit_tx(tx)
         if not ok:
             raise ValueError(result)
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
@@ -983,6 +985,7 @@ class FullNode:
             raise ValueError("sender must be a string")
         if not isinstance(limit, int) or limit < 1:
             raise ValueError("limit must be a positive integer")
+        limit = min(limit, 100)  # R23-006: cap to prevent memory exhaustion
         return self.blockchain.get_events(
             event_type=event_type,
             block_index=block_index,
@@ -1104,8 +1107,16 @@ class FullNode:
             return self._wallet_locks[address]
         lock = asyncio.Lock()
         self._wallet_locks[address] = lock
+        # R23-007: only evict locks that are not currently held
         while len(self._wallet_locks) > self._MAX_WALLET_LOCKS:
-            self._wallet_locks.popitem(last=False)
+            evicted = False
+            for k, v in self._wallet_locks.items():
+                if not v.locked():
+                    del self._wallet_locks[k]
+                    evicted = True
+                    break
+            if not evicted:
+                break  # all locks held, stop evicting
         return lock
 
     # ================================================================
