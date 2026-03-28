@@ -17,9 +17,9 @@ address = "qv1" + hex(SHA3-256(ML-DSA-65 public key))
 ```json
 {
   "id": "SHA3-256 hex of signable content",
-  "type": "NOTARIZE | STORE | SHARE | REGISTER_KEY | REGISTER_VALIDATOR | REVOKE_KEY | STAKE | DELEGATE | UNSTAKE | EVIDENCE | TRANSFER",
+  "type": "NOTARIZE | STORE | SHARE | REGISTER_KEY | REGISTER_VALIDATOR | REVOKE_KEY | STAKE | DELEGATE | UNSTAKE | EVIDENCE | TRANSFER | ISSUE_TOKEN | MINT_TOKEN | TRANSFER_TOKEN",
   "from": "qv1...",
-  "to": "qv1... (recipient, required for SHARE and TRANSFER)",
+  "to": "qv1... (recipient, required for SHARE, TRANSFER, MINT_TOKEN, TRANSFER_TOKEN)",
   "timestamp": 1700000000,
   "nonce": 0,
   "chainId": "qbit-mainnet",
@@ -84,7 +84,7 @@ No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 
 #### STAKE Rules
 
-- `validator_address` must be the sender's own address (self-stake only).
+- `validator_address` must be a registered validator (any address may stake to any validator, functionally identical to DELEGATE).
 - `amount` must be an integer in [MIN_STAKE (1), MAX_STAKE (1,000,000)].
 - The target validator must be registered in `_validator_registry`.
 - The target validator must not be slashed.
@@ -119,6 +119,36 @@ No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 - Balance check: sender must have `amount + fee` available after pending pool debits.
 - Fee: 1,000,000 qubits (legacy: 50% to validator, 50% burned; dynamic fee mode: 100% to validator).
 
+#### ISSUE_TOKEN Rules (v0.8.0+)
+
+- `name`: 1-64 chars, alphanumeric + spaces (`^[a-zA-Z0-9 ]+$`).
+- `symbol`: 2-8 chars, uppercase alphanumeric starting with letter (`^[A-Z][A-Z0-9]+$`).
+- `symbol` must be unique across all tokens. "QBIT" is reserved.
+- `decimals`: integer 0-18.
+- `max_supply`: non-negative integer (0 = unlimited).
+- `transferable`: boolean, default true.
+- Token ID derivation: `SHA3-256(sender + symbol + nonce)[:32].hex()` (32 hex chars).
+- Fee: 500,000,000 qubits (0.5 QBIT).
+
+#### MINT_TOKEN Rules (v0.8.0+)
+
+- `token_id`: 32 hex characters, must exist in token registry.
+- `amount`: positive integer.
+- `to` field required, must be a valid `qv1` address.
+- Only the token issuer (`_token_registry[token_id]["issuer"]`) can mint.
+- If `max_supply > 0`: `total_minted + amount <= max_supply`.
+- Fee: 10,000,000 qubits (0.01 QBIT).
+
+#### TRANSFER_TOKEN Rules (v0.8.0+)
+
+- `token_id`: 32 hex characters, must exist in token registry.
+- `amount`: positive integer.
+- `to` field required, must be a valid `qv1` address, no self-transfer.
+- Token must have `transferable == true`.
+- Sender must hold `>= amount` of the token.
+- Optional `memo`: string, max 256 chars.
+- Fee: 1,000,000 qubits (0.001 QBIT).
+
 #### Fee Schedule (Legacy Fixed Fees -- Pre-Activation)
 
 | Type | Fee (qubits) |
@@ -130,6 +160,9 @@ No extra keys allowed (enforced by `_ALLOWED_KEYS` whitelist).
 | REGISTER_KEY | 100,000,000 |
 | REGISTER_VALIDATOR | 1,000,000,000 |
 | STAKE / DELEGATE / UNSTAKE | 10,000,000 |
+| ISSUE_TOKEN | 500,000,000 |
+| MINT_TOKEN | 10,000,000 |
+| TRANSFER_TOKEN | 1,000,000 |
 | REVOKE_KEY | 0 |
 | EVIDENCE | 0 |
 
@@ -176,6 +209,9 @@ new_fee = clamp(new_fee, MIN_BASE_FEE, MAX_BASE_FEE)
 | REGISTER_KEY | 10,000,000 |
 | REGISTER_VALIDATOR | 100,000,000 |
 | STAKE / DELEGATE / UNSTAKE | 1,000,000 |
+| ISSUE_TOKEN | 50,000,000 |
+| MINT_TOKEN | 1,000,000 |
+| TRANSFER_TOKEN | 100,000 |
 | REVOKE_KEY | 0 |
 | EVIDENCE | 0 |
 
@@ -296,7 +332,7 @@ block_hash = hex(SHA3-256(header_bytes))
 
 ### Transport
 
-TCP with newline-delimited JSON messages. Reader limit: 10 MB.
+TCP with newline-delimited JSON (v3) or length-prefixed msgpack (v4+). Max frame: 10 MB.
 
 ### Message Types
 
@@ -321,6 +357,30 @@ TCP with newline-delimited JSON messages. Reader limit: 10 MB.
 | 1 | v0.1.0-v0.2.0 | Plain hello, no auth, no request-ID |
 | 2 | v0.2.1+ | hello_auth challenge-response, request-ID correlation |
 | 3 | v0.6.0+ | EIP-1559 dynamic fees, baseFee in block header, max_fee_per_weight + max_priority_fee in TX |
+| 4 | v0.8.0+ | Multi-asset tokens (3 TX types), light client protocol, binary P2P (msgpack), wire_format negotiation |
+
+### Binary Wire Format (v4+, Protocol Version 4)
+
+When both peers support v4+, messages use length-prefixed msgpack:
+
+```
+[4-byte big-endian length][msgpack payload]
+```
+
+Binary fields (signature, sender_pubkey, signing_pk, encryption_pk, challenge, ciphertext) are transmitted as raw bytes instead of hex strings, reducing bandwidth ~40-60%.
+
+**Negotiation**: `wire_format` field in `hello_auth` and `auth_response`. Both sides must be v4+ and support msgpack. Fallback: JSON.
+
+**Handshake**: Always JSON (newline-delimited). Wire format switch occurs after encrypted channel setup.
+
+### Light Client Protocol (v0.8.0+)
+
+Light clients can verify state without downloading full blocks:
+
+1. **Block headers**: `GET /api/v1/headers?start=N&count=M` — headers without transactions
+2. **State proofs**: `GET /api/v1/proofs/state/{key}?block=N` — Merkle inclusion proof against stateRoot
+3. **Receipt proofs**: `GET /api/v1/proofs/receipt/{txid}` — Merkle inclusion proof against receiptsRoot
+4. **Verification**: `StateTrie.verify_proof(key, value, proof, root)` — standalone proof verification
 
 Negotiation: `min(initiator_version, responder_version)`.
 

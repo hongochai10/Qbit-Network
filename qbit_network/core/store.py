@@ -107,6 +107,26 @@ CREATE INDEX IF NOT EXISTS idx_slashing_validator ON slashing_events(validator);
 CREATE INDEX IF NOT EXISTS idx_receipts_block ON receipts(block_index);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_events_block ON events(block_index);
+CREATE TABLE IF NOT EXISTS tokens (
+    token_id TEXT PRIMARY KEY,
+    issuer TEXT NOT NULL,
+    name TEXT NOT NULL,
+    symbol TEXT UNIQUE NOT NULL,
+    decimals INTEGER NOT NULL,
+    max_supply INTEGER NOT NULL DEFAULT 0,
+    total_minted INTEGER NOT NULL DEFAULT 0,
+    transferable INTEGER NOT NULL DEFAULT 1,
+    created_block INTEGER NOT NULL,
+    created_tx TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS token_balances (
+    token_id TEXT NOT NULL,
+    address TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    PRIMARY KEY (token_id, address)
+);
+CREATE INDEX IF NOT EXISTS idx_token_balances_addr ON token_balances(address);
+CREATE INDEX IF NOT EXISTS idx_tokens_symbol ON tokens(symbol);
 """
 
 
@@ -492,6 +512,96 @@ class SQLiteStore:
             (key,)).fetchone()
         return row[0] if row else 0
 
+    # ---- Token storage ----
+
+    def put_token(self, token_id: str, meta: dict, commit: bool = True):
+        """Insert or update a token registry entry."""
+        self._db.execute(
+            "INSERT OR REPLACE INTO tokens "
+            "(token_id, issuer, name, symbol, decimals, max_supply, "
+            "total_minted, transferable, created_block, created_tx) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (token_id, meta["issuer"], meta["name"], meta["symbol"],
+             meta["decimals"], meta.get("max_supply", 0),
+             meta.get("total_minted", 0),
+             1 if meta.get("transferable", True) else 0,
+             meta.get("created_block", 0), meta.get("created_tx", "")))
+        if commit:
+            self._db.commit()
+
+    def get_token(self, token_id: str) -> dict | None:
+        """Get token metadata by ID."""
+        row = self._db.execute(
+            "SELECT token_id, issuer, name, symbol, decimals, max_supply, "
+            "total_minted, transferable, created_block, created_tx "
+            "FROM tokens WHERE token_id=?", (token_id,)).fetchone()
+        if not row:
+            return None
+        return {
+            "token_id": row[0], "issuer": row[1], "name": row[2],
+            "symbol": row[3], "decimals": row[4], "max_supply": row[5],
+            "total_minted": row[6], "transferable": bool(row[7]),
+            "created_block": row[8], "created_tx": row[9],
+        }
+
+    def get_all_tokens(self) -> list[dict]:
+        """Return all tokens."""
+        rows = self._db.execute(
+            "SELECT token_id, issuer, name, symbol, decimals, max_supply, "
+            "total_minted, transferable, created_block, created_tx "
+            "FROM tokens").fetchall()
+        return [{
+            "token_id": r[0], "issuer": r[1], "name": r[2],
+            "symbol": r[3], "decimals": r[4], "max_supply": r[5],
+            "total_minted": r[6], "transferable": bool(r[7]),
+            "created_block": r[8], "created_tx": r[9],
+        } for r in rows]
+
+    def delete_token(self, token_id: str, commit: bool = True):
+        """Delete a token (for rollback)."""
+        self._db.execute("DELETE FROM tokens WHERE token_id=?", (token_id,))
+        self._db.execute("DELETE FROM token_balances WHERE token_id=?", (token_id,))
+        if commit:
+            self._db.commit()
+
+    def put_token_balance(self, token_id: str, address: str, amount: int,
+                          commit: bool = True):
+        """Insert or update a token balance."""
+        if amount <= 0:
+            self._db.execute(
+                "DELETE FROM token_balances WHERE token_id=? AND address=?",
+                (token_id, address))
+        else:
+            self._db.execute(
+                "INSERT OR REPLACE INTO token_balances "
+                "(token_id, address, amount) VALUES (?, ?, ?)",
+                (token_id, address, amount))
+        if commit:
+            self._db.commit()
+
+    def get_token_balance(self, token_id: str, address: str) -> int:
+        """Get token balance for an address."""
+        row = self._db.execute(
+            "SELECT amount FROM token_balances WHERE token_id=? AND address=?",
+            (token_id, address)).fetchone()
+        return row[0] if row else 0
+
+    def get_token_holders(self, token_id: str) -> list[tuple[str, int]]:
+        """Return all holders of a token as (address, amount) pairs."""
+        rows = self._db.execute(
+            "SELECT address, amount FROM token_balances "
+            "WHERE token_id=? AND amount > 0",
+            (token_id,)).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def get_address_tokens(self, address: str) -> list[tuple[str, int]]:
+        """Return all token balances for an address as (token_id, amount) pairs."""
+        rows = self._db.execute(
+            "SELECT token_id, amount FROM token_balances "
+            "WHERE address=? AND amount > 0",
+            (address,)).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
     # ---- Receipt / event storage ----
 
     def put_receipt(self, receipt, commit: bool = True):
@@ -743,6 +853,15 @@ class SQLiteStore:
             # Clear balances and supply -- will be rebuilt from chain on reload
             c.execute("DELETE FROM balances")
             c.execute("DELETE FROM supply")
+
+            # R21-001 + R22-001: Clean up token tables during rollback
+            # Delete tokens created in rolled-back blocks
+            c.execute("DELETE FROM tokens WHERE created_block >= ?", (from_index,))
+            # Wipe ALL token_balances — will be rebuilt from chain on reload
+            # (handles both orphaned tokens AND surviving tokens with rolled-back mints)
+            c.execute("DELETE FROM token_balances")
+            # Reset total_minted for surviving tokens — rebuilt from chain on reload
+            c.execute("UPDATE tokens SET total_minted = 0")
 
             self._db.commit()
             row = self._db.execute("SELECT MAX(idx) FROM blocks").fetchone()

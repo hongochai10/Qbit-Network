@@ -106,3 +106,110 @@ class QueryMixin:
                 if expires == 0 or expires > now:
                     result.append(tx.to_dict())
         return result
+
+    # ---- Token queries ----
+
+    def get_token_info(self, token_id: str) -> dict | None:
+        """Get token metadata by ID."""
+        return self._token_registry.get(token_id)
+
+    def get_token_by_symbol(self, symbol: str) -> dict | None:
+        """Get token metadata by symbol."""
+        tid = self._token_by_symbol.get(symbol)
+        if tid:
+            return self._token_registry.get(tid)
+        return None
+
+    def list_tokens(self, page: int = 1, limit: int = 50) -> list[dict]:
+        """List all tokens with pagination."""
+        tokens = list(self._token_registry.values())
+        start = (page - 1) * limit
+        return tokens[start:start + limit]
+
+    def get_token_balance(self, token_id: str, address: str) -> int:
+        """Get token balance for an address."""
+        return self._token_balances.get((token_id, address), 0)
+
+    def get_token_holders(self, token_id: str) -> list[dict]:
+        """Get all holders of a token."""
+        holders = []
+        for (tid, addr), amount in self._token_balances.items():
+            if tid == token_id and amount > 0:
+                holders.append({"address": addr, "amount": amount})
+        return sorted(holders, key=lambda h: h["amount"], reverse=True)
+
+    def get_address_tokens(self, address: str) -> list[dict]:
+        """Get all token balances for an address."""
+        tokens = []
+        for (tid, addr), amount in self._token_balances.items():
+            if addr == address and amount > 0:
+                reg = self._token_registry.get(tid, {})
+                tokens.append({
+                    "token_id": tid,
+                    "symbol": reg.get("symbol", ""),
+                    "name": reg.get("name", ""),
+                    "decimals": reg.get("decimals", 0),
+                    "amount": amount,
+                })
+        return tokens
+
+    # ---- Light client queries ----
+
+    def get_block_headers(self, start: int = 0, count: int = 100) -> list[dict]:
+        """Return block headers (no transactions) for a range."""
+        count = min(count, 100)  # cap at 100 per request
+        headers = []
+        end = min(start + count, self._height + 1)
+        for i in range(max(0, start), end):
+            block = self._get_block_by_index(i)
+            if block is not None:
+                headers.append(block.to_header_dict())
+        return headers
+
+    def get_receipt_proof(self, tx_id: str) -> dict | None:
+        """Generate a receipt Merkle inclusion proof for a confirmed TX."""
+        from .receipt import receipt_proof as _receipt_proof
+        receipt = self._receipts.get(tx_id)
+        if receipt is None:
+            return None
+        block = self._get_block_by_index(receipt.block_index)
+        if block is None:
+            return None
+        # Rebuild receipts for the block to generate proof
+        block_receipts = []
+        for tx in block.transactions:
+            r = self._receipts.get(tx.tx_id)
+            if r is not None:
+                block_receipts.append(r)
+        proof = _receipt_proof(block_receipts, receipt.tx_index)
+        return {
+            "tx_id": tx_id,
+            "receipt": receipt.to_dict(),
+            "proof": [(h.hex(), is_right) for h, is_right in proof],
+            "receiptsRoot": block.receipts_root,
+            "block_index": receipt.block_index,
+        }
+
+    def get_state_proof_at_block(self, key: str, block_index: int | None = None) -> dict | None:
+        """Generate a state proof for a key, optionally at a specific block.
+
+        Uses state snapshots when available (within PRUNING_RETENTION).
+        Falls back to current state if no snapshot exists.
+        """
+        from .state_tree import StateTrie
+        if block_index is not None:
+            snapshot = self._state_snapshots.get(block_index)
+            if snapshot is None:
+                return None
+            # Build a temporary trie from the snapshot
+            temp_trie = StateTrie()
+            temp_trie.restore(snapshot)
+            proof = temp_trie.get_proof(key)
+            if proof is not None:
+                proof["block_index"] = block_index
+            return proof
+        # Current state
+        proof = self._state_trie.get_proof(key)
+        if proof is not None:
+            proof["block_index"] = self._height
+        return proof

@@ -48,6 +48,6 @@ QBit Network PQC Blockchain at `/Users/velikho/Desktop/WORKING/pqc-blockchain/`.
 1. Benchmark BEFORE and AFTER with `time.perf_counter()`
 2. Use `cProfile` or `py-spy` for profiling
 3. Never sacrifice security for performance
-4. Run `python3 -m pytest` after every change — must pass all 1,507 tests
+4. Run `python3 -m pytest` after every change — must pass all 1,781 tests
 5. Update benchmark numbers in `docs/ARCHITECTURE.md` performance section and `research/` papers
 6. Report: operation name, before (ms/op or TPS), after (ms/op or TPS), % improvement

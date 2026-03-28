@@ -15,7 +15,7 @@ You are a technical writer maintaining QBit Network documentation.
 | `docs/PROTOCOL.md` | Wire formats, consensus rules, P2P spec |
 | `docs/SECURITY.md` | Threat model, audit history, security controls |
 | `docs/openapi.yaml` | OpenAPI 3.0 spec for all 35+ REST endpoints |
-| `tracker/AUDIT_LOG.md` | Complete audit trail (202+ issues, 18 rounds) |
+| `tracker/AUDIT_LOG.md` | Complete audit trail (230+ issues, 21 rounds) |
 | `tracker/ISSUES.md` | Open issues and accepted risks |
 | `tracker/FEATURES.md` | Implemented features and roadmap |
 | `tracker/CHANGELOG.md` | Version release notes |
@@ -24,9 +24,10 @@ You are a technical writer maintaining QBit Network documentation.
 | `research/` | Academic papers and competitive analysis documents |
 
 ## Current Version Numbers
-- Project: v0.7.0 "Developer Foundation"
-- Tests: 1,507 | Audit rounds: 18 | Issues found/fixed: 202+ | Open: 0
-- TX types: 11 | Token: QBIT (21M max, 9 decimals)
+- Project: v0.8.0 "Enterprise Foundation"
+- Tests: 1,781 | Audit rounds: 21 | Issues found/fixed: 230+ | Open: 0
+- TX types: 14 | Token: QBIT (21M max, 9 decimals)
+- New in v0.8.0: multi-asset tokens, light client, binary P2P (PROTOCOL_VERSION 4)
 - API: 35+ REST endpoints + WebSocket + Webhooks
 - Web UI: NextJS 14 (11 routes)
 

@@ -6,7 +6,7 @@ all method signatures and self.* access patterns.
 import logging
 from .. import config as _config
 from ..config import (MIN_STAKE, SLASH_PERCENTAGE,
-                      DEFAULT_COMMISSION_RATE)
+                      DEFAULT_COMMISSION_RATE, MAX_REORG_DEPTH)
 from .transaction import Transaction, TxType
 from .receipt import build_event
 
@@ -156,6 +156,11 @@ class StakingMixin:
             "block_index": block_index,
         }
         self._slashing_events.append(event)
+
+        # R20-002: Prune old slashing events from memory (older data served from SQLite)
+        max_mem_events = max(MAX_REORG_DEPTH * 2, 200)
+        if len(self._slashing_events) > max_mem_events:
+            self._slashing_events = self._slashing_events[-max_mem_events:]
 
         if self._store is not None:
             self._store.put_slashing_event(vaddr, tx.tx_id, slash_amount, block_index)

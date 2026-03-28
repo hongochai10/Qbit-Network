@@ -28,6 +28,15 @@ class StateTrieMixin:
             # skip negative nonces to avoid encoding errors.
             if nonce >= 0:
                 trie.set(f"nonce:{addr}", nonce.to_bytes(8, 'big'))
+        # Token balances and supply
+        token_registry = getattr(self, '_token_registry', {})
+        token_balances = getattr(self, '_token_balances', {})
+        for (tid, addr), bal in token_balances.items():
+            if bal > 0:
+                trie.set(f"token:{tid}:balance:{addr}", bal.to_bytes(8, 'big'))
+        for tid, reg in token_registry.items():
+            trie.set(f"token:{tid}:supply",
+                     reg["total_minted"].to_bytes(8, 'big'))
 
     def get_state_proof(self, address: str, key_type: str = "balance") -> dict | None:
         """Generate a Merkle state proof for an address.
@@ -48,6 +57,11 @@ class StateTrieMixin:
         if key_type not in ("balance", "nonce"):
             return None
         trie_key = f"{key_type}:{address}"
+        return self._state_trie.get_proof(trie_key)
+
+    def get_token_state_proof(self, token_id: str, address: str) -> dict | None:
+        """Generate a Merkle state proof for a token balance."""
+        trie_key = f"token:{token_id}:balance:{address}"
         return self._state_trie.get_proof(trie_key)
 
     def get_state_root(self) -> str:

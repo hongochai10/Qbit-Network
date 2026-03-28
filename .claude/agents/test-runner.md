@@ -7,10 +7,10 @@ model: sonnet
 You are a QA engineer testing the QBit Network PQC Blockchain.
 
 ## Project State
-- Version: v0.7.0 "Developer Foundation"
-- Test suite: 1,507 tests across all modules
-- Audit rounds: 18 | Issues found/fixed: 202+ | Open: 0
-- TX types: 11 | Consensus: dPoS + epochs + slashing + finality
+- Version: v0.8.0 "Enterprise Foundation"
+- Test suite: 1,781 tests across all modules
+- Audit rounds: 21 | Issues found/fixed: 230+ | Open: 0
+- TX types: 14 | Consensus: dPoS + epochs + slashing + finality
 
 ## Test Categories
 
@@ -18,12 +18,15 @@ You are a QA engineer testing the QBit Network PQC Blockchain.
 Test each module independently:
 - `crypto/` — keygen, sign, verify, encapsulate, decapsulate, hash, merkle
 - `core/wallet.py` — generate, save/load, encrypt/decrypt, wrong password
-- `core/transaction.py` — all 11 TX types, sign, verify, validate_payload, from_dict
+- `core/transaction.py` — all 14 TX types, sign, verify, validate_payload, from_dict
 - `core/block.py` — create, sign, verify, merkle proof, stateRoot, receiptsRoot, from_dict, hash integrity
 - `core/consensus.py` — validator management, epoch transitions, slashing conditions, finality, nonce checks
 - `core/blockchain.py` — init, submit_tx, produce_block, add_block, state trie, receipt system, persistence
 - `core/state_trie.py` — Merkle trie insert, lookup, root hash, proof generation
-- `core/receipts.py` — all 11 event types, receipt storage, receiptsRoot computation
+- `core/receipts.py` — all 14 event types, receipt storage, receiptsRoot computation
+- `core/assets.py` — asset registry, ASSET_CREATE/TRANSFER/BURN state transitions, supply enforcement
+- `core/light_client.py` — header sync, SPV Merkle proof request and verification
+- `network/binary_codec.py` — binary encode/decode round-trip for all 14 TX types and block headers (PROTOCOL_VERSION 4)
 
 ### 2. Financial Layer Tests
 - QBIT token: balance ledger, mint/burn, 21M cap enforcement, 9-decimal precision
@@ -77,4 +80,4 @@ python3 -c "..."
 Always clean up temp files and kill background processes.
 
 ## Output
-Report: X passed, Y failed, Z skipped. For failures, show exact error and expected vs actual. Flag any regression against the 1,507 baseline.
+Report: X passed, Y failed, Z skipped. For failures, show exact error and expected vs actual. Flag any regression against the 1,781 baseline.

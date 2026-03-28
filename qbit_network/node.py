@@ -294,6 +294,18 @@ class FullNode:
         m("qv_registerWebhook", self._rpc_register_webhook)
         m("qv_listWebhooks", self._rpc_list_webhooks)
         m("qv_deleteWebhook", self._rpc_delete_webhook)
+        # Token operations
+        m("qv_getTokenInfo", self._rpc_get_token_info)
+        m("qv_getTokenBalance", self._rpc_get_token_balance)
+        m("qv_listTokens", self._rpc_list_tokens)
+        m("qv_getAddressTokens", self._rpc_get_address_tokens)
+        m("qv_issueToken", self._rpc_issue_token)
+        m("qv_mintToken", self._rpc_mint_token)
+        m("qv_transferToken", self._rpc_transfer_token)
+        # Light client operations (public)
+        m("qv_getBlockHeaders", self._rpc_get_block_headers)
+        m("qv_getStateProofAt", self._rpc_get_state_proof_at)
+        m("qv_getReceiptProof", self._rpc_get_receipt_proof)
 
     async def _rpc_block_number(self):
         return self.blockchain.height
@@ -786,6 +798,164 @@ class FullNode:
         await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
         await self._ws_notify_tx(tx)
         return {"tx_id": result, "amount": amount, "to": to_address}
+
+    # ---- Token RPC ----
+
+    async def _rpc_get_token_info(self, token_id=""):
+        """Get token metadata (public)."""
+        if not isinstance(token_id, str) or not token_id:
+            raise ValueError("token_id must be a non-empty string")
+        info = self.blockchain.get_token_info(token_id)
+        if info is None:
+            return None
+        return info
+
+    async def _rpc_get_token_balance(self, token_id="", address=""):
+        """Get token balance for an address (public)."""
+        if not isinstance(token_id, str) or not token_id:
+            raise ValueError("token_id must be a non-empty string")
+        if not isinstance(address, str) or not address:
+            raise ValueError("address must be a non-empty string")
+        return {"token_id": token_id, "address": address,
+                "amount": self.blockchain.get_token_balance(token_id, address)}
+
+    async def _rpc_list_tokens(self, page=1, limit=50):
+        """List all tokens (public)."""
+        if not isinstance(page, int) or page < 1:
+            raise ValueError("page must be a positive integer")
+        if not isinstance(limit, int) or limit < 1 or limit > 100:
+            raise ValueError("limit must be 1-100")
+        tokens = self.blockchain.list_tokens(page=page, limit=limit)
+        return {"tokens": tokens, "total": len(self.blockchain._token_registry)}
+
+    async def _rpc_get_address_tokens(self, address=""):
+        """Get all token balances for an address (public)."""
+        if not isinstance(address, str) or not address:
+            raise ValueError("address must be a non-empty string")
+        return self.blockchain.get_address_tokens(address)
+
+    async def _rpc_issue_token(self, wallet_address="", name="",
+                                symbol="", decimals=0, max_supply=0,
+                                transferable=True):
+        """Issue a new token (protected)."""
+        if not isinstance(wallet_address, str) or not wallet_address:
+            raise ValueError("wallet_address must be non-empty string")
+        if not isinstance(name, str) or not name:
+            raise ValueError("name must be non-empty string")
+        if not isinstance(symbol, str) or not symbol:
+            raise ValueError("symbol must be non-empty string")
+        if not isinstance(decimals, int) or decimals < 0:
+            raise ValueError("decimals must be a non-negative integer")
+        if not isinstance(max_supply, int) or max_supply < 0:
+            raise ValueError("max_supply must be a non-negative integer")
+        if not isinstance(transferable, bool):
+            raise ValueError("transferable must be a boolean")
+        w = self._get_wallet(wallet_address)
+        async with self._lock_for(w.address):
+            tx = Transaction.issue_token(
+                sender=w.address,
+                name=name,
+                symbol=symbol,
+                decimals=decimals,
+                max_supply=max_supply,
+                transferable=transferable,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
+        # Compute token_id for response
+        from qbit_network.crypto import sha3_256
+        token_id = sha3_256(
+            (w.address + symbol + str(tx.nonce)).encode()
+        ).hex()[:32]
+        return {"tx_id": result, "token_id": token_id, "symbol": symbol}
+
+    async def _rpc_mint_token(self, wallet_address="", token_id="",
+                               recipient="", amount=0):
+        """Mint tokens (protected, issuer only)."""
+        if not isinstance(wallet_address, str) or not wallet_address:
+            raise ValueError("wallet_address must be non-empty string")
+        if not isinstance(token_id, str) or not token_id:
+            raise ValueError("token_id must be non-empty string")
+        if not isinstance(recipient, str) or not recipient:
+            raise ValueError("recipient must be non-empty string")
+        if not isinstance(amount, int) or amount <= 0:
+            raise ValueError("amount must be a positive integer")
+        w = self._get_wallet(wallet_address)
+        async with self._lock_for(w.address):
+            tx = Transaction.mint_token(
+                sender=w.address,
+                recipient=recipient,
+                token_id=token_id,
+                amount=amount,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
+        return {"tx_id": result, "token_id": token_id,
+                "amount": amount, "recipient": recipient}
+
+    async def _rpc_transfer_token(self, wallet_address="", token_id="",
+                                   recipient="", amount=0, memo=""):
+        """Transfer custom tokens (protected)."""
+        if not isinstance(wallet_address, str) or not wallet_address:
+            raise ValueError("wallet_address must be non-empty string")
+        if not isinstance(token_id, str) or not token_id:
+            raise ValueError("token_id must be non-empty string")
+        if not isinstance(recipient, str) or not recipient:
+            raise ValueError("recipient must be non-empty string")
+        if not isinstance(amount, int) or amount <= 0:
+            raise ValueError("amount must be a positive integer")
+        w = self._get_wallet(wallet_address)
+        async with self._lock_for(w.address):
+            tx = Transaction.transfer_token(
+                sender=w.address,
+                recipient=recipient,
+                token_id=token_id,
+                amount=amount,
+                memo=memo,
+                nonce=self._next_nonce(w.address),
+            )
+            tx.sign(w.signing_sk, w.signing_pk)
+            ok, result = self.blockchain.submit_tx(tx)
+        if not ok:
+            raise ValueError(result)
+        await self.p2p.broadcast(MSG_NEW_TX, {"tx": tx.to_dict()})
+        await self._ws_notify_tx(tx)
+        return {"tx_id": result, "token_id": token_id,
+                "amount": amount, "recipient": recipient}
+
+    # ---- Light Client RPC ----
+
+    async def _rpc_get_block_headers(self, start=0, count=20):
+        """Get block headers without transactions (public)."""
+        if not isinstance(start, int) or start < 0:
+            raise ValueError("start must be a non-negative integer")
+        if not isinstance(count, int) or count < 1 or count > 100:
+            raise ValueError("count must be 1-100")
+        return self.blockchain.get_block_headers(start=start, count=count)
+
+    async def _rpc_get_state_proof_at(self, key="", block_index=None):
+        """Get state proof at optional block height (public)."""
+        if not isinstance(key, str) or not key:
+            raise ValueError("key must be a non-empty string")
+        if block_index is not None and not isinstance(block_index, int):
+            raise ValueError("block_index must be an integer or null")
+        return self.blockchain.get_state_proof_at_block(key, block_index)
+
+    async def _rpc_get_receipt_proof(self, tx_id=""):
+        """Get receipt inclusion proof (public)."""
+        if not isinstance(tx_id, str) or not tx_id:
+            raise ValueError("tx_id must be a non-empty string")
+        return self.blockchain.get_receipt_proof(tx_id)
 
     # ---- Receipt & Finality RPC ----
 

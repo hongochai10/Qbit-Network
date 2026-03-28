@@ -746,6 +746,7 @@ class TestWebhookValidEventTypes(unittest.TestCase):
             "Stake", "Delegate", "Unstake",
             "KeyRegistered", "ValidatorRegistered", "KeyRevoked", "Slashed",
             "BlockReward", "EpochTransition",
+            "TokenIssued", "TokenMinted", "TokenTransferred",
         }
         self.assertEqual(VALID_EVENT_TYPES, expected)
 

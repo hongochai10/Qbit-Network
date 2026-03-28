@@ -75,6 +75,22 @@ class Block:
         return verify_merkle_proof(
             bytes.fromhex(tx_id), proof, bytes.fromhex(self.merkle_root))
 
+    def to_header_dict(self) -> dict:
+        """Return block header without transactions (for light clients)."""
+        return {
+            "hash": self.block_hash,
+            "index": self.index,
+            "timestamp": self.timestamp,
+            "prevHash": self.prev_hash,
+            "merkleRoot": self.merkle_root,
+            "baseFee": self.base_fee,
+            "stateRoot": self.state_root,
+            "receiptsRoot": self.receipts_root,
+            "validator": self.validator,
+            "txCount": len(self.transactions),
+            "signature": self.signature.hex(),
+        }
+
     def to_dict(self) -> dict:
         d = {
             "hash": self.block_hash,

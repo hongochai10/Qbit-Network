@@ -1,10 +1,12 @@
-"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER."""
+"""QVault transaction types: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER, ISSUE_TOKEN, MINT_TOKEN, TRANSFER_TOKEN."""
 import json
 import re
 import time
 from enum import Enum
 from ..crypto import MLDSA, sha3_256
-from ..config import MAX_TX_PAYLOAD_SIZE, CHAIN_ID, MIN_STAKE, MAX_STAKE
+from ..config import (MAX_TX_PAYLOAD_SIZE, CHAIN_ID, MIN_STAKE, MAX_STAKE,
+                      MAX_TOKEN_NAME_LENGTH, MAX_TOKEN_SYMBOL_LENGTH,
+                      MIN_TOKEN_SYMBOL_LENGTH, MAX_TOKEN_DECIMALS)
 
 
 class TxType(str, Enum):
@@ -19,6 +21,9 @@ class TxType(str, Enum):
     UNSTAKE = "UNSTAKE"
     EVIDENCE = "EVIDENCE"
     TRANSFER = "TRANSFER"
+    ISSUE_TOKEN = "ISSUE_TOKEN"
+    MINT_TOKEN = "MINT_TOKEN"
+    TRANSFER_TOKEN = "TRANSFER_TOKEN"
 
 
 _HEX_RE = re.compile(r'^[0-9a-fA-F]+$')
@@ -103,6 +108,9 @@ class Transaction:
                           "validator_address",
                           "block_a_header", "block_b_header"},
         TxType.TRANSFER: {"amount", "memo"},
+        TxType.ISSUE_TOKEN: {"name", "symbol", "decimals", "max_supply", "transferable"},
+        TxType.MINT_TOKEN: {"token_id", "amount"},
+        TxType.TRANSFER_TOKEN: {"token_id", "amount", "memo"},
     }
 
     # EVIDENCE payloads contain two ML-DSA-65 signatures (3309 bytes each = 6618 hex chars)
@@ -262,6 +270,75 @@ class Transaction:
             vaddr = self.payload.get("validator_address", "")
             if not isinstance(vaddr, str) or not vaddr:
                 return False, "validator_address must be non-empty string"
+
+        elif self.tx_type == TxType.ISSUE_TOKEN:
+            _NAME_RE = re.compile(r'^[a-zA-Z0-9 ]+$')
+            _SYMBOL_RE = re.compile(r'^[A-Z][A-Z0-9]+$')
+            name = self.payload.get("name", "")
+            if not isinstance(name, str) or not name:
+                return False, "name must be a non-empty string"
+            if len(name) > MAX_TOKEN_NAME_LENGTH:
+                return False, f"name exceeds {MAX_TOKEN_NAME_LENGTH} characters"
+            if not _NAME_RE.match(name):
+                return False, "name must contain only alphanumeric characters and spaces"
+            symbol = self.payload.get("symbol", "")
+            if not isinstance(symbol, str) or not symbol:
+                return False, "symbol must be a non-empty string"
+            if len(symbol) < MIN_TOKEN_SYMBOL_LENGTH:
+                return False, f"symbol must be at least {MIN_TOKEN_SYMBOL_LENGTH} characters"
+            if len(symbol) > MAX_TOKEN_SYMBOL_LENGTH:
+                return False, f"symbol exceeds {MAX_TOKEN_SYMBOL_LENGTH} characters"
+            if not _SYMBOL_RE.match(symbol):
+                return False, "symbol must be uppercase alphanumeric starting with a letter"
+            if symbol == "QBIT":
+                return False, "symbol QBIT is reserved for the native token"
+            decimals = self.payload.get("decimals")
+            if not isinstance(decimals, int) or decimals < 0 or decimals > MAX_TOKEN_DECIMALS:
+                return False, f"decimals must be an integer 0-{MAX_TOKEN_DECIMALS}"
+            max_supply = self.payload.get("max_supply", 0)
+            if not isinstance(max_supply, int) or max_supply < 0:
+                return False, "max_supply must be a non-negative integer"
+            transferable = self.payload.get("transferable", True)
+            if not isinstance(transferable, bool):
+                return False, "transferable must be a boolean"
+
+        elif self.tx_type == TxType.MINT_TOKEN:
+            token_id = self.payload.get("token_id", "")
+            if not isinstance(token_id, str) or len(token_id) != 32 or not _HEX_RE.match(token_id):
+                return False, "token_id must be a 32-character hex string"
+            amount = self.payload.get("amount")
+            if not isinstance(amount, int) or amount <= 0:
+                return False, "amount must be a positive integer"
+            if not self.recipient:
+                return False, "MINT_TOKEN requires a recipient"
+            from ..config import ADDRESS_PREFIX
+            if (not self.recipient.startswith(ADDRESS_PREFIX) or
+                    len(self.recipient) != 67 or
+                    not _HEX_RE.match(self.recipient[3:])):
+                return False, "recipient must be a valid qv1 address (67 chars)"
+
+        elif self.tx_type == TxType.TRANSFER_TOKEN:
+            token_id = self.payload.get("token_id", "")
+            if not isinstance(token_id, str) or len(token_id) != 32 or not _HEX_RE.match(token_id):
+                return False, "token_id must be a 32-character hex string"
+            amount = self.payload.get("amount")
+            if not isinstance(amount, int) or amount <= 0:
+                return False, "amount must be a positive integer"
+            if not self.recipient:
+                return False, "TRANSFER_TOKEN requires a recipient"
+            if self.recipient == self.sender:
+                return False, "cannot transfer token to self"
+            from ..config import ADDRESS_PREFIX
+            if (not self.recipient.startswith(ADDRESS_PREFIX) or
+                    len(self.recipient) != 67 or
+                    not _HEX_RE.match(self.recipient[3:])):
+                return False, "recipient must be a valid qv1 address (67 chars)"
+            memo = self.payload.get("memo")
+            if memo is not None:
+                if not isinstance(memo, str):
+                    return False, "memo must be a string"
+                if len(memo) > 256:
+                    return False, "memo exceeds 256 characters"
 
         return True, ""
 
@@ -478,6 +555,54 @@ class Transaction:
                 "block_index": block_index,
                 "validator_address": validator_address,
             },
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
+        )
+
+    @classmethod
+    def issue_token(cls, sender: str, name: str, symbol: str,
+                    decimals: int, max_supply: int = 0,
+                    transferable: bool = True, nonce: int = 0,
+                    max_fee_per_weight: int = 0,
+                    max_priority_fee: int = 0) -> 'Transaction':
+        payload = {
+            "name": name,
+            "symbol": symbol,
+            "decimals": decimals,
+            "max_supply": max_supply,
+            "transferable": transferable,
+        }
+        return cls(
+            tx_type=TxType.ISSUE_TOKEN, sender=sender, nonce=nonce,
+            payload=payload,
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
+        )
+
+    @classmethod
+    def mint_token(cls, sender: str, recipient: str, token_id: str,
+                   amount: int, nonce: int = 0,
+                   max_fee_per_weight: int = 0,
+                   max_priority_fee: int = 0) -> 'Transaction':
+        return cls(
+            tx_type=TxType.MINT_TOKEN, sender=sender,
+            recipient=recipient, nonce=nonce,
+            payload={"token_id": token_id, "amount": amount},
+            max_fee_per_weight=max_fee_per_weight,
+            max_priority_fee=max_priority_fee,
+        )
+
+    @classmethod
+    def transfer_token(cls, sender: str, recipient: str, token_id: str,
+                       amount: int, memo: str = "", nonce: int = 0,
+                       max_fee_per_weight: int = 0,
+                       max_priority_fee: int = 0) -> 'Transaction':
+        payload = {"token_id": token_id, "amount": amount}
+        if memo:
+            payload["memo"] = memo
+        return cls(
+            tx_type=TxType.TRANSFER_TOKEN, sender=sender,
+            recipient=recipient, nonce=nonce, payload=payload,
             max_fee_per_weight=max_fee_per_weight,
             max_priority_fee=max_priority_fee,
         )

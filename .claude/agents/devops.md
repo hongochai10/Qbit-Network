@@ -30,7 +30,7 @@ Three parallel jobs on every push and PR:
 | Job | Steps |
 |-----|-------|
 | `lint` | flake8, black --check, isort --check |
-| `test` | python -m pytest tests/ (1,507 tests), coverage report |
+| `test` | python -m pytest tests/ (1,781 tests), coverage report |
 | `security-scan` | bandit, safety check on requirements.txt |
 
 Release job (tag push): build Docker image, push to registry, generate changelog diff.
@@ -56,6 +56,6 @@ Multi-node testnet: docker-compose with 3 validator nodes + shared genesis.
 1. Read existing deployment code and config before making changes
 2. Keep backward compatibility with existing chain.json format during DB migration
 3. All new infra config via environment variables or CLI args (never hardcoded)
-4. Test with `python3 -m pytest` after changes (must pass all 1,507 tests)
+4. Test with `python3 -m pytest` after changes (must pass all 1,781 tests)
 5. Verify NextJS build with `npm run build` in `web/` after frontend changes
 6. Update `tracker/FEATURES.md` and `tracker/CHANGELOG.md`

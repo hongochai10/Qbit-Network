@@ -163,6 +163,22 @@ class RESTApi:
         r.add_post("/delegate", self._delegate_rest)
         r.add_post("/unstake", self._unstake_rest)
 
+        # Token endpoints (public)
+        r.add_get("/tokens", self._list_tokens)
+        r.add_get("/tokens/{token_id}", self._get_token)
+        r.add_get("/tokens/{token_id}/holders", self._get_token_holders)
+        r.add_get("/address/{addr}/tokens", self._get_address_tokens)
+        # Token endpoints (protected)
+        r.add_post("/issue-token", self._issue_token_rest)
+        r.add_post("/mint-token", self._mint_token_rest)
+        r.add_post("/transfer-token", self._transfer_token_rest)
+
+        # Light client endpoints (public)
+        r.add_get("/headers", self._list_headers)
+        r.add_get("/headers/{index}", self._get_header)
+        r.add_get("/proofs/state/{key}", self._state_proof_by_key)
+        r.add_get("/proofs/receipt/{txid}", self._receipt_proof)
+
     # ------------------------------------------------------------------
     # Public handlers
     # ------------------------------------------------------------------
@@ -921,3 +937,186 @@ class RESTApi:
         except Exception as e:
             logger.error(f"REST delete_webhook: {e}")
             return _err(500, "internal server error", status=500)
+
+    # ------------------------------------------------------------------
+    # Token handlers
+    # ------------------------------------------------------------------
+
+    async def _list_tokens(self, request: web.Request) -> web.Response:
+        pag = _parse_pagination(request)
+        if isinstance(pag, web.Response):
+            return pag
+        page, limit = pag
+        bc = self._node.blockchain
+        tokens = bc.list_tokens(page=page, limit=limit)
+        return _ok({"tokens": tokens, "page": page, "limit": limit,
+                     "total": len(bc._token_registry)})
+
+    async def _get_token(self, request: web.Request) -> web.Response:
+        token_id = request.match_info.get("token_id", "")
+        if not token_id:
+            return _err(400, "token_id is required")
+        bc = self._node.blockchain
+        info = bc.get_token_info(token_id)
+        if info is None:
+            return _err(404, "token not found", status=404)
+        return _ok(info)
+
+    async def _get_token_holders(self, request: web.Request) -> web.Response:
+        token_id = request.match_info.get("token_id", "")
+        if not token_id:
+            return _err(400, "token_id is required")
+        bc = self._node.blockchain
+        if token_id not in bc._token_registry:
+            return _err(404, "token not found", status=404)
+        holders = bc.get_token_holders(token_id)
+        return _ok({"token_id": token_id, "holders": holders,
+                     "total": len(holders)})
+
+    async def _get_address_tokens(self, request: web.Request) -> web.Response:
+        addr = request.match_info.get("addr", "")
+        if not addr:
+            return _err(400, "address is required")
+        bc = self._node.blockchain
+        tokens = bc.get_address_tokens(addr)
+        return _ok({"address": addr, "tokens": tokens})
+
+    async def _issue_token_rest(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return _err(400, "invalid JSON body")
+
+        wallet_name = body.get("wallet", "")
+        name = body.get("name", "")
+        symbol = body.get("symbol", "")
+        decimals = body.get("decimals")
+        max_supply = body.get("max_supply", 0)
+        transferable = body.get("transferable", True)
+
+        if not wallet_name:
+            return _err(400, "wallet is required")
+        if not name or not symbol or decimals is None:
+            return _err(400, "name, symbol, and decimals are required")
+
+        try:
+            result = await self._node._rpc_issue_token(
+                wallet_name, name, symbol, decimals, max_supply, transferable)
+            return _ok(result, status=201)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST issue_token: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _mint_token_rest(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return _err(400, "invalid JSON body")
+
+        wallet_name = body.get("wallet", "")
+        token_id = body.get("token_id", "")
+        recipient = body.get("recipient", "")
+        amount = body.get("amount")
+
+        if not wallet_name or not token_id or not recipient or not amount:
+            return _err(400, "wallet, token_id, recipient, and amount are required")
+
+        try:
+            result = await self._node._rpc_mint_token(
+                wallet_name, token_id, recipient, amount)
+            return _ok(result, status=201)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST mint_token: {e}")
+            return _err(500, "internal server error", status=500)
+
+    async def _transfer_token_rest(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return _err(401, "authentication required", status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return _err(400, "invalid JSON body")
+
+        wallet_name = body.get("wallet", "")
+        token_id = body.get("token_id", "")
+        recipient = body.get("recipient", "")
+        amount = body.get("amount")
+        memo = body.get("memo", "")
+
+        if not wallet_name or not token_id or not recipient or not amount:
+            return _err(400, "wallet, token_id, recipient, and amount are required")
+
+        try:
+            result = await self._node._rpc_transfer_token(
+                wallet_name, token_id, recipient, amount, memo)
+            return _ok(result, status=201)
+        except ValueError as e:
+            return _err(400, str(e))
+        except Exception as e:
+            logger.error(f"REST transfer_token: {e}")
+            return _err(500, "internal server error", status=500)
+
+    # ------------------------------------------------------------------
+    # Light client handlers
+    # ------------------------------------------------------------------
+
+    async def _list_headers(self, request: web.Request) -> web.Response:
+        try:
+            start = int(request.query.get("start", 0))
+            count = int(request.query.get("count", 20))
+        except (ValueError, TypeError):
+            return _err(400, "start and count must be integers")
+        if start < 0:
+            return _err(400, "start must be >= 0")
+        if count < 1 or count > 100:
+            return _err(400, "count must be 1-100")
+        bc = self._node.blockchain
+        headers = bc.get_block_headers(start=start, count=count)
+        return _ok({"headers": headers, "start": start,
+                     "count": len(headers), "height": bc.height})
+
+    async def _get_header(self, request: web.Request) -> web.Response:
+        try:
+            index = int(request.match_info.get("index", -1))
+        except (ValueError, TypeError):
+            return _err(400, "index must be an integer")
+        bc = self._node.blockchain
+        block = bc._get_block_by_index(index)
+        if block is None:
+            return _err(404, "block not found", status=404)
+        return _ok(block.to_header_dict())
+
+    async def _state_proof_by_key(self, request: web.Request) -> web.Response:
+        key = request.match_info.get("key", "")
+        if not key:
+            return _err(400, "key is required")
+        block_str = request.query.get("block")
+        block_index = None
+        if block_str is not None:
+            try:
+                block_index = int(block_str)
+            except (ValueError, TypeError):
+                return _err(400, "block must be an integer")
+        bc = self._node.blockchain
+        proof = bc.get_state_proof_at_block(key, block_index)
+        if proof is None:
+            return _err(404, "key not found or block snapshot unavailable", status=404)
+        return _ok(proof)
+
+    async def _receipt_proof(self, request: web.Request) -> web.Response:
+        txid = request.match_info.get("txid", "")
+        if not txid:
+            return _err(400, "txid is required")
+        bc = self._node.blockchain
+        proof = bc.get_receipt_proof(txid)
+        if proof is None:
+            return _err(404, "receipt not found", status=404)
+        return _ok(proof)

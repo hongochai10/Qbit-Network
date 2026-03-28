@@ -2,6 +2,50 @@
 
 ## Implemented
 
+### v0.8.0 Sprint 1: Multi-Asset Tokens (2026-03-28)
+- [x] ISSUE_TOKEN TX type — create custom tokens (name, symbol, decimals, max_supply, transferable)
+- [x] MINT_TOKEN TX type — issuer-only minting with supply cap enforcement
+- [x] TRANSFER_TOKEN TX type — transfer custom tokens between addresses
+- [x] Token ID derivation: SHA3-256(issuer + symbol + nonce)[:32]
+- [x] State trie integration (token balances in stateRoot)
+- [x] Receipt events: TokenIssued, TokenMinted, TokenTransferred
+- [x] Rollback support for all 3 token TX types
+- [x] SQLite persistence (tokens + token_balances tables)
+- [x] REST API: 7 new endpoints (4 public + 3 protected)
+- [x] JSON-RPC: 7 new methods (4 public + 3 protected)
+- [x] Query methods: get_token_info, list_tokens, get_token_holders, get_address_tokens
+- [x] Webhook events: TokenIssued, TokenMinted, TokenTransferred
+- [x] Protocol version bumped to 4
+- [x] 1632 tests passing (+125 new)
+
+### v0.8.0 Sprint 2: Light Client Protocol (2026-03-28)
+- [x] Block.to_header_dict() — header without transactions
+- [x] get_block_headers(start, count) — paginated header range (max 100)
+- [x] Receipt Merkle proof generation + verification
+- [x] Historical state proofs via state snapshots
+- [x] REST: 4 light client endpoints
+- [x] JSON-RPC: 3 light client methods
+- [x] 1711 tests passing (+79 new)
+
+### v0.8.0 Sprint 4: Round 21 Audit + Release (2026-03-28)
+- [x] Security audit Round 21 — 11 issues (3 HIGH, 5 MED, 3 LOW), 10 fixed, 1 accepted
+- [x] SQLite token rollback cleanup (R21-001)
+- [x] Token pool admission hardening: symbol uniqueness, issuer auth, balance checks (R21-002/003)
+- [x] Token ID collision check, mint overflow protection (R21-004/006)
+- [x] P2P zero-frame rejection, cached codec (R21-007/009)
+- [x] PROTOCOL.md v4 complete (tokens, light client, binary P2P, weight table)
+- [x] All docs synced: README, CLAUDE.md, CHANGELOG, FEATURES, agents
+- [x] 21 audit rounds, 230+ issues found/fixed, 0 open
+
+### v0.8.0 Sprint 3: Binary P2P Protocol (2026-03-28)
+- [x] MessageCodec with JSON + msgpack backends (codec.py)
+- [x] Length-prefixed binary framing (4-byte big-endian + msgpack)
+- [x] Binary field optimization (signature, pubkeys -> raw bytes)
+- [x] Protocol negotiation (wire_format in hello_auth/auth_response)
+- [x] Per-peer wire_format tracking (Peer.__slots__)
+- [x] Backward compatible (v3 peers fall back to JSON)
+- [x] 1781 tests passing (+70 new)
+
 ### Refactor: blockchain.py mixin extraction (2026-03-26)
 - [x] Extracted `PersistenceMixin` (301 lines) to `qbit_network/core/persistence.py`
   - `save()`, `load()`, `_load_from_sqlite()`
@@ -19,7 +63,7 @@
 - [x] R19-SEC-002 (MED): Events/receipts indices rebuilt from SQLite on load
 - [x] R19-SEC-005 (MED): _block_level_events pruned beyond MAX_REORG_DEPTH
 - [x] R19-DOC: Fixed fee tables, genesis allocation, block reward, env vars, audit round count
-- [x] 19 audit rounds, 0 open issues
+- [x] 21 audit rounds, 0 open issues
 
 ### v0.7.0-sprint4: Round 18 Audit + Final Release (2026-03-26)
 - [x] Round 18 security audit — 5 issues found, 4 fixed, 1 accepted

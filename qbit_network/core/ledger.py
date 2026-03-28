@@ -107,6 +107,8 @@ class BalanceLedgerMixin:
                 total += tx.payload.get("amount", 0)
             elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
                 total += tx.payload.get("amount", 0)
+            # Note: ISSUE_TOKEN/MINT_TOKEN/TRANSFER_TOKEN only charge QBIT fees,
+            # no native QBIT amount transfer, so fee-only is correct.
         return total
 
     def _persist_balances_after_block(self, block, idx: int,

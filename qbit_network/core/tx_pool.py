@@ -164,6 +164,44 @@ class TxPoolMixin:
                 if genesis_block and tx.sender == genesis_block.validator:
                     return False, "cannot revoke genesis validator keys"
 
+        # R21-002: ISSUE_TOKEN symbol uniqueness check at pool admission
+        if tx.tx_type == TxType.ISSUE_TOKEN:
+            symbol = tx.payload.get("symbol", "")
+            if symbol in self._token_by_symbol:
+                return False, f"token symbol already exists: {symbol}"
+            # Also check pending pool for conflicting ISSUE_TOKEN with same symbol
+            for pool_tx in self.tx_pool:
+                if (pool_tx.tx_type == TxType.ISSUE_TOKEN
+                        and pool_tx.payload.get("symbol") == symbol):
+                    return False, f"token symbol already pending in pool: {symbol}"
+
+        # R21-003: MINT_TOKEN issuer + TRANSFER_TOKEN balance checks at pool admission
+        if tx.tx_type == TxType.MINT_TOKEN:
+            tid = tx.payload.get("token_id", "")
+            reg = self._token_registry.get(tid)
+            if reg is None:
+                return False, f"token does not exist: {tid}"
+            if reg["issuer"] != tx.sender:
+                return False, "only the token issuer can mint"
+            if reg["max_supply"] > 0:
+                amount = tx.payload.get("amount", 0)
+                if reg["total_minted"] + amount > reg["max_supply"]:
+                    return False, (f"minting {amount} would exceed max_supply "
+                                   f"{reg['max_supply']}")
+
+        if tx.tx_type == TxType.TRANSFER_TOKEN:
+            tid = tx.payload.get("token_id", "")
+            reg = self._token_registry.get(tid)
+            if reg is None:
+                return False, f"token does not exist: {tid}"
+            if not reg.get("transferable", True):
+                return False, f"token {tid} is not transferable"
+            amount = tx.payload.get("amount", 0)
+            bal = self._token_balances.get((tid, tx.sender), 0)
+            if bal < amount:
+                return False, (f"insufficient token balance: have {bal}, "
+                               f"need {amount}")
+
         # Nonce check -- O(1) via _pool_sender_count
         expected_nonce = self.get_nonce(tx.sender)
         pending_from_sender = self._pool_sender_count.get(tx.sender, 0)

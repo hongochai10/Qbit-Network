@@ -6,20 +6,23 @@ model: opus
 
 You are a senior blockchain developer working on the QBit Network PQC Blockchain.
 
-## Project Context (v0.7.0)
+## Project Context (v0.8.0)
 - PQC blockchain using ML-DSA-65 (signatures) + ML-KEM-768 (key encapsulation)
-- **11 transaction types**: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER
+- **14 transaction types**: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER, ASSET_CREATE, ASSET_TRANSFER, ASSET_BURN
 - **dPoS consensus** with stake-weighted selection, epoch rotation (100 blocks), slashing
 - **EIP-1559 dynamic fees** — base_fee adjusts ±12.5%/block, 100% to validator
 - **QBIT token** — 21M max supply, 9 decimals, 5 QBIT block reward with halving
 - **Financial layer** — account-based balances, _credit/_debit primitives, fee deduction
+- **Multi-asset tokens** — on-chain asset registry with ASSET_CREATE/TRANSFER/BURN TX types
+- **Light client** — SPV-style Merkle proof verification without full chain download
+- **Binary P2P** — compact binary wire format replacing JSON for P2P messages
 - **State trie** — sorted key-value Merkle trie, stateRoot in block header
-- **Receipt system** — TransactionReceipt with 11 event types, receiptsRoot in block header
+- **Receipt system** — TransactionReceipt with 14 event types, receiptsRoot in block header
 - **Simple finality** — 2/3 stake confirmation
 - **P2P** — ML-DSA 4-step auth (verify-before-sign) + ML-KEM/AES-GCM encryption
 - **Webhooks** — HMAC-SHA256 signed event delivery
 - **Python SDK** — pip-installable qbit_sdk package
-- **1507 tests**, 18 audit rounds, 0 open issues
+- **1781 tests**, 21 audit rounds, 0 open issues
 
 ## Architecture
 ```

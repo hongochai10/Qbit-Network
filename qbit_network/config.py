@@ -17,7 +17,7 @@ CHAIN_ID = "qbit-mainnet"
 MAX_REORG_DEPTH = 32              # max blocks to reorganize
 
 # Protocol
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 # Network
 DEFAULT_P2P_PORT = 9000
@@ -74,6 +74,9 @@ TX_FEES = {
     "UNSTAKE": 10_000_000,        # 0.01 QBIT
     "REVOKE_KEY": 0,
     "EVIDENCE": 0,
+    "ISSUE_TOKEN": 500_000_000,       # 0.5 QBIT
+    "MINT_TOKEN": 10_000_000,         # 0.01 QBIT
+    "TRANSFER_TOKEN": 1_000_000,      # 0.001 QBIT
 }
 FEE_BURN_PERCENT = 50
 
@@ -90,6 +93,9 @@ TX_WEIGHTS = {
     "UNSTAKE": 1_000_000,
     "REVOKE_KEY": 0,
     "EVIDENCE": 0,
+    "ISSUE_TOKEN": 50_000_000,
+    "MINT_TOKEN": 1_000_000,
+    "TRANSFER_TOKEN": 100_000,
 }
 MAX_BLOCK_WEIGHT = 20_000_000
 TARGET_BLOCK_WEIGHT = MAX_BLOCK_WEIGHT // 2
@@ -103,11 +109,18 @@ MAX_SELF_TX_WEIGHT_RATIO = 25  # percent
 # Financial activation
 FINANCIAL_ACTIVATION_HEIGHT = 0  # Active from genesis for new chains
 
+# Multi-asset token system
+TOKEN_ACTIVATION_HEIGHT = 0       # Active from genesis for new chains
+MAX_TOKEN_NAME_LENGTH = 64
+MAX_TOKEN_SYMBOL_LENGTH = 8
+MIN_TOKEN_SYMBOL_LENGTH = 2
+MAX_TOKEN_DECIMALS = 18
+
 # Genesis allocation (in QBIT tokens, will be multiplied by QUBIT_PER_QBIT)
 GENESIS_BALANCE_QBIT = 2_100_000  # 2.1M QBIT (10% of max supply)
 
 # Version
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 # Pruning
 PRUNING_RETENTION = 10000     # blocks to keep during chain pruning

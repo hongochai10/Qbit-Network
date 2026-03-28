@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import secrets
+import socket
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -29,6 +30,7 @@ VALID_EVENT_TYPES = frozenset({
     "Stake", "Delegate", "Unstake",
     "KeyRegistered", "ValidatorRegistered", "KeyRevoked", "Slashed",
     "BlockReward", "EpochTransition",
+    "TokenIssued", "TokenMinted", "TokenTransferred",
 })
 
 
@@ -210,6 +212,23 @@ class WebhookManager:
         for attempt, delay in enumerate(RETRY_DELAYS):
             if webhook["status"] == "deleted":
                 return False
+
+            # R20-001: DNS rebinding SSRF protection — validate resolved IPs at delivery time
+            try:
+                parsed = urlparse(webhook["url"])
+                hostname = parsed.hostname or ""
+                resolved = socket.getaddrinfo(hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
+                for family, _type, _proto, _canon, sockaddr in resolved:
+                    addr = ipaddress.ip_address(sockaddr[0])
+                    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                        logger.warning(
+                            f"Webhook {webhook['id'][:8]}... DNS resolved to "
+                            f"private/reserved IP {addr}, blocking delivery"
+                        )
+                        return False
+            except (socket.gaierror, OSError) as dns_err:
+                logger.debug(f"Webhook {webhook['id'][:8]}... DNS resolution failed: {dns_err}")
+                # Fall through to let aiohttp handle it (will fail with connection error)
 
             try:
                 async with aiohttp.ClientSession() as session:

@@ -294,6 +294,16 @@ class PersistenceMixin:
                             self._events_by_type.setdefault(ev_type, []).append(receipt.tx_id)
                     self._events_by_block.setdefault(i, []).append(receipt.tx_id)
 
+        # Load token state from SQLite
+        if self._store is not None:
+            for token_meta in self._store.get_all_tokens():
+                tid = token_meta["token_id"]
+                self._token_registry[tid] = token_meta
+                self._token_by_symbol[token_meta["symbol"]] = tid
+                # Load holders for this token
+                for addr, amount in self._store.get_token_holders(tid):
+                    self._token_balances[(tid, addr)] = amount
+
         # Rebuild state trie from loaded balances and nonces (R19-SEC-001)
         self._rebuild_state_trie()
 

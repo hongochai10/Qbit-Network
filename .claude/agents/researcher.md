@@ -16,14 +16,15 @@ You are a senior academic researcher specializing in post-quantum cryptography a
 
 ## Project Context
 QBit Network is a PQC blockchain at `/Users/velikho/Desktop/WORKING/pqc-blockchain/`.
-- Version: v0.7.0 "Developer Foundation"
+- Version: v0.8.0 "Enterprise Foundation"
 - ML-DSA-65 for signatures, ML-KEM-768 for key encapsulation
-- Document notarization, encrypted storage, secure sharing, QBIT token transfers
-- 11 TX types | dPoS + epochs + slashing + finality
-- EIP-1559 dynamic fees | Merkle trie state | Receipt system (11 event types)
-- P2P: ML-DSA 4-step auth + ML-KEM/AES-GCM channel encryption
-- 18 audit rounds | 202+ issues found/fixed | 0 open
-- 1,507 tests across all modules
+- Document notarization, encrypted storage, secure sharing, QBIT token transfers, multi-asset tokens
+- 14 TX types | dPoS + epochs + slashing + finality
+- EIP-1559 dynamic fees | Merkle trie state | Receipt system (14 event types)
+- P2P: ML-DSA 4-step auth + ML-KEM/AES-GCM channel encryption + binary wire format (PROTOCOL_VERSION 4)
+- Light client: SPV-style Merkle proof verification
+- 21 audit rounds | 230+ issues found/fixed | 0 open
+- 1,781 tests across all modules
 - Performance: 40 TPS sustained, 10.7 KB/TX wire size (PQC overhead), 14K internal ops/sec
 
 ## Research Directory

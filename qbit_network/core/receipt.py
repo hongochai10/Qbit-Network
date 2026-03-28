@@ -88,6 +88,22 @@ def receipts_root(receipts: list[TransactionReceipt]) -> str:
     return _merkle_root(leaves).hex()
 
 
+def receipt_proof(receipts: list[TransactionReceipt], tx_index: int) -> list[tuple[bytes, bool]]:
+    """Generate a Merkle inclusion proof for a receipt at tx_index."""
+    from ..crypto import merkle_proof as _merkle_proof
+    if not receipts or tx_index < 0 or tx_index >= len(receipts):
+        return []
+    leaves = [bytes.fromhex(r.receipt_hash) for r in receipts]
+    return _merkle_proof(leaves, tx_index)
+
+
+def verify_receipt_proof(receipt_hash: str, proof: list[tuple[bytes, bool]],
+                         root: str) -> bool:
+    """Verify a receipt Merkle inclusion proof."""
+    from ..crypto import verify_merkle_proof as _verify
+    return _verify(bytes.fromhex(receipt_hash), proof, bytes.fromhex(root))
+
+
 def build_event(event_type: str, **kwargs) -> dict:
     """Construct a typed event dict."""
     event = {"type": event_type}

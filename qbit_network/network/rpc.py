@@ -89,6 +89,7 @@ class RPCServer:
         "qv_registerValidator", "qv_revokeKey",
         "qv_stake", "qv_delegate", "qv_unstake",
         "qv_transfer",
+        "qv_issueToken", "qv_mintToken", "qv_transferToken",
     }
 
     # Methods that MUST NOT be served over plain HTTP (secret-returning)

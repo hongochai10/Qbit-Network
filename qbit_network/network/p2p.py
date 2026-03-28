@@ -1,4 +1,4 @@
-"""P2P networking layer using asyncio TCP + newline-delimited JSON."""
+"""P2P networking layer using asyncio TCP. Supports JSON (v3) and msgpack (v4+) wire formats."""
 import asyncio
 import hashlib
 import ipaddress
@@ -13,6 +13,7 @@ from ..crypto.mlkem import MLKEM, MLKEM_PK_SIZE, MLKEM_CT_SIZE
 from ..crypto.aes import aes_encrypt, aes_decrypt
 from .rate_limiter import RateLimiter
 from .reputation import PeerReputation
+from .codec import MessageCodec
 
 logger = logging.getLogger("qbit_network.p2p")
 
@@ -94,6 +95,7 @@ class Peer:
                  'challenge', 'remote_pubkey', 'auth_deadline',
                  'is_validator',
                  'session_key', 'encrypted', 'encryption_pk',
+                 'wire_format', '_pending_wire_format', '_codec',
                  'is_initiator', 'remote_address')
 
     def __init__(self, host: str, port: int, reader=None, writer=None):
@@ -115,6 +117,10 @@ class Peer:
         self.session_key: bytes | None = None   # 32-byte AES-256 key
         self.encrypted: bool = False            # whether transport is encrypted
         self.encryption_pk: bytes | None = None # peer's ML-KEM public key
+        # Wire format negotiation (v4+ binary protocol)
+        self.wire_format: str = "json"         # "json" or "msgpack" after negotiation
+        self._pending_wire_format: str = "json"  # remote peer's preference (stored during hello_auth)
+        self._codec = None                        # cached MessageCodec for msgpack mode
         # Connection dedup fields
         self.is_initiator: bool = False         # True if we initiated the connection
         self.remote_address: str = ""           # peer's validator address (derived from pubkey)
@@ -127,8 +133,14 @@ class Peer:
         if not self.writer or self.writer.is_closing():
             return
         try:
-            line = json.dumps({"type": msg_type, "data": data}) + "\n"
-            self.writer.write(line.encode())
+            if self.wire_format == "msgpack":
+                if not hasattr(self, '_codec') or self._codec is None:
+                    self._codec = MessageCodec("msgpack")
+                raw = self._codec.encode(msg_type, data)
+                self.writer.write(raw)
+            else:
+                line = json.dumps({"type": msg_type, "data": data}) + "\n"
+                self.writer.write(line.encode())
             await self.writer.drain()
         except Exception:
             self.connected = False
@@ -136,6 +148,7 @@ class Peer:
     async def send_encrypted(self, msg_type: str, data: dict):
         """Send a message, encrypting it if the channel is established."""
         if self.encrypted and self.session_key:
+            # Inner message is always JSON-encoded before encryption
             inner = json.dumps({"type": msg_type, "data": data}).encode()
             ct = aes_encrypt(self.session_key, inner)
             await self.send(MSG_ENCRYPTED, {"data": ct.hex()})
@@ -246,6 +259,7 @@ class P2PNode:
 
                 hello_data = {
                     "protocol_version": PROTOCOL_VERSION,
+                    "wire_format": MessageCodec.preferred_wire_format(),
                     "node_id": self.node_id,
                     "port": self.port,
                     "chain_id": CHAIN_ID,
@@ -401,6 +415,8 @@ class P2PNode:
         if isinstance(node_id, str):
             peer.node_id = node_id
         peer.protocol_version = min(pv, PROTOCOL_VERSION)
+        # Store initiator's wire_format preference for later negotiation
+        peer._pending_wire_format = data.get("wire_format", "json")
 
         # Sign their challenge: Sign(sk, domain || peer_challenge || our_address)
         auth_msg = _build_auth_message(peer_challenge, self.validator_address)
@@ -419,6 +435,7 @@ class P2PNode:
 
         response_data = {
             "protocol_version": PROTOCOL_VERSION,
+            "wire_format": MessageCodec.preferred_wire_format(),
             "node_id": self.node_id,
             "port": self.port,
             "challenge_sig": challenge_sig.hex(),
@@ -509,6 +526,9 @@ class P2PNode:
         peer.protocol_version = min(
             data.get("protocol_version", 1), PROTOCOL_VERSION)
 
+        # Store remote wire_format preference (applied after channel setup)
+        remote_wire = data.get("wire_format", "json")
+
         node_id = data.get("node_id", "")
         if isinstance(node_id, str):
             peer.node_id = node_id
@@ -529,7 +549,15 @@ class P2PNode:
             return False  # this connection was closed as duplicate
 
         # Initiator initiates encrypted channel if both sides have encryption keys
+        # (session_key sent in JSON before wire format switch)
         await self._initiate_encrypted_channel(peer)
+
+        # Negotiate wire format AFTER channel setup (v4+ binary protocol)
+        peer.wire_format = MessageCodec.negotiate(
+            peer.protocol_version, peer.protocol_version,
+            MessageCodec.preferred_wire_format(), remote_wire)
+        if peer.wire_format == "msgpack":
+            logger.info(f"Peer {peer.addr}: negotiated msgpack wire format")
 
         return True
 
@@ -580,6 +608,16 @@ class P2PNode:
         peer.authenticated = True
         peer.auth_deadline = 0.0
         peer.remote_address = initiator_address
+
+        # Wire format was stored during hello_auth processing
+        # (peer._pending_wire_format set in _handle_hello_auth_inbound)
+        remote_wire = peer._pending_wire_format
+        peer.wire_format = MessageCodec.negotiate(
+            peer.protocol_version, peer.protocol_version,
+            MessageCodec.preferred_wire_format(), remote_wire)
+        if peer.wire_format == "msgpack":
+            logger.info(f"Peer {peer.addr}: negotiated msgpack wire format")
+
         logger.info(f"Peer {peer.addr} authenticated (they initiated)")
         self._check_validator_status(peer)
 
@@ -940,14 +978,14 @@ class P2PNode:
                 await self._dispatch(mt, peer, data)
                 peer.last_seen = time.time()
 
-            # Main message loop
+            # Main message loop (supports JSON readline or msgpack length-prefixed)
             while True:
-                line = await reader.readline()
-                if not line:
+                try:
+                    msg = await self._read_message(reader, peer)
+                except (asyncio.IncompleteReadError, ConnectionResetError):
                     break
-                msg = self._parse(line)
                 if not msg:
-                    continue
+                    break
                 mt, data = msg
 
                 # Rate limiting
@@ -1013,12 +1051,12 @@ class P2PNode:
         """Read loop for outbound connections."""
         try:
             while True:
-                line = await peer.reader.readline()
-                if not line:
+                try:
+                    msg = await self._read_message(peer.reader, peer)
+                except (asyncio.IncompleteReadError, ConnectionResetError):
                     break
-                msg = self._parse(line)
                 if not msg:
-                    continue
+                    break
                 mt, data = msg
 
                 # Rate limiting
@@ -1092,3 +1130,29 @@ class P2PNode:
             return obj.get("type", ""), obj.get("data", {})
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
+
+    @staticmethod
+    async def _read_message(reader, peer) -> tuple[str, dict] | None:
+        """Read a message from a peer, handling both JSON and msgpack formats.
+
+        Pre-auth: always JSON (readline).
+        Post-auth: uses peer.wire_format (json=readline, msgpack=length-prefixed).
+        """
+        if getattr(peer, 'wire_format', 'json') == "msgpack":
+            # Length-prefixed msgpack: read 4-byte header, then payload
+            header = await reader.readexactly(4)
+            length = int.from_bytes(header, 'big')
+            if length == 0 or length > MessageCodec.MAX_FRAME_SIZE:
+                return None
+            payload = await reader.readexactly(length)
+            codec = MessageCodec("msgpack")
+            return codec.decode(payload)
+        else:
+            line = await reader.readline()
+            if not line:
+                return None
+            try:
+                obj = json.loads(line.decode().strip())
+                return obj.get("type", ""), obj.get("data", {})
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return None

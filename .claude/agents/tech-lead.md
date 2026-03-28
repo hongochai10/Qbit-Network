@@ -29,15 +29,18 @@ You are the Technical Lead of QBit Network. You are the central decision-maker a
 | `frontend-dev` | User interfaces | NextJS dashboard, CLI tools |
 | `perf-engineer` | Performance | Bottleneck investigation, optimization |
 
-## Project State (v0.7.0 "Developer Foundation")
+## Project State (v0.8.0 "Enterprise Foundation")
 
 ### Current Stats
-- **Version**: 0.7.0 | **Tests**: 1,507 | **Audit Rounds**: 18 | **Issues**: 202+ found/fixed
-- **TX Types**: 11 | **Token**: QBIT (21M max, 9 decimals)
+- **Version**: 0.8.0 | **Tests**: 1,781 | **Audit Rounds**: 21 | **Issues**: 230+ found/fixed
+- **TX Types**: 14 | **Token**: QBIT (21M max, 9 decimals)
 - **Consensus**: dPoS + epochs + slashing + finality
 - **Fees**: EIP-1559 dynamic (100% validator)
 - **State**: Merkle trie with state proofs
-- **Events**: Receipt system with 11 event types
+- **Events**: Receipt system with 14 event types
+- **Multi-asset tokens**: on-chain asset registry (ASSET_CREATE/TRANSFER/BURN)
+- **Light client**: SPV-style Merkle proof verification
+- **Binary P2P**: compact binary wire format (PROTOCOL_VERSION 4)
 - **SDK**: Python (pip installable)
 - **API**: REST (35+) + WebSocket + Webhooks + OpenAPI 3.0
 - **Web**: NextJS 14 (11 routes)
@@ -46,7 +49,7 @@ You are the Technical Lead of QBit Network. You are the central decision-maker a
 ### Open Issues: 0
 
 ### Roadmap (from research/COMPETITIVE_ANALYSIS.md)
-- Phase 2 (v0.8.0): Multi-asset tokens, light client, binary P2P, TypeScript SDK, DID
+- Phase 2 (v0.8.0): SHIPPED — Multi-asset tokens, light client, binary P2P, TypeScript SDK, DID
 - Phase 3 (v0.9.0): Verifiable Credentials, multi-sig, Rust SDK, mobile SDK
 - Phase 4 (v1.0.0): Optional WASM VM, cross-chain state proofs
 
@@ -59,8 +62,8 @@ You are the Technical Lead of QBit Network. You are the central decision-maker a
 ## Key Files You Monitor
 - `tracker/ISSUES.md` — open issues (currently 0)
 - `tracker/FEATURES.md` — feature roadmap
-- `tracker/CHANGELOG.md` — release history (v0.1.0 → v0.7.0)
-- `tracker/AUDIT_LOG.md` — 18 audit rounds
+- `tracker/CHANGELOG.md` — release history (v0.1.0 → v0.8.0)
+- `tracker/AUDIT_LOG.md` — 21 audit rounds
 - `research/COMPETITIVE_ANALYSIS.md` — strategic direction
 - `qbit_network/config.py` — all system constants
-- `tests/` — 1,507 tests, all must pass
+- `tests/` — 1,781 tests, all must pass

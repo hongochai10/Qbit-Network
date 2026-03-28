@@ -46,27 +46,31 @@ Core value proposition:
 - OpenAPI 3.0 spec (35+ REST endpoints)
 - HMAC-SHA256 signed webhooks
 
-### v0.7.0 (CURRENT — "Developer Foundation")
+### v0.7.0 (SHIPPED — "Developer Foundation")
 - Full REST API (35+ endpoints) + WebSocket + Webhooks
 - NextJS 14 web UI (11 routes) with dark theme
 - CLI: 8 commands + IPFS integration
-- 1,507 tests | 18 audit rounds | 202+ issues fixed | 0 open
+- 1,507 tests | 21 audit rounds | 230+ issues fixed | 0 open
 
-### v0.8.0 (NEXT — focus: network hardening)
+### v0.8.0 (CURRENT — "Enterprise Foundation")
+- **Multi-asset tokens**: ASSET_CREATE, ASSET_TRANSFER, ASSET_BURN TX types; on-chain asset registry
+- **Light client**: SPV-style block header sync with Merkle proof verification
+- **Binary P2P**: compact binary wire format (PROTOCOL_VERSION 4), replacing JSON for P2P messages
+- 1,781 tests | 21 audit rounds | 230+ issues fixed | 0 open
+
+### v0.9.0 (NEXT — focus: network hardening)
 **Must-have:**
 1. Multi-node testnet with at least 3 validators
 2. Fork resolution and chain reorganization handling
-3. Light client protocol (SPV-style with Merkle proofs)
-4. Peer discovery (DHT or DNS seed)
+3. Peer discovery (DHT or DNS seed)
 
 **Should-have:**
-5. Cross-chain anchoring (Ethereum L1 anchor for notarization proofs)
-6. Key revocation TX type
-7. LevelDB/RocksDB persistent backend (replace JSON file)
+4. Cross-chain anchoring (Ethereum L1 anchor for notarization proofs)
+5. LevelDB/RocksDB persistent backend (replace JSON file)
 
 **Nice-to-have:**
-8. Mobile-friendly web UI
-9. Chain pruning and archival node separation
+6. Mobile-friendly web UI
+7. Chain pruning and archival node separation
 
 ### v0.9.0 (FUTURE — focus: ecosystem)
 - Public testnet launch

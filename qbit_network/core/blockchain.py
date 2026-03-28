@@ -14,7 +14,7 @@ from .state_tree import StateTrie
 from ..config import (MAX_TX_PER_BLOCK, MAX_TX_POOL_SIZE, MAX_REORG_DEPTH,
                       CHAIN_ID, MIN_STAKE, UNBONDING_PERIOD, EPOCH_LENGTH,
                       PRUNING_RETENTION,
-                      TX_FEES,
+                      TX_FEES, TOKEN_ACTIVATION_HEIGHT,
                       DYNAMIC_FEE_ACTIVATION_HEIGHT, INITIAL_BASE_FEE,
                       TX_WEIGHTS, MAX_BLOCK_WEIGHT)
 from .fees import (compute_base_fee, compute_tx_fee, tx_weight,
@@ -137,6 +137,11 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         self._epoch_rewards: dict[str, int] = {}           # validator_addr -> accumulated rewards this epoch
         self._validator_commission: dict[str, int] = {}    # validator_addr -> commission percent (default 10)
         self._last_epoch_distributions: dict[int, dict] = {}  # epoch -> {"credits": [(addr, amount)], "debits": [(addr, amount)]} for rollback
+
+        # Multi-asset token state
+        self._token_registry: dict[str, dict] = {}          # token_id -> metadata
+        self._token_balances: dict[tuple[str, str], int] = {}  # (token_id, address) -> amount
+        self._token_by_symbol: dict[str, str] = {}           # symbol -> token_id (uniqueness)
 
         # State trie -- sorted key-value Merkle trie for state root in block header
         self._state_trie = StateTrie()
@@ -752,6 +757,93 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
 
             elif tx.tx_type == TxType.EVIDENCE:
                 self._process_evidence_tx(tx, idx)
+
+            elif tx.tx_type == TxType.ISSUE_TOKEN:
+                if idx >= TOKEN_ACTIVATION_HEIGHT:
+                    from ..crypto import sha3_256 as _sha3
+                    symbol = tx.payload["symbol"]
+                    if symbol in self._token_by_symbol:
+                        raise ValueError(f"token symbol {symbol} already exists")
+                    token_id = _sha3(
+                        (tx.sender + symbol + str(tx.nonce)).encode()
+                    ).hex()[:32]
+                    # R21-004: collision check
+                    if token_id in self._token_registry:
+                        raise ValueError(f"token_id collision: {token_id}")
+                    self._token_registry[token_id] = {
+                        "issuer": tx.sender,
+                        "name": tx.payload["name"],
+                        "symbol": symbol,
+                        "decimals": tx.payload["decimals"],
+                        "max_supply": tx.payload.get("max_supply", 0),
+                        "total_minted": 0,
+                        "transferable": tx.payload.get("transferable", True),
+                        "created_block": idx,
+                        "created_tx": tx.tx_id,
+                    }
+                    self._token_by_symbol[symbol] = token_id
+                    if self._store is not None:
+                        self._store.put_token(token_id, self._token_registry[token_id])
+                    logger.info(
+                        f"Token issued: {symbol} (id={token_id[:16]}...) "
+                        f"by {tx.sender[:16]}... (block #{idx})")
+
+            elif tx.tx_type == TxType.MINT_TOKEN:
+                if idx >= TOKEN_ACTIVATION_HEIGHT:
+                    tid = tx.payload["token_id"]
+                    if tid not in self._token_registry:
+                        raise ValueError(f"token {tid} does not exist")
+                    reg = self._token_registry[tid]
+                    if reg["issuer"] != tx.sender:
+                        raise ValueError(f"only issuer can mint token {tid}")
+                    amount = tx.payload["amount"]
+                    # R21-006: overflow protection for total_minted (8-byte state trie encoding)
+                    _MAX_TOKEN_AMOUNT = 2**63 - 1
+                    if reg["total_minted"] + amount > _MAX_TOKEN_AMOUNT:
+                        raise ValueError(
+                            f"minting {amount} would overflow total_minted")
+                    if reg["max_supply"] > 0 and reg["total_minted"] + amount > reg["max_supply"]:
+                        raise ValueError(
+                            f"minting {amount} would exceed max_supply "
+                            f"{reg['max_supply']} (minted: {reg['total_minted']})")
+                    reg["total_minted"] += amount
+                    key = (tid, tx.recipient)
+                    self._token_balances[key] = self._token_balances.get(key, 0) + amount
+                    if self._store is not None:
+                        self._store.put_token(tid, reg)
+                        self._store.put_token_balance(tid, tx.recipient,
+                                                      self._token_balances[key])
+                    logger.info(
+                        f"Token minted: {amount} of {reg['symbol']} to "
+                        f"{tx.recipient[:16]}... (block #{idx})")
+
+            elif tx.tx_type == TxType.TRANSFER_TOKEN:
+                if idx >= TOKEN_ACTIVATION_HEIGHT:
+                    tid = tx.payload["token_id"]
+                    if tid not in self._token_registry:
+                        raise ValueError(f"token {tid} does not exist")
+                    reg = self._token_registry[tid]
+                    if not reg.get("transferable", True):
+                        raise ValueError(f"token {tid} is not transferable")
+                    amount = tx.payload["amount"]
+                    src_key = (tid, tx.sender)
+                    src_bal = self._token_balances.get(src_key, 0)
+                    if src_bal < amount:
+                        raise ValueError(
+                            f"insufficient token balance: {src_bal} < {amount}")
+                    self._token_balances[src_key] = src_bal - amount
+                    if self._token_balances[src_key] == 0:
+                        del self._token_balances[src_key]
+                    dst_key = (tid, tx.recipient)
+                    self._token_balances[dst_key] = self._token_balances.get(dst_key, 0) + amount
+                    if self._store is not None:
+                        self._store.put_token_balance(
+                            tid, tx.sender, self._token_balances.get(src_key, 0))
+                        self._store.put_token_balance(
+                            tid, tx.recipient, self._token_balances[dst_key])
+                    logger.info(
+                        f"Token transfer: {amount} of {reg['symbol']} "
+                        f"{tx.sender[:16]}... -> {tx.recipient[:16]}... (block #{idx})")
 
             # --- Build events for receipt ---
             _tx_events = self._build_tx_events(tx, idx)

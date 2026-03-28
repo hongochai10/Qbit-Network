@@ -1,5 +1,95 @@
 # Changelog
 
+## v0.8.0 Sprint 1: Multi-Asset Tokens (2026-03-28)
+
+### New Features
+- **3 new TX types**: ISSUE_TOKEN, MINT_TOKEN, TRANSFER_TOKEN (14 total)
+- **Token registry**: Create custom tokens with name, symbol (unique), decimals, max supply, transferability
+- **Token ID**: Deterministic SHA3-256 derivation (issuer + symbol + nonce)
+- **Issuer-only minting**: Only the token creator can mint new units
+- **Supply cap enforcement**: Integer arithmetic, no overflow possible
+- **Non-transferable tokens**: Optional flag to lock transfers
+- **State trie integration**: Token balances included in stateRoot
+- **Receipt events**: TokenIssued, TokenMinted, TokenTransferred
+- **Rollback support**: Full token state reversal on chain reorg
+- **SQLite persistence**: tokens + token_balances tables with indexes
+
+### API
+- **REST (public)**: GET /tokens, /tokens/{id}, /tokens/{id}/holders, /address/{addr}/tokens
+- **REST (protected)**: POST /issue-token, /mint-token, /transfer-token
+- **JSON-RPC (public)**: qv_getTokenInfo, qv_getTokenBalance, qv_listTokens, qv_getAddressTokens
+- **JSON-RPC (protected)**: qv_issueToken, qv_mintToken, qv_transferToken
+- **WebSocket events**: TokenIssued, TokenMinted, TokenTransferred
+
+### Config
+- Protocol version: 3 → 4
+- Version: 0.7.0 → 0.8.0
+- ISSUE_TOKEN fee: 0.5 QBIT, MINT_TOKEN: 0.01 QBIT, TRANSFER_TOKEN: 0.001 QBIT
+- TOKEN_ACTIVATION_HEIGHT = 0
+
+### Security (Round 20)
+- R20-001 (MED): Webhook DNS rebinding SSRF — delivery-time IP validation
+- R20-002 (LOW): Slashing events memory pruning
+- R20-003 (INFO): PROTOCOL.md STAKE spec corrected
+
+### Tests
+- 1632 tests (+125 new token tests), 0 failures
+
+## v0.8.0 Sprint 2: Light Client Protocol (2026-03-28)
+
+### New Features
+- **Block headers API**: `Block.to_header_dict()` — header-only response (no transactions) for light clients
+- **Block headers range**: `get_block_headers(start, count)` — paginated headers (max 100)
+- **Receipt proofs**: `receipt_proof()` + `verify_receipt_proof()` — Merkle inclusion proof against receiptsRoot
+- **Historical state proofs**: `get_state_proof_at_block(key, block_index)` — proof at specific block via state snapshots
+- **StateTrie.restore()** — rebuild trie from snapshot for historical proofs
+
+### API
+- **REST (public)**: GET /headers, /headers/{index}, /proofs/state/{key}?block=N, /proofs/receipt/{txid}
+- **JSON-RPC (public)**: qv_getBlockHeaders, qv_getStateProofAt, qv_getReceiptProof
+
+### Tests
+- 1711 tests (+79 light client tests), 0 failures
+
+## v0.8.0 Sprint 3: Binary P2P Protocol (2026-03-28)
+
+### New Features
+- **MessageCodec** (`codec.py`): JSON and msgpack wire format backends
+- **Length-prefixed binary framing**: 4-byte big-endian length + msgpack payload
+- **Binary field optimization**: signature, pubkeys, challenges transmitted as raw bytes (~40-60% bandwidth reduction)
+- **Protocol negotiation**: `wire_format` field in hello_auth/auth_response, both v4+ required for msgpack
+- **Per-peer wire format tracking**: `Peer.wire_format` attribute in `__slots__`
+- **Backward compatible**: v3 peers fall back to JSON transparently
+- **Wire format switch after channel setup**: handshake always JSON, msgpack only for post-auth messages
+
+### Tests
+- 1781 tests (+70 codec tests), 0 failures
+
+## v0.8.0 Sprint 4: Integration, Audit Round 21, Release (2026-03-28)
+
+### Security (Round 21 — 11 issues)
+- **R21-001 (HIGH)**: SQLite tokens/token_balances not cleaned in `delete_blocks_from` — phantom tokens after reorg
+- **R21-002 (HIGH)**: ISSUE_TOKEN symbol uniqueness not checked at pool admission
+- **R21-003 (HIGH)**: MINT_TOKEN/TRANSFER_TOKEN no state validation at pool admission
+- **R21-004 (MED)**: token_id collision check added before registration
+- **R21-005 (MED)**: RPC `qv_listTokens` page/limit validation (1-100)
+- **R21-006 (MED)**: MINT overflow protection (`_MAX_TOKEN_AMOUNT = 2^63-1`)
+- **R21-007 (MED)**: P2P msgpack zero-length frame rejection
+- **R21-008 (MED)**: Token rollback negative balance warning log
+- **R21-009 (LOW)**: Cached MessageCodec on Peer for msgpack mode
+- **R21-010 (LOW)**: Accepted — `get_state_proof_at_block` ambiguous None (v0.9.0)
+- **R21-011 (LOW)**: RPC `_rpc_issue_token` transferable type validation
+
+### Docs
+- PROTOCOL.md v4: token TX specs, light client section, binary P2P section, weight table
+- All agent definitions updated for v0.8.0
+- README badges, TX count, audit count updated
+
+### Tests
+- 1781 tests, 0 failures, 21 audit rounds
+
+---
+
 ## Refactor: blockchain.py mixin extraction (2026-03-26)
 
 - Extracted `PersistenceMixin` to `qbit_network/core/persistence.py` (301 lines): `save()`, `load()`, `_load_from_sqlite()`

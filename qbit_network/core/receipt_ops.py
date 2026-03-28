@@ -90,6 +90,39 @@ class ReceiptMixin:
                 validator=vaddr,
                 amount=slash_amount))
 
+        elif tt == TxType.ISSUE_TOKEN:
+            # Look up the token_id that was just created (deterministic derivation)
+            from ..crypto import sha3_256 as _sha3
+            symbol = tx.payload.get("symbol", "")
+            token_id = _sha3(
+                (tx.sender + symbol + str(tx.nonce)).encode()
+            ).hex()[:32]
+            events.append(build_event(
+                "TokenIssued",
+                token_id=token_id,
+                symbol=symbol,
+                name=tx.payload.get("name", ""),
+                issuer=tx.sender,
+                max_supply=tx.payload.get("max_supply", 0)))
+
+        elif tt == TxType.MINT_TOKEN:
+            tid = tx.payload.get("token_id", "")
+            reg = getattr(self, '_token_registry', {}).get(tid, {})
+            events.append(build_event(
+                "TokenMinted",
+                token_id=tid,
+                amount=tx.payload.get("amount", 0),
+                recipient=tx.recipient,
+                total_minted=reg.get("total_minted", 0)))
+
+        elif tt == TxType.TRANSFER_TOKEN:
+            events.append(build_event(
+                "TokenTransferred",
+                token_id=tx.payload.get("token_id", ""),
+                amount=tx.payload.get("amount", 0),
+                sender=tx.sender,
+                recipient=tx.recipient))
+
         return events
 
     def _update_finality(self, new_block_index: int):

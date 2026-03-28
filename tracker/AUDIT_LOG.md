@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 19 (including all v0.7.0 sprints)
-- **Total issues found**: 215+
-- **Total fixed**: 215+
-- **Accepted risks / open**: 0
-- **Latest**: Round 19 combined audit — complete 2026-03-26
+- **Total rounds**: 22 (including all v0.8.0 sprints)
+- **Total issues found**: 232+
+- **Total fixed**: 231+
+- **Accepted risks / open**: 1 (informational)
+- **Latest**: Round 22 v0.8.0 final verification — complete 2026-03-28
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -350,3 +350,49 @@ Scope: State root validation enforcement, SQLite reload consistency, StateTrie p
 | R19-DOC-012/018 | LOW | README and CLAUDE.md audit round count inconsistent (shows 18) | Fixed: updated to 19 across all files |
 
 **Round 19 summary:** 13 found, 13 fixed, 0 accepted, 0 deferred
+
+## Round 20 — Pre-Phase-2 Audit (4 issues)
+
+Scope: Full 3-agent parallel audit (security auditor + protocol designer + test runner). All 37 Python source files reviewed. 1507 tests passed. Protocol correctness verified across all 7 areas.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R20-001 | MED | Webhook SSRF bypass via DNS rebinding — `register()` validates hostname at registration time only; `_deliver_one()` does not check resolved IPs, allowing DNS rebinding to internal endpoints | Fixed: added `socket.getaddrinfo()` IP resolution check in `_deliver_one()` before HTTP request — rejects private/loopback/link-local/reserved IPs at delivery time |
+| R20-002 | LOW | `_slashing_events` list grows unbounded in memory — no pruning unlike `_state_snapshots` and `_block_level_events` | Fixed: cap in-memory list to `max(MAX_REORG_DEPTH * 2, 200)` entries; older data served from SQLite |
+| R20-003 | INFO | PROTOCOL.md says STAKE is self-only (`validator_address` must be sender) but code allows staking to any registered validator (same as DELEGATE) | Fixed: updated PROTOCOL.md to reflect actual implementation (any address may stake to any validator) |
+| R20-004 | INFO | `baseFee` always included in block header even when 0, PROTOCOL.md says "only when non-empty" | Accepted: deterministic serialization is correct; no behavioral impact |
+
+**Round 20 summary:** 4 found, 3 fixed, 1 accepted (informational), 0 deferred
+
+## Round 21 — v0.8.0 Release Audit (11 issues)
+
+Scope: All new v0.8.0 code — multi-asset tokens (3 TX types), light client protocol, binary P2P (msgpack), REST/RPC endpoints, token persistence, rollback, state trie integration.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R21-001 | HIGH | SQLite tokens/token_balances tables not cleaned in `delete_blocks_from` rollback — phantom tokens after reorg + restart | Fixed: added `DELETE FROM tokens WHERE created_block >= ?` and orphan token_balances cleanup in rollback transaction |
+| R21-002 | HIGH | ISSUE_TOKEN symbol uniqueness not checked at pool admission — duplicate symbol TXs can enter pool and crash block production | Fixed: added symbol check against `_token_by_symbol` and pending pool scan in `submit_tx()` |
+| R21-003 | HIGH | MINT_TOKEN/TRANSFER_TOKEN no state validation at pool admission — invalid TXs enter pool causing ValueError in `_append_block_inner` | Fixed: added issuer auth, max_supply, transferability, and balance checks in `submit_tx()` |
+| R21-004 | MED | token_id truncated to 128 bits — collision at 2^64 birthday bound; `INSERT OR REPLACE` silently overwrites on collision | Fixed: added collision check `if token_id in self._token_registry: raise ValueError` before registration |
+| R21-005 | MED | RPC `qv_listTokens` page/limit not validated — memory exhaustion via `limit=10000000` | Fixed: added type/range validation (page >= 1, limit 1-100) |
+| R21-006 | MED | MINT with unlimited supply (max_supply=0) can overflow 8-byte state trie encoding via huge amount | Fixed: added `_MAX_TOKEN_AMOUNT = 2^63-1` overflow check before minting |
+| R21-007 | MED | P2P msgpack zero-length frame not rejected — CPU waste via rapid 4-byte empty frames | Fixed: added `if length == 0` check returning None before readexactly |
+| R21-008 | MED | TRANSFER_TOKEN rollback silently clamps negative balances — inconsistency detection masked | Fixed: added warning log when `new_dst < 0` during token rollback |
+| R21-009 | LOW | `Peer.send()` creates new MessageCodec per msgpack message — GC pressure under high throughput | Fixed: cached `_codec` on Peer object, reused in send() |
+| R21-010 | LOW | `get_state_proof_at_block` returns None for both "pruned" and "key not found" — ambiguous for light clients | Accepted: informational, can be improved in v0.9.0 with structured error responses |
+| R21-011 | LOW | `_rpc_issue_token` doesn't validate `transferable` type at RPC level — confusing error from deep validation | Fixed: added `isinstance(transferable, bool)` check |
+
+**Round 21 summary:** 11 found, 10 fixed, 1 accepted (informational), 0 deferred
+
+## Round 22 — v0.8.0 Final Verification (2 issues)
+
+Scope: Verify all 10 Round 21 fixes are correct. Sweep for new issues introduced by fixes. Cross-check pool admission vs block processing consistency, TOKEN_ACTIVATION_HEIGHT, webhook events, PROTECTED_METHODS, PROTOCOL.md alignment.
+
+**All 10 R21 fixes: PASS**
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R22-001 | MED | Token balance corruption after SQLite rollback of mints to surviving tokens — `token_balances` and `total_minted` not reset for tokens created before rollback point | Fixed: wipe ALL `token_balances` + reset `total_minted=0` for surviving tokens during rollback (rebuilt from chain on reload) |
+| R22-002 | LOW | `_rpc_issue_token` missing `max_supply` type validation at RPC level — inconsistent with other parameters | Fixed: added `isinstance(max_supply, int) and >= 0` check |
+
+**Round 22 summary:** 2 found, 2 fixed, 0 accepted, 0 deferred

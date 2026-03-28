@@ -287,6 +287,63 @@ class RollbackMixin:
                         if e["evidence_tx_id"] != tx.tx_id
                     ]
 
+            # Revert token operations
+            elif tx.tx_type == TxType.ISSUE_TOKEN:
+                from ..crypto import sha3_256 as _sha3
+                symbol = tx.payload.get("symbol", "")
+                token_id = _sha3(
+                    (tx.sender + symbol + str(tx.nonce)).encode()
+                ).hex()[:32]
+                self._token_registry.pop(token_id, None)
+                self._token_by_symbol.pop(symbol, None)
+                # Clean up any balances for this token
+                to_del = [k for k in self._token_balances if k[0] == token_id]
+                for k in to_del:
+                    del self._token_balances[k]
+                if self._store is not None:
+                    self._store.delete_token(token_id, commit=False)
+
+            elif tx.tx_type == TxType.MINT_TOKEN:
+                tid = tx.payload.get("token_id", "")
+                amount = tx.payload.get("amount", 0)
+                if tid in self._token_registry:
+                    self._token_registry[tid]["total_minted"] -= amount
+                key = (tid, tx.recipient)
+                bal = self._token_balances.get(key, 0)
+                new_bal = bal - amount
+                if new_bal <= 0:
+                    self._token_balances.pop(key, None)
+                else:
+                    self._token_balances[key] = new_bal
+                if self._store is not None:
+                    if tid in self._token_registry:
+                        self._store.put_token(tid, self._token_registry[tid], commit=False)
+                    self._store.put_token_balance(
+                        tid, tx.recipient, max(0, new_bal), commit=False)
+
+            elif tx.tx_type == TxType.TRANSFER_TOKEN:
+                tid = tx.payload.get("token_id", "")
+                amount = tx.payload.get("amount", 0)
+                # Reverse: debit recipient, credit sender
+                dst_key = (tid, tx.recipient)
+                dst_bal = self._token_balances.get(dst_key, 0)
+                new_dst = dst_bal - amount
+                if new_dst < 0:
+                    import logging as _log
+                    _log.getLogger("qbit_network.chain").warning(
+                        f"Token rollback: negative balance for {tid}:{tx.recipient}, clamping to 0")
+                if new_dst <= 0:
+                    self._token_balances.pop(dst_key, None)
+                else:
+                    self._token_balances[dst_key] = new_dst
+                src_key = (tid, tx.sender)
+                self._token_balances[src_key] = self._token_balances.get(src_key, 0) + amount
+                if self._store is not None:
+                    self._store.put_token_balance(
+                        tid, tx.recipient, max(0, new_dst), commit=False)
+                    self._store.put_token_balance(
+                        tid, tx.sender, self._token_balances[src_key], commit=False)
+
             displaced.append(tx)
 
         # Recompute sender nonces after rollback

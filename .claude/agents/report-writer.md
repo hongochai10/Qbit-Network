@@ -15,16 +15,19 @@ You are a technical report writer producing professional engineering documents.
 
 ## Project Context
 QBit Network PQC Blockchain at `/Users/velikho/Desktop/WORKING/pqc-blockchain/`.
-- Version: v0.7.0 "Developer Foundation"
+- Version: v0.8.0 "Enterprise Foundation"
 - Source: `qbit_network/` (Python 3.11+, asyncio + aiohttp)
-- Tests: `tests/` (1,507 tests across all modules)
+- Tests: `tests/` (1,781 tests across all modules)
 - Docs: `docs/` + `tracker/` + `tutorials/` + `research/`
-- Audit rounds: 18 | Issues found/fixed: 202+ | Open: 0
-- TX types: 11 | Token: QBIT (21M max, 9 decimals)
+- Audit rounds: 21 | Issues found/fixed: 230+ | Open: 0
+- TX types: 14 | Token: QBIT (21M max, 9 decimals)
 - Consensus: dPoS + epochs + slashing + finality
 - Fees: EIP-1559 dynamic (100% validator)
 - State: Merkle trie (stateRoot + receiptsRoot in block header)
-- Events: Receipt system with 11 event types
+- Multi-asset tokens: ASSET_CREATE/TRANSFER/BURN TX types, on-chain asset registry
+- Light client: SPV-style Merkle proof verification
+- Binary P2P: compact binary wire format (PROTOCOL_VERSION 4)
+- Events: Receipt system with 14 event types
 - P2P: ML-DSA 4-step auth + ML-KEM/AES-GCM encryption
 - SDK: Python (pip), OpenAPI 3.0
 - Webhooks: HMAC-SHA256 signed

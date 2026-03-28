@@ -1,6 +1,6 @@
 # QBit Network — Post-Quantum Cryptography Blockchain
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 1507](https://img.shields.io/badge/tests-1507-brightgreen) ![Version 0.7.0](https://img.shields.io/badge/version-0.7.0-blue)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 1781](https://img.shields.io/badge/tests-1781-brightgreen) ![Version 0.8.0](https://img.shields.io/badge/version-0.8.0-blue)
 
 QBit Network is a purpose-built blockchain for document notarization and encrypted data sharing. It replaces all quantum-vulnerable cryptography (ECDSA, ECDH, secp256k1) with NIST-standardized post-quantum alternatives, providing a quantum-resistant foundation for long-lived document proofs and confidential file exchange.
 
@@ -13,7 +13,7 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 
 ## Features
 
-- **11 transaction types**: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER
+- **14 transaction types**: NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER, ISSUE_TOKEN, MINT_TOKEN, TRANSFER_TOKEN
 - **Delegated Proof of Stake** — stake-weighted validator selection, epoch rotation (every 100 blocks), double-sign slashing
 - **ML-KEM-768 encrypted P2P** — all post-authentication peer messages encrypted with AES-256-GCM
 - **4-step ML-DSA mutual auth** — P2P challenge-response handshake with verify-before-sign (proof in hello_auth, verify-before-sign, counter-challenge, confirm)
@@ -29,12 +29,13 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **QBIT token economy** -- 21M max supply, 5 QBIT block reward with halving, EIP-1559 dynamic fees, epoch delegator rewards
 - **TRANSFER transactions** -- peer-to-peer token transfers with balance checks, pending debit tracking, recipient format validation
 - **State proofs** -- Merkle state trie with `stateRoot` and `receiptsRoot` in block headers, verifiable inclusion proofs for balance and nonce
-- **Transaction receipts** -- structured execution results with typed events for all 11 TX types, block-level events (BlockReward, EpochTransition)
+- **Transaction receipts** -- structured execution results with typed events for all 14 TX types, block-level events (BlockReward, EpochTransition)
+- **Multi-asset tokens** -- ISSUE_TOKEN, MINT_TOKEN, TRANSFER_TOKEN with issuer-only minting, supply caps, transferability control, state trie integration
 - **Simple finality** -- blocks finalized when >2/3 of total stake has built on them
 - **Webhook system** -- event-driven HTTP callbacks with HMAC-SHA256 signatures, retry with exponential backoff, auto-disable on persistent failure
 - **Python SDK** -- `qbit_sdk` package with zero external dependencies, sync HTTP client, WebSocket client, typed data models
 - **OpenAPI 3.0 spec** -- complete REST API specification at `docs/openapi.yaml`
-- **19 audit rounds, 0 open issues**
+- **22 audit rounds, 0 open issues**
 
 ## Quick Start
 
@@ -239,7 +240,7 @@ tracker/             AUDIT_LOG.md, ISSUES.md, FEATURES.md, CHANGELOG.md, DEVELOP
 
 ## Security
 
-QBit Network has completed **17 rounds of security audit** covering:
+QBit Network has completed **22 rounds of security audit** covering:
 
 - Cryptographic correctness (PQC primitive usage, key handling, side-channels)
 - Input validation (deserialization, RPC params, P2P messages)
@@ -264,11 +265,11 @@ QBit Network has completed **17 rounds of security audit** covering:
 
 | File | Contents |
 |------|---------|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layer diagram, identity model, all 11 TX types, dPoS, WebSocket, REST API, security limits |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layer diagram, identity model, all 14 TX types, dPoS, WebSocket, REST API, security limits |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Wire formats, consensus rules, P2P handshake spec, WebSocket protocol |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Threat model, audit history, all security controls |
 | [`docs/PAPER.md`](docs/PAPER.md) | Academic paper with benchmarks and formal analysis |
-| [`tracker/CHANGELOG.md`](tracker/CHANGELOG.md) | Release notes v0.1.0 through v0.6.0 |
+| [`tracker/CHANGELOG.md`](tracker/CHANGELOG.md) | Release notes v0.1.0 through v0.8.0 |
 | [`tracker/DEVELOPMENT.md`](tracker/DEVELOPMENT.md) | Setup guide, code conventions, configuration |
 
 ## Contributing
