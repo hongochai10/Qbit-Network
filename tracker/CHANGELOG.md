@@ -1,5 +1,15 @@
 # Changelog
 
+## Refactor: blockchain.py mixin extraction (2026-03-26)
+
+- Extracted `PersistenceMixin` to `qbit_network/core/persistence.py` (301 lines): `save()`, `load()`, `_load_from_sqlite()`
+- Extracted `RollbackMixin` to `qbit_network/core/rollback.py` (347 lines): `_rollback_to()`, `_rollback_to_inner()`, `_rollback_block()`, `_find_validator_pk_in_chain()`, `_evaluate_fork()`, `_get_blocks_range()`
+- `blockchain.py` reduced from 1736 to 1128 lines (-35%)
+- Zero logic changes, all 1507 tests passing
+- Rollback mixin uses lazy `from . import blockchain as _bc_mod` to read monkeypatched constants (`EPOCH_LENGTH`, `DYNAMIC_FEE_ACTIVATION_HEIGHT`)
+
+---
+
 ## Round 19 Audit Fixes (2026-03-26)
 
 ### Critical / High

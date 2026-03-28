@@ -2,6 +2,14 @@
 
 ## Implemented
 
+### Refactor: blockchain.py mixin extraction (2026-03-26)
+- [x] Extracted `PersistenceMixin` (301 lines) to `qbit_network/core/persistence.py`
+  - `save()`, `load()`, `_load_from_sqlite()`
+- [x] Extracted `RollbackMixin` (347 lines) to `qbit_network/core/rollback.py`
+  - `_rollback_to()`, `_rollback_to_inner()`, `_rollback_block()`, `_find_validator_pk_in_chain()`, `_evaluate_fork()`, `_get_blocks_range()`
+- [x] blockchain.py reduced from 1736 to 1128 lines (-35%)
+- [x] All 1507 tests passing, zero logic changes
+
 ### Round 19: Combined 5-Agent Audit (2026-03-26)
 - [x] R19-PROTO-003/SEC-004 (HIGH): State root/receipts root mismatch now rejects blocks
 - [x] R19-PERF-001 (HIGH): Cached state root in _append_block_inner, reused in produce_block
