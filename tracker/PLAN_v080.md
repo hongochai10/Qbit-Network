@@ -100,7 +100,7 @@
 - [x] JSON-RPC: 3 methods (qv_getBlockHeaders, qv_getStateProofAt, qv_getReceiptProof)
 - [x] Historical state proof (via state snapshots within MAX_REORG_DEPTH)
 - [x] get_state_proof_at_block() with snapshot-based trie restoration
-- [ ] Unit tests: ~60
+- [x] Unit tests: 79 light client tests
 
 ---
 

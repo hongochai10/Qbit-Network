@@ -19,12 +19,12 @@ QBit Network PQC Blockchain at `/Users/velikho/Desktop/WORKING/pqc-blockchain/`.
 - Source: `qbit_network/` (Python 3.11+, asyncio + aiohttp)
 - Tests: `tests/` (1,781 tests across all modules)
 - Docs: `docs/` + `tracker/` + `tutorials/` + `research/`
-- Audit rounds: 21 | Issues found/fixed: 230+ | Open: 0
+- Audit rounds: 22 | Issues found/fixed: 232+ | Open: 0
 - TX types: 14 | Token: QBIT (21M max, 9 decimals)
 - Consensus: dPoS + epochs + slashing + finality
 - Fees: EIP-1559 dynamic (100% validator)
 - State: Merkle trie (stateRoot + receiptsRoot in block header)
-- Multi-asset tokens: ASSET_CREATE/TRANSFER/BURN TX types, on-chain asset registry
+- Multi-asset tokens: ISSUE_TOKEN/MINT_TOKEN/TRANSFER_TOKEN TX types, on-chain asset registry
 - Light client: SPV-style Merkle proof verification
 - Binary P2P: compact binary wire format (PROTOCOL_VERSION 4)
 - Events: Receipt system with 14 event types

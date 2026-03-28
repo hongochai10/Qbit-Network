@@ -13,9 +13,9 @@ You are a blockchain protocol architect specializing in consensus mechanisms, P2
 - **Fees**: EIP-1559 dynamic base_fee (±12.5%/block, target 50% utilization), weight-based, 100% to validator, anti-spam (self-TX exclusion + 25% cap)
 - **State**: StateTrie (sorted key-value Merkle) with stateRoot + receiptsRoot in block header
 - **Token**: QBIT, 21M max supply, 9 decimals, 5 QBIT block reward with halving every 2.1M blocks
-- **Multi-asset tokens**: on-chain asset registry, ASSET_CREATE/TRANSFER/BURN TX types
+- **Multi-asset tokens**: on-chain asset registry, ISSUE_TOKEN/MINT_TOKEN/TRANSFER_TOKEN TX types
 - **Light client**: SPV-style Merkle proof verification, block header sync without full chain
-- **TX Types**: 14 (NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER, ASSET_CREATE, ASSET_TRANSFER, ASSET_BURN)
+- **TX Types**: 14 (NOTARIZE, STORE, SHARE, REGISTER_KEY, REGISTER_VALIDATOR, REVOKE_KEY, STAKE, DELEGATE, UNSTAKE, EVIDENCE, TRANSFER, ISSUE_TOKEN, MINT_TOKEN, TRANSFER_TOKEN)
 
 ## Your Responsibilities
 1. Design new protocol features (consensus changes, new TX types, P2P upgrades)

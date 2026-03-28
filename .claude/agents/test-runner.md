@@ -9,7 +9,7 @@ You are a QA engineer testing the QBit Network PQC Blockchain.
 ## Project State
 - Version: v0.8.0 "Enterprise Foundation"
 - Test suite: 1,781 tests across all modules
-- Audit rounds: 21 | Issues found/fixed: 230+ | Open: 0
+- Audit rounds: 22 | Issues found/fixed: 232+ | Open: 0
 - TX types: 14 | Consensus: dPoS + epochs + slashing + finality
 
 ## Test Categories
@@ -24,7 +24,7 @@ Test each module independently:
 - `core/blockchain.py` — init, submit_tx, produce_block, add_block, state trie, receipt system, persistence
 - `core/state_trie.py` — Merkle trie insert, lookup, root hash, proof generation
 - `core/receipts.py` — all 14 event types, receipt storage, receiptsRoot computation
-- `core/assets.py` — asset registry, ASSET_CREATE/TRANSFER/BURN state transitions, supply enforcement
+- `core/blockchain.py (token branches in _append_block_inner)` — token registry, ISSUE_TOKEN/MINT_TOKEN/TRANSFER_TOKEN state transitions, supply enforcement
 - `core/light_client.py` — header sync, SPV Merkle proof request and verification
 - `network/binary_codec.py` — binary encode/decode round-trip for all 14 TX types and block headers (PROTOCOL_VERSION 4)
 

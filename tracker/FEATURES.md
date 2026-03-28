@@ -35,7 +35,7 @@
 - [x] P2P zero-frame rejection, cached codec (R21-007/009)
 - [x] PROTOCOL.md v4 complete (tokens, light client, binary P2P, weight table)
 - [x] All docs synced: README, CLAUDE.md, CHANGELOG, FEATURES, agents
-- [x] 21 audit rounds, 230+ issues found/fixed, 0 open
+- [x] 22 audit rounds, 232+ issues found/fixed, 0 open
 
 ### v0.8.0 Sprint 3: Binary P2P Protocol (2026-03-28)
 - [x] MessageCodec with JSON + msgpack backends (codec.py)

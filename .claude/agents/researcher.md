@@ -23,7 +23,7 @@ QBit Network is a PQC blockchain at `/Users/velikho/Desktop/WORKING/pqc-blockcha
 - EIP-1559 dynamic fees | Merkle trie state | Receipt system (14 event types)
 - P2P: ML-DSA 4-step auth + ML-KEM/AES-GCM channel encryption + binary wire format (PROTOCOL_VERSION 4)
 - Light client: SPV-style Merkle proof verification
-- 21 audit rounds | 230+ issues found/fixed | 0 open
+- 22 audit rounds | 232+ issues found/fixed | 0 open
 - 1,781 tests across all modules
 - Performance: 40 TPS sustained, 10.7 KB/TX wire size (PQC overhead), 14K internal ops/sec
 

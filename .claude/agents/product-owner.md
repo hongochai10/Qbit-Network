@@ -53,10 +53,10 @@ Core value proposition:
 - 1,507 tests | 21 audit rounds | 230+ issues fixed | 0 open
 
 ### v0.8.0 (CURRENT — "Enterprise Foundation")
-- **Multi-asset tokens**: ASSET_CREATE, ASSET_TRANSFER, ASSET_BURN TX types; on-chain asset registry
+- **Multi-asset tokens**: ISSUE_TOKEN, MINT_TOKEN, TRANSFER_TOKEN TX types; on-chain asset registry
 - **Light client**: SPV-style block header sync with Merkle proof verification
 - **Binary P2P**: compact binary wire format (PROTOCOL_VERSION 4), replacing JSON for P2P messages
-- 1,781 tests | 21 audit rounds | 230+ issues fixed | 0 open
+- 1,781 tests | 22 audit rounds | 232+ issues fixed | 0 open
 
 ### v0.9.0 (NEXT — focus: network hardening)
 **Must-have:**

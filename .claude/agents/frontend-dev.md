@@ -18,7 +18,7 @@ You are a frontend/CLI developer building user-facing tools for QBit Network.
 QBit Network PQC Blockchain at `/Users/velikho/Desktop/WORKING/pqc-blockchain/`.
 - Backend: REST API (35+ endpoints) on port 8545 + WebSocket + Webhooks
 - Auth: Bearer token for protected methods
-- TX types: 11 | Token: QBIT (21M max, 9 decimals)
+- TX types: 14 | Token: QBIT (21M max, 9 decimals)
 - Address format: `qv1` + 64 hex chars
 
 ## NextJS 14 Web UI (`web/`)

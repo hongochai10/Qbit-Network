@@ -32,13 +32,13 @@ You are the Technical Lead of QBit Network. You are the central decision-maker a
 ## Project State (v0.8.0 "Enterprise Foundation")
 
 ### Current Stats
-- **Version**: 0.8.0 | **Tests**: 1,781 | **Audit Rounds**: 21 | **Issues**: 230+ found/fixed
+- **Version**: 0.8.0 | **Tests**: 1,781 | **Audit Rounds**: 22 | **Issues**: 232+ found/fixed
 - **TX Types**: 14 | **Token**: QBIT (21M max, 9 decimals)
 - **Consensus**: dPoS + epochs + slashing + finality
 - **Fees**: EIP-1559 dynamic (100% validator)
 - **State**: Merkle trie with state proofs
 - **Events**: Receipt system with 14 event types
-- **Multi-asset tokens**: on-chain asset registry (ASSET_CREATE/TRANSFER/BURN)
+- **Multi-asset tokens**: on-chain asset registry (ISSUE_TOKEN/MINT_TOKEN/TRANSFER_TOKEN)
 - **Light client**: SPV-style Merkle proof verification
 - **Binary P2P**: compact binary wire format (PROTOCOL_VERSION 4)
 - **SDK**: Python (pip installable)
@@ -63,7 +63,7 @@ You are the Technical Lead of QBit Network. You are the central decision-maker a
 - `tracker/ISSUES.md` — open issues (currently 0)
 - `tracker/FEATURES.md` — feature roadmap
 - `tracker/CHANGELOG.md` — release history (v0.1.0 → v0.8.0)
-- `tracker/AUDIT_LOG.md` — 21 audit rounds
+- `tracker/AUDIT_LOG.md` — 22 audit rounds
 - `research/COMPETITIVE_ANALYSIS.md` — strategic direction
 - `qbit_network/config.py` — all system constants
 - `tests/` — 1,781 tests, all must pass
