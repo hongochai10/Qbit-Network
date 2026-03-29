@@ -1070,6 +1070,140 @@ class TestFeeEndpoint(AsyncRESTTestCase):
         body = await resp.json()
         self.assertIsNone(body["error"])
 
+
+# ===================================================================
+# R25-002: Auth middleware enforcement — exhaustive 401 checks
+# ===================================================================
+
+class TestAuthMiddlewareEnforcement(AsyncRESTTestCase):
+    """Verify that EVERY protected endpoint returns 401 without auth.
+
+    This catches the R25-002 finding: if a new endpoint forgets per-handler
+    _check_auth(), middleware now enforces auth at the route-group level.
+    """
+
+    # -- Protected POST endpoints (must return 401 without auth) --
+
+    async def test_transfer_no_auth(self):
+        resp = await self.client.post("/api/v1/transfer", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_txs_submit_no_auth(self):
+        resp = await self.client.post("/api/v1/txs", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_evidence_no_auth(self):
+        resp = await self.client.post("/api/v1/evidence", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_wallets_create_no_auth(self):
+        resp = await self.client.post("/api/v1/wallets")
+        self.assertEqual(resp.status, 401)
+
+    async def test_wallets_list_no_auth(self):
+        resp = await self.client.get("/api/v1/wallets")
+        self.assertEqual(resp.status, 401)
+
+    async def test_notarize_no_auth(self):
+        resp = await self.client.post("/api/v1/notarize", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_store_no_auth(self):
+        resp = await self.client.post("/api/v1/store", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_share_no_auth(self):
+        resp = await self.client.post("/api/v1/share", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_register_validator_no_auth(self):
+        resp = await self.client.post("/api/v1/register-validator", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_stake_no_auth(self):
+        resp = await self.client.post("/api/v1/stake", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_delegate_no_auth(self):
+        resp = await self.client.post("/api/v1/delegate", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_unstake_no_auth(self):
+        resp = await self.client.post("/api/v1/unstake", json={})
+        self.assertEqual(resp.status, 401)
+
+    # -- Webhook endpoints (protected) --
+
+    async def test_webhook_register_no_auth(self):
+        resp = await self.client.post("/api/v1/webhooks", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_webhook_list_no_auth(self):
+        resp = await self.client.get("/api/v1/webhooks")
+        self.assertEqual(resp.status, 401)
+
+    async def test_webhook_delete_no_auth(self):
+        resp = await self.client.delete("/api/v1/webhooks/some-id")
+        self.assertEqual(resp.status, 401)
+
+    # -- Token write endpoints (protected) --
+
+    async def test_issue_token_no_auth(self):
+        resp = await self.client.post("/api/v1/issue-token", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_mint_token_no_auth(self):
+        resp = await self.client.post("/api/v1/mint-token", json={})
+        self.assertEqual(resp.status, 401)
+
+    async def test_transfer_token_no_auth(self):
+        resp = await self.client.post("/api/v1/transfer-token", json={})
+        self.assertEqual(resp.status, 401)
+
+    # -- Wrong token should also return 401 --
+
+    async def test_transfer_wrong_token(self):
+        resp = await self.client.post(
+            "/api/v1/transfer", json={},
+            headers={"Authorization": "Bearer wrong-token"})
+        self.assertEqual(resp.status, 401)
+
+    # -- Public endpoints still accessible without auth --
+
+    async def test_public_health_no_auth(self):
+        resp = await self.client.get("/api/v1/health")
+        self.assertEqual(resp.status, 200)
+
+    async def test_public_info_no_auth(self):
+        resp = await self.client.get("/api/v1/info")
+        self.assertEqual(resp.status, 200)
+
+    async def test_public_blocks_no_auth(self):
+        resp = await self.client.get("/api/v1/blocks")
+        self.assertEqual(resp.status, 200)
+
+    async def test_public_verify_no_auth(self):
+        resp = await self.client.post(
+            "/api/v1/verify", json={"document_hash": "abc123def456"})
+        self.assertEqual(resp.status, 200)
+
+    async def test_public_tokens_no_auth(self):
+        resp = await self.client.get("/api/v1/tokens")
+        self.assertEqual(resp.status, 200)
+
+    async def test_public_supply_no_auth(self):
+        resp = await self.client.get("/api/v1/supply")
+        # Supply is public — must not return 401 (may be 500 if mock lacks method)
+        self.assertNotEqual(resp.status, 401)
+
+    async def test_public_fee_no_auth(self):
+        resp = await self.client.get("/api/v1/fee")
+        self.assertEqual(resp.status, 200)
+
+    async def test_public_headers_no_auth(self):
+        resp = await self.client.get("/api/v1/headers")
+        self.assertEqual(resp.status, 200)
+
     async def test_fee_endpoint_has_required_fields(self):
         """/fee returns all required fee info fields."""
         resp = await self.client.get("/api/v1/fee")

@@ -65,7 +65,7 @@ class RESTApi:
         self._auth_token = auth_token
         self._cors_origins = cors_origins
         self.app = web.Application(
-            middlewares=[self._cors_middleware],
+            middlewares=[self._cors_middleware, self._auth_middleware],
             client_max_size=1048576,  # 1 MB, matching MAX_RPC_BODY
         )
         self._register_routes()
@@ -94,6 +94,67 @@ class RESTApi:
             resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
         resp.headers["Access-Control-Max-Age"] = "86400"
         return resp
+
+    # ------------------------------------------------------------------
+    # Auth middleware (route-group enforcement)
+    # ------------------------------------------------------------------
+
+    # Routes that do NOT require authentication.
+    # Matched against the aiohttp resource canonical path (e.g. "/info",
+    # "/blocks/{index}").  Any route not listed here is protected.
+    _PUBLIC_ROUTES: set[str] = {
+        "/info",
+        "/health",
+        "/blocks",
+        "/blocks/latest",
+        "/blocks/hash/{hash}",
+        "/blocks/{index}",
+        "/txs/sender/{addr}",
+        "/txs/{txid}",
+        "/address/{addr}",
+        "/notarizations/{hash}",
+        "/validators",
+        "/stakes",
+        "/stakes/{validator}",
+        "/balance/{addr}",
+        "/supply",
+        "/fee",
+        "/pool",
+        "/pool/count",
+        "/verify",
+        "/epochs/current",
+        "/slashing-events",
+        "/state-proof/{addr}",
+        "/state-root",
+        "/receipt/{txid}",
+        "/events",
+        "/finalized",
+        # Token read endpoints
+        "/tokens",
+        "/tokens/{token_id}",
+        "/tokens/{token_id}/holders",
+        "/address/{addr}/tokens",
+        # Light client endpoints
+        "/headers",
+        "/headers/{index}",
+        "/proofs/state/{key}",
+        "/proofs/receipt/{txid}",
+    }
+
+    @web.middleware
+    async def _auth_middleware(self, request: web.Request, handler):
+        """Enforce bearer-token auth on all non-public routes."""
+        resource = request.match_info.route.resource
+        canonical = resource.canonical if resource else None
+        # When mounted as sub-app at /api/v1/, canonical includes the
+        # prefix.  Strip any leading /api/v1 so the set lookup works.
+        route_path = canonical
+        if canonical and canonical.startswith("/api/v1"):
+            route_path = canonical[len("/api/v1"):]  # e.g. "/address/{addr}"
+        if route_path not in self._PUBLIC_ROUTES:
+            if not self._check_auth(request):
+                return _err(401, "authentication required", status=401)
+        return await handler(request)
 
     # ------------------------------------------------------------------
     # Auth helper
@@ -480,8 +541,6 @@ class RESTApi:
     # ------------------------------------------------------------------
 
     async def _transfer_rest(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             body = await request.json()
         except Exception:
@@ -518,8 +577,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _submit_evidence(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             body = await request.json()
         except Exception:
@@ -536,8 +593,6 @@ class RESTApi:
             return _err(500, "internal error", status=500)
 
     async def _submit_tx(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
 
         try:
             body = await request.json()
@@ -557,8 +612,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _create_wallet(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
 
         try:
             result = await self._node._rpc_new_wallet()
@@ -568,8 +621,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _list_wallets(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
 
         try:
             result = await self._node._rpc_list_wallets()
@@ -579,8 +630,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _notarize(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
 
         try:
             body = await request.json()
@@ -639,8 +688,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _store(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
 
         try:
             body = await request.json()
@@ -679,8 +726,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _share(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
 
         try:
             body = await request.json()
@@ -723,8 +768,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _register_validator(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
 
         try:
             body = await request.json()
@@ -775,8 +818,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _stake_rest(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             body = await request.json()
         except Exception:
@@ -809,8 +850,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _delegate_rest(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             body = await request.json()
         except Exception:
@@ -843,8 +882,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _unstake_rest(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             body = await request.json()
         except Exception:
@@ -881,8 +918,6 @@ class RESTApi:
     # ------------------------------------------------------------------
 
     async def _register_webhook(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             body = await request.json()
         except Exception:
@@ -911,8 +946,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _list_webhooks(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             webhooks = self._node.webhook_manager.list_webhooks()
             return _ok({"webhooks": webhooks, "total": len(webhooks)})
@@ -921,8 +954,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _delete_webhook(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         webhook_id = request.match_info.get("id", "")
         if not webhook_id:
             return _err(400, "webhook id is required")
@@ -982,8 +1013,6 @@ class RESTApi:
         return _ok({"address": addr, "tokens": tokens})
 
     async def _issue_token_rest(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             body = await request.json()
         except Exception:
@@ -1012,8 +1041,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _mint_token_rest(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             body = await request.json()
         except Exception:
@@ -1038,8 +1065,6 @@ class RESTApi:
             return _err(500, "internal server error", status=500)
 
     async def _transfer_token_rest(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return _err(401, "authentication required", status=401)
         try:
             body = await request.json()
         except Exception:
