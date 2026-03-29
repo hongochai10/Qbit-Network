@@ -34,8 +34,12 @@ class FullNode:
                  bootstrap: list[str] | None = None, rpc_token: str = "",
                  tls_cert: str = "", tls_key: str = "",
                  tls_self_signed: bool = False, tls_auto: bool = False,
-                 tls_hostname: str = "localhost"):
+                 tls_hostname: str = "localhost",
+                 wallet_password: str = "",
+                 cors_origins: str = ""):
         self.data_dir = data_dir
+        self._wallet_password = wallet_password
+        self._cors_origins = cors_origins
         self.blockchain = Blockchain(data_dir=data_dir)
         self.wallets: dict[str, Wallet] = {}
         self.validator_wallet: Wallet | None = None
@@ -70,10 +74,15 @@ class FullNode:
     def _save_wallets(self):
         d = self._wallets_dir()
         os.makedirs(d, exist_ok=True)
+        # Restrict wallet directory to owner-only access
+        try:
+            os.chmod(d, 0o700)
+        except OSError:
+            logger.warning("could not set wallet directory permissions to 0700: %s", d)
         for addr, w in self.wallets.items():
             path = os.path.join(d, f"{addr}.json")
             if not os.path.exists(path):
-                w.save(path)
+                w.save(path, password=self._wallet_password)
 
     def _load_wallets(self):
         d = self._wallets_dir()
@@ -84,7 +93,7 @@ class FullNode:
                 continue
             path = os.path.join(d, fname)
             try:
-                w = Wallet.load(path)
+                w = Wallet.load(path, password=self._wallet_password)
                 self.wallets[w.address] = w
             except Exception as e:
                 logger.warning(f"Failed to load wallet {fname}: {e}")
@@ -1307,7 +1316,8 @@ class FullNode:
         self._register_rpc()
 
         # Mount REST API gateway as sub-app at /api/v1/
-        self._rest_api = RESTApi(self, self.rpc.auth_token)
+        self._rest_api = RESTApi(self, self.rpc.auth_token,
+                                 cors_origins=self._cors_origins)
         self.rpc._app.add_subapp("/api/v1/", self._rest_api.app)
 
         # Attach WebSocket manager to RPC server

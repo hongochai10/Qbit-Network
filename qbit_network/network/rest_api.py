@@ -50,7 +50,7 @@ class RESTApi:
     All handlers delegate to the FullNode instance — no business logic duplicated.
     """
 
-    def __init__(self, node, auth_token: str, cors_origins: str = "*"):
+    def __init__(self, node, auth_token: str, cors_origins: str = ""):
         """
         Parameters
         ----------
@@ -59,7 +59,9 @@ class RESTApi:
         auth_token : str
             Bearer token for protected endpoints (same as RPC token).
         cors_origins : str
-            Allowed CORS origins (default "*").
+            Allowed CORS origins (default "" = no cross-origin access).
+            Use "*" for development or a specific origin like
+            "https://example.com" for production.
         """
         self._node = node
         self._auth_token = auth_token
@@ -76,7 +78,21 @@ class RESTApi:
 
     @web.middleware
     async def _cors_middleware(self, request: web.Request, handler):
-        """Add CORS headers and handle OPTIONS preflight."""
+        """Add CORS headers and handle OPTIONS preflight.
+
+        When cors_origins is empty (default), no CORS headers are added and
+        OPTIONS preflight returns 403 — effectively blocking cross-origin
+        browser requests.
+        """
+        if not self._cors_origins:
+            # Restrictive mode: no CORS headers at all
+            if request.method == "OPTIONS":
+                return web.Response(status=403, text="CORS not allowed")
+            try:
+                return await handler(request)
+            except web.HTTPException as exc:
+                return exc
+
         if request.method == "OPTIONS":
             resp = web.Response(status=204)
         else:

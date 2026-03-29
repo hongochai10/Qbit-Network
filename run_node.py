@@ -36,18 +36,25 @@ async def main():
                         help="Auto-generate and manage self-signed TLS cert in data_dir/tls/")
     parser.add_argument("--tls-hostname", default="localhost",
                         help="Hostname for TLS cert CN/SAN (default: localhost)")
+    parser.add_argument("--cors-origin", default="",
+                        help="Allowed CORS origin (e.g. 'https://app.example.com' or '*' for dev)")
     parser.add_argument("--no-verify-on-load", action="store_true",
                         help="Skip signature verification when loading chain from SQLite (faster startup)")
+    parser.add_argument("--wallet-password", default="",
+                        help="Password for wallet encryption (or set QBIT_WALLET_PASSWORD env var)")
     args = parser.parse_args()
+
+    # Wallet password: CLI arg takes precedence, then env var
+    wallet_password = args.wallet_password or os.environ.get("QBIT_WALLET_PASSWORD", "")
 
     validator = None
     if not args.no_validate:
         if args.wallet and os.path.exists(args.wallet):
-            validator = Wallet.load(args.wallet)
+            validator = Wallet.load(args.wallet, password=wallet_password)
         else:
             validator = Wallet.generate()
             if args.wallet:
-                validator.save(args.wallet)
+                validator.save(args.wallet, password=wallet_password)
 
     node = FullNode(
         host=args.host,
@@ -61,6 +68,8 @@ async def main():
         tls_self_signed=args.tls_self_signed,
         tls_auto=args.tls_auto,
         tls_hostname=args.tls_hostname,
+        wallet_password=wallet_password,
+        cors_origins=args.cors_origin,
     )
 
     await node.start(validator_wallet=validator,

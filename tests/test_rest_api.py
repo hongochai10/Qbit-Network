@@ -196,10 +196,10 @@ class MockNode:
 AUTH_TOKEN = "test-token-12345"
 
 
-def _make_app():
+def _make_app(cors_origins="*"):
     """Create a test aiohttp app with REST sub-app mounted."""
     node = MockNode()
-    rest = RESTApi(node, AUTH_TOKEN)
+    rest = RESTApi(node, AUTH_TOKEN, cors_origins=cors_origins)
     app = web.Application()
     app.add_subapp("/api/v1/", rest.app)
     app["_mock_node"] = node
@@ -545,6 +545,7 @@ class TestProtectedEndpoints(AsyncRESTTestCase):
 # ===================================================================
 
 class TestCORS(AsyncRESTTestCase):
+    """Tests for wildcard CORS mode (dev)."""
 
     async def test_cors_headers_on_get(self):
         resp = await self.client.get("/api/v1/health")
@@ -558,6 +559,63 @@ class TestCORS(AsyncRESTTestCase):
         self.assertEqual(resp.status, 204)
         self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
         self.assertIn("POST", resp.headers.get("Access-Control-Allow-Methods", ""))
+
+
+class TestCORSRestrictive(unittest.IsolatedAsyncioTestCase):
+    """Tests for default restrictive CORS (no cross-origin access)."""
+
+    async def asyncSetUp(self):
+        self.app = _make_app(cors_origins="")
+        self.server = TestServer(self.app)
+        self.client = TestClient(self.server)
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    async def test_no_cors_headers_on_get(self):
+        resp = await self.client.get("/api/v1/health")
+        self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+
+    async def test_options_preflight_rejected(self):
+        resp = await self.client.options("/api/v1/health")
+        self.assertEqual(resp.status, 403)
+        self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+
+    async def test_endpoints_still_work(self):
+        resp = await self.client.get("/api/v1/health")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertEqual(body["data"]["status"], "ok")
+
+
+class TestCORSSpecificOrigin(unittest.IsolatedAsyncioTestCase):
+    """Tests for specific origin CORS configuration."""
+
+    async def asyncSetUp(self):
+        self.app = _make_app(cors_origins="https://app.example.com")
+        self.server = TestServer(self.app)
+        self.client = TestClient(self.server)
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    async def test_specific_origin_in_header(self):
+        resp = await self.client.get("/api/v1/health")
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"),
+                         "https://app.example.com")
+
+    async def test_authorization_header_allowed(self):
+        """Specific origin should allow Authorization header (SPRINT2-002)."""
+        resp = await self.client.get("/api/v1/health")
+        self.assertIn("Authorization", resp.headers.get("Access-Control-Allow-Headers", ""))
+
+    async def test_options_preflight(self):
+        resp = await self.client.options("/api/v1/health")
+        self.assertEqual(resp.status, 204)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"),
+                         "https://app.example.com")
 
 
 # ===================================================================
