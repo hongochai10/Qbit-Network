@@ -1,5 +1,6 @@
 """WebSocket subscription manager for real-time blockchain events."""
 import asyncio
+import hmac
 import json
 import logging
 import time
@@ -164,8 +165,29 @@ class WebSocketManager:
             self._subscribers[ch].clear()
 
 
+def _check_ws_auth(request: web.Request) -> bool:
+    """Verify bearer token on WebSocket upgrade request."""
+    expected = request.app.get("ws_auth_token", "")
+    if not expected:
+        return True  # no token configured — allow (backward compat)
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    token = auth[7:].strip()
+    if not token:
+        return False
+    return hmac.compare_digest(token, expected)
+
+
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     """Handle incoming WebSocket connections at /ws."""
+    # Authenticate before upgrade
+    if not _check_ws_auth(request):
+        raise web.HTTPUnauthorized(
+            text="authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     manager: WebSocketManager = request.app["ws_manager"]
 
     if manager.connected_count() >= MAX_WS_CONNECTIONS:

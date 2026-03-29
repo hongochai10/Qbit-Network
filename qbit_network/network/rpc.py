@@ -151,6 +151,7 @@ class RPCServer:
         from .websocket import websocket_handler
         self._ws_manager = ws_manager
         self._app["ws_manager"] = ws_manager
+        self._app["ws_auth_token"] = self.auth_token
         self._app.router.add_get("/ws", websocket_handler)
 
     @web.middleware

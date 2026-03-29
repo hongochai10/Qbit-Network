@@ -10,6 +10,7 @@ from aiohttp.test_utils import AioHTTPTestCase, TestServer
 from qbit_network.network.websocket import (
     WebSocketManager,
     websocket_handler,
+    _check_ws_auth,
     VALID_CHANNELS,
     MAX_WS_CONNECTIONS,
     MAX_SUBSCRIPTIONS_PER_CLIENT,
@@ -762,6 +763,203 @@ async def test_ws_subscribe_all_valid_channels():
                 await ws.send_json({"type": "subscribe", "channel": ch})
                 resp = json.loads((await ws.receive()).data)
                 assert resp["type"] == "subscribed", f"Failed for channel {ch}: {resp}"
+            await ws.close()
+    finally:
+        await server.close()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket authentication tests (TEC-652 / R25-001)
+# ---------------------------------------------------------------------------
+
+TEST_WS_AUTH_TOKEN = "test-secret-token-abc123"
+
+
+async def _make_ws_auth_server():
+    """Create a test server with WS auth enabled, return (server, mgr)."""
+    mgr = WebSocketManager()
+    app = web.Application()
+    app["ws_manager"] = mgr
+    app["ws_auth_token"] = TEST_WS_AUTH_TOKEN
+    app.router.add_get("/ws", websocket_handler)
+    server = TestServer(app)
+    await server.start_server()
+    return server, mgr
+
+
+class TestCheckWsAuth:
+    """Unit tests for _check_ws_auth helper."""
+
+    def _fake_request(self, auth_header=None, token_in_app=""):
+        req = MagicMock()
+        req.app = {"ws_auth_token": token_in_app}
+        req.headers = {}
+        if auth_header is not None:
+            req.headers["Authorization"] = auth_header
+        return req
+
+    def test_no_token_configured_allows_all(self):
+        req = self._fake_request(auth_header=None, token_in_app="")
+        assert _check_ws_auth(req) is True
+
+    def test_valid_bearer_token(self):
+        req = self._fake_request(
+            auth_header=f"Bearer {TEST_WS_AUTH_TOKEN}",
+            token_in_app=TEST_WS_AUTH_TOKEN,
+        )
+        assert _check_ws_auth(req) is True
+
+    def test_missing_auth_header(self):
+        req = self._fake_request(auth_header=None, token_in_app=TEST_WS_AUTH_TOKEN)
+        assert _check_ws_auth(req) is False
+
+    def test_wrong_token(self):
+        req = self._fake_request(
+            auth_header="Bearer wrong-token",
+            token_in_app=TEST_WS_AUTH_TOKEN,
+        )
+        assert _check_ws_auth(req) is False
+
+    def test_empty_bearer(self):
+        req = self._fake_request(
+            auth_header="Bearer ",
+            token_in_app=TEST_WS_AUTH_TOKEN,
+        )
+        assert _check_ws_auth(req) is False
+
+    def test_non_bearer_scheme(self):
+        req = self._fake_request(
+            auth_header=f"Basic {TEST_WS_AUTH_TOKEN}",
+            token_in_app=TEST_WS_AUTH_TOKEN,
+        )
+        assert _check_ws_auth(req) is False
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_valid_token_connects():
+    """A client with a valid bearer token can connect and subscribe."""
+    server, mgr = await _make_ws_auth_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(
+                server.make_url("/ws"),
+                headers={"Authorization": f"Bearer {TEST_WS_AUTH_TOKEN}"},
+            )
+            await ws.send_json({"type": "ping"})
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "pong"
+            await ws.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_missing_token_rejected():
+    """A client without a bearer token gets 401 on upgrade."""
+    server, mgr = await _make_ws_auth_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            try:
+                ws = await session.ws_connect(server.make_url("/ws"))
+                await ws.close()
+                pytest.fail("Expected 401 but connection was accepted")
+            except aiohttp.WSServerHandshakeError as e:
+                assert e.status == 401
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_wrong_token_rejected():
+    """A client with an incorrect bearer token gets 401."""
+    server, mgr = await _make_ws_auth_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            try:
+                ws = await session.ws_connect(
+                    server.make_url("/ws"),
+                    headers={"Authorization": "Bearer wrong-token-here"},
+                )
+                await ws.close()
+                pytest.fail("Expected 401 but connection was accepted")
+            except aiohttp.WSServerHandshakeError as e:
+                assert e.status == 401
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_non_bearer_scheme_rejected():
+    """A client using Basic auth scheme gets 401."""
+    server, mgr = await _make_ws_auth_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            try:
+                ws = await session.ws_connect(
+                    server.make_url("/ws"),
+                    headers={"Authorization": f"Basic {TEST_WS_AUTH_TOKEN}"},
+                )
+                await ws.close()
+                pytest.fail("Expected 401 but connection was accepted")
+            except aiohttp.WSServerHandshakeError as e:
+                assert e.status == 401
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_empty_bearer_rejected():
+    """A client with 'Bearer ' (empty token) gets 401."""
+    server, mgr = await _make_ws_auth_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            try:
+                ws = await session.ws_connect(
+                    server.make_url("/ws"),
+                    headers={"Authorization": "Bearer "},
+                )
+                await ws.close()
+                pytest.fail("Expected 401 but connection was accepted")
+            except aiohttp.WSServerHandshakeError as e:
+                assert e.status == 401
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_no_auth_token_configured_allows_all():
+    """When no ws_auth_token is set, all connections are allowed (backward compat)."""
+    server, mgr = await _make_ws_server()  # no auth token
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            await ws.send_json({"type": "ping"})
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "pong"
+            await ws.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_auth_subscribe_and_receive():
+    """Authenticated client can subscribe and receive events normally."""
+    server, mgr = await _make_ws_auth_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(
+                server.make_url("/ws"),
+                headers={"Authorization": f"Bearer {TEST_WS_AUTH_TOKEN}"},
+            )
+            await ws.send_json({"type": "subscribe", "channel": "new_block"})
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "subscribed"
+
+            await mgr.broadcast("new_block", {"index": 7})
+            event = json.loads((await ws.receive()).data)
+            assert event["type"] == "event"
+            assert event["data"]["index"] == 7
+
             await ws.close()
     finally:
         await server.close()
