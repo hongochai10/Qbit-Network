@@ -73,6 +73,9 @@ class WebhookManager:
             # Reject private/reserved IP addresses
             try:
                 addr = ipaddress.ip_address(hostname)
+                # R25-001: unwrap IPv6-mapped IPv4 (e.g. ::ffff:127.0.0.1)
+                if hasattr(addr, 'ipv4_mapped') and addr.ipv4_mapped is not None:
+                    addr = addr.ipv4_mapped
                 if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
                     raise ValueError("webhook url must not target private/loopback/link-local addresses")
             except ValueError as ip_err:
@@ -220,6 +223,9 @@ class WebhookManager:
                 resolved = socket.getaddrinfo(hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
                 for family, _type, _proto, _canon, sockaddr in resolved:
                     addr = ipaddress.ip_address(sockaddr[0])
+                    # R25-001: unwrap IPv6-mapped IPv4 (e.g. ::ffff:127.0.0.1)
+                    if hasattr(addr, 'ipv4_mapped') and addr.ipv4_mapped is not None:
+                        addr = addr.ipv4_mapped
                     if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
                         logger.warning(
                             f"Webhook {webhook['id'][:8]}... DNS resolved to "

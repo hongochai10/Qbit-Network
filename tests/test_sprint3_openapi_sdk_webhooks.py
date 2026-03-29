@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import os
+import socket
 import sys
 import time
 import unittest
@@ -516,6 +517,93 @@ class TestWebhookManager(unittest.TestCase):
         wh = self.mgr.register("https://a.com", ["Transfer"], "s")
         self.mgr.delete(wh["id"])
         self.assertIsNone(self.mgr.get(wh["id"]))
+
+
+class TestWebhookSSRFIPv6Mapped(unittest.TestCase):
+    """R25-001: IPv6-mapped IPv4 addresses must be rejected by SSRF protection."""
+
+    def setUp(self):
+        from qbit_network.network.webhooks import WebhookManager
+        self.mgr = WebhookManager()
+
+    def test_reject_ipv6_mapped_loopback(self):
+        """::ffff:127.0.0.1 must be rejected (IPv6-mapped loopback)."""
+        with self.assertRaises(ValueError) as ctx:
+            self.mgr.register("http://[::ffff:127.0.0.1]/hook", ["Transfer"], "s")
+        self.assertIn("private/loopback", str(ctx.exception))
+
+    def test_reject_ipv6_mapped_private_10(self):
+        """::ffff:10.0.0.1 must be rejected (IPv6-mapped private)."""
+        with self.assertRaises(ValueError) as ctx:
+            self.mgr.register("http://[::ffff:10.0.0.1]/hook", ["Transfer"], "s")
+        self.assertIn("private/loopback", str(ctx.exception))
+
+    def test_reject_ipv6_mapped_private_192(self):
+        """::ffff:192.168.1.1 must be rejected (IPv6-mapped private)."""
+        with self.assertRaises(ValueError) as ctx:
+            self.mgr.register("http://[::ffff:192.168.1.1]/hook", ["Transfer"], "s")
+        self.assertIn("private/loopback", str(ctx.exception))
+
+    def test_reject_ipv6_mapped_private_172(self):
+        """::ffff:172.16.0.1 must be rejected (IPv6-mapped private)."""
+        with self.assertRaises(ValueError) as ctx:
+            self.mgr.register("http://[::ffff:172.16.0.1]/hook", ["Transfer"], "s")
+        self.assertIn("private/loopback", str(ctx.exception))
+
+    def test_reject_ipv6_loopback(self):
+        """::1 must still be rejected (pure IPv6 loopback)."""
+        with self.assertRaises(ValueError) as ctx:
+            self.mgr.register("http://[::1]/hook", ["Transfer"], "s")
+        self.assertIn("must not target", str(ctx.exception))
+
+    def test_allow_ipv6_mapped_public(self):
+        """::ffff:8.8.8.8 should be allowed (public IP)."""
+        wh = self.mgr.register("http://[::ffff:8.8.8.8]/hook", ["Transfer"], "s")
+        self.assertEqual(wh["status"], "active")
+
+    @unittest.mock.patch("socket.getaddrinfo")
+    def test_delivery_rejects_ipv6_mapped_resolved(self, mock_dns):
+        """Delivery-time DNS resolving to ::ffff:127.0.0.1 must be blocked."""
+        import asyncio
+        from qbit_network.network.webhooks import WebhookManager
+
+        mgr = WebhookManager()
+        # Register with a public-looking hostname
+        wh = mgr.register("https://example.com/hook", ["Transfer"], "secret")
+
+        # Mock DNS to return IPv6-mapped loopback
+        mock_dns.return_value = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('::ffff:127.0.0.1', 443, 0, 0))
+        ]
+
+        webhook_internal = mgr._webhooks[wh["id"]]
+        event = {"type": "Transfer", "data": {"amount": 100}}
+
+        result = asyncio.get_event_loop().run_until_complete(
+            mgr._deliver_one(webhook_internal, event, 1)
+        )
+        self.assertFalse(result)
+
+    @unittest.mock.patch("socket.getaddrinfo")
+    def test_delivery_rejects_ipv6_mapped_private(self, mock_dns):
+        """Delivery-time DNS resolving to ::ffff:10.0.0.1 must be blocked."""
+        import asyncio
+        from qbit_network.network.webhooks import WebhookManager
+
+        mgr = WebhookManager()
+        wh = mgr.register("https://example.com/hook", ["Transfer"], "secret")
+
+        mock_dns.return_value = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('::ffff:10.0.0.1', 443, 0, 0))
+        ]
+
+        webhook_internal = mgr._webhooks[wh["id"]]
+        event = {"type": "Transfer", "data": {"amount": 100}}
+
+        result = asyncio.get_event_loop().run_until_complete(
+            mgr._deliver_one(webhook_internal, event, 1)
+        )
+        self.assertFalse(result)
 
 
 class TestWebhookHMAC(unittest.TestCase):
