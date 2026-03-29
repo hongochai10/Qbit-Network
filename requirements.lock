@@ -1,0 +1,24 @@
+# ========================================================
+# requirements.lock — Pinned runtime dependencies
+# Generated from requirements.txt for reproducible builds
+# ========================================================
+# To regenerate:
+#   pip install -r requirements.txt
+#   pip freeze --all | grep -iE 'liboqs|cryptography|aiohttp|aiosignal|attrs|frozenlist|multidict|yarl|async-timeout|idna|charset|cffi|pycparser|certifi' > requirements.lock
+#   (then restore this header)
+# ========================================================
+
+# --- Direct dependencies (from requirements.txt) ---
+liboqs-python==0.14.1
+cryptography==46.0.5
+aiohttp==3.7.4
+
+# --- Transitive dependencies ---
+async-timeout==3.0.1
+attrs==23.1.0
+certifi==2023.7.22
+cffi==2.0.0
+idna==2.10
+multidict==6.0.4
+pycparser==2.21
+yarl==1.9.2

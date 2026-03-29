@@ -36,7 +36,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install liboqs-python cryptography aiohttp pytest pytest-asyncio pytest-timeout
+          pip install -r requirements.lock -r requirements-dev.lock
 
       - name: Run core tests
         run: |
@@ -78,7 +78,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install liboqs-python cryptography aiohttp pytest pytest-asyncio pytest-timeout
+          pip install -r requirements.lock -r requirements-dev.lock
 
       - name: Run financial tests
         run: |
@@ -120,7 +120,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install liboqs-python cryptography aiohttp pytest pytest-asyncio pytest-timeout
+          pip install -r requirements.lock -r requirements-dev.lock
 
       - name: Run consensus tests
         run: |
@@ -162,7 +162,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install liboqs-python cryptography aiohttp pytest pytest-asyncio pytest-timeout
+          pip install -r requirements.lock -r requirements-dev.lock
 
       - name: Run network tests
         run: |
@@ -204,7 +204,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install liboqs-python cryptography aiohttp pytest pytest-asyncio pytest-timeout
+          pip install -r requirements.lock -r requirements-dev.lock
 
       - name: Run feature tests
         run: |
@@ -246,7 +246,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install liboqs-python cryptography aiohttp pytest pytest-asyncio pytest-timeout
+          pip install -r requirements.lock -r requirements-dev.lock
 
       - name: Run adversarial tests
         run: |
@@ -288,7 +288,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install liboqs-python cryptography aiohttp pytest pytest-asyncio pytest-timeout
+          pip install -r requirements.lock -r requirements-dev.lock
 
       - name: Run integration tests
         run: |

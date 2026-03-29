@@ -48,10 +48,27 @@ cd liboqs && mkdir build && cd build
 cmake -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=$HOME/_oqs ..
 make -j$(sysctl -n hw.ncpu) && make install
 
-pip3 install liboqs-python cryptography aiohttp
+pip3 install -r requirements.lock
 
 # Verify
 python3 -c "import oqs; print('OK')"
+```
+
+### Updating Dependencies
+
+`requirements.txt` declares version ranges; `requirements.lock` pins exact versions for reproducible builds.
+
+```bash
+# 1. Install from ranges
+pip install -r requirements.txt
+
+# 2. Freeze resolved versions into lock file
+pip freeze --all | grep -iE 'liboqs|cryptography|aiohttp|aiosignal|attrs|frozenlist|multidict|yarl|async-timeout|idna|charset|cffi|pycparser|certifi' > requirements.lock
+
+# 3. For dev/test dependencies
+pip freeze | grep -iE 'pytest|iniconfig|pluggy|packaging|tomli' > requirements-dev.lock
+
+# 4. Commit both lock files
 ```
 
 ### Run a Validator Node

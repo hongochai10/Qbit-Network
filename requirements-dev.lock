@@ -1,0 +1,16 @@
+# ========================================================
+# requirements-dev.lock — Pinned test/dev dependencies
+# Used by CI alongside requirements.lock
+# ========================================================
+# To regenerate:
+#   pip install pytest pytest-asyncio pytest-timeout
+#   pip freeze | grep -iE 'pytest|iniconfig|pluggy|packaging|tomli' > requirements-dev.lock
+#   (then restore this header)
+# ========================================================
+
+pytest==9.0.2
+pytest-asyncio==1.3.0
+pytest-timeout==2.4.0
+iniconfig==2.1.0
+pluggy==1.6.0
+packaging==25.0
