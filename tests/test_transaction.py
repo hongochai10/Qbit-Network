@@ -177,3 +177,584 @@ class TestPayloadValidation:
                          payload={"encryption_pk": "xyz"}, nonce=0)
         ok, err = tx.validate_payload()
         assert not ok
+
+    # ---- REGISTER_VALIDATOR ----
+
+    def test_register_validator_valid(self, wallet):
+        tx = Transaction.register_validator(
+            wallet.address, wallet.signing_pk, wallet.address, nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_register_validator_bad_pubkey_size(self, wallet):
+        tx = Transaction(TxType.REGISTER_VALIDATOR, wallet.address,
+                         payload={"validator_pubkey": "aa" * 100,
+                                  "validator_address": wallet.address}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "wrong size" in err
+
+    def test_register_validator_non_hex_pubkey(self, wallet):
+        tx = Transaction(TxType.REGISTER_VALIDATOR, wallet.address,
+                         payload={"validator_pubkey": "xyz",
+                                  "validator_address": wallet.address}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "non-empty hex" in err
+
+    def test_register_validator_sender_mismatch(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.register_validator(
+            alice.address, bob.signing_pk, bob.address, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "sender == validator_address" in err
+
+    def test_register_validator_address_mismatch(self, wallet):
+        tx = Transaction(TxType.REGISTER_VALIDATOR, wallet.address,
+                         payload={"validator_pubkey": wallet.signing_pk.hex(),
+                                  "validator_address": "qv1wrong"}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "does not match" in err
+
+    def test_register_validator_bad_commission(self, wallet):
+        tx = Transaction(TxType.REGISTER_VALIDATOR, wallet.address,
+                         payload={"validator_pubkey": wallet.signing_pk.hex(),
+                                  "validator_address": wallet.address,
+                                  "commission": 150}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "commission" in err
+
+    # ---- STAKE ----
+
+    def test_stake_valid(self, wallet):
+        tx = Transaction.stake(wallet.address, "qv1validator", amount=100, nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_stake_below_min(self, wallet):
+        tx = Transaction.stake(wallet.address, "qv1validator", amount=0, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "amount" in err
+
+    def test_stake_above_max(self, wallet):
+        tx = Transaction.stake(wallet.address, "qv1validator", amount=2_000_000, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "amount" in err
+
+    def test_stake_missing_validator(self, wallet):
+        tx = Transaction(TxType.STAKE, wallet.address,
+                         payload={"amount": 100, "validator_address": ""}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "validator_address" in err
+
+    # ---- DELEGATE ----
+
+    def test_delegate_valid(self, wallet):
+        tx = Transaction.delegate(wallet.address, "qv1validator", amount=500, nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_delegate_bad_amount(self, wallet):
+        tx = Transaction.delegate(wallet.address, "qv1validator", amount=-1, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+
+    def test_delegate_string_amount(self, wallet):
+        tx = Transaction(TxType.DELEGATE, wallet.address,
+                         payload={"amount": "500", "validator_address": "qv1v"}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+
+    def test_delegate_missing_validator(self, wallet):
+        tx = Transaction(TxType.DELEGATE, wallet.address,
+                         payload={"amount": 100}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+
+    # ---- UNSTAKE ----
+
+    def test_unstake_valid(self, wallet):
+        tx = Transaction.unstake(wallet.address, "qv1validator", amount=100, nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_unstake_zero_amount(self, wallet):
+        tx = Transaction.unstake(wallet.address, "qv1validator", amount=0, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+
+    def test_unstake_non_int_amount(self, wallet):
+        tx = Transaction(TxType.UNSTAKE, wallet.address,
+                         payload={"amount": 10.5, "validator_address": "qv1v"}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+
+    def test_unstake_empty_validator(self, wallet):
+        tx = Transaction(TxType.UNSTAKE, wallet.address,
+                         payload={"amount": 100, "validator_address": ""}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+
+    # ---- EVIDENCE ----
+
+    def test_evidence_valid(self, wallet):
+        from qbit_network.crypto import sha3_256
+        hdr_a = b'{"index":5,"prev":"aa","validator":"v1","timestamp":1}'
+        hdr_b = b'{"index":5,"prev":"bb","validator":"v1","timestamp":2}'
+        hash_a = sha3_256(hdr_a).hex()
+        hash_b = sha3_256(hdr_b).hex()
+        tx = Transaction.evidence(
+            wallet.address, validator_address="qv1bad",
+            block_index=5,
+            block_a_hash=hash_a, block_b_hash=hash_b,
+            block_a_sig="aa" * 100, block_b_sig="bb" * 100,
+            block_a_header=hdr_a.hex(), block_b_header=hdr_b.hex(),
+            nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_evidence_bad_type(self, wallet):
+        tx = Transaction(TxType.EVIDENCE, wallet.address,
+                         payload={"evidence_type": "other",
+                                  "block_a_hash": "aa", "block_b_hash": "bb",
+                                  "block_a_sig": "cc", "block_b_sig": "dd",
+                                  "block_a_header": "ee", "block_b_header": "ff",
+                                  "block_index": 0, "validator_address": "v"}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "double_sign" in err
+
+    def test_evidence_same_hashes(self, wallet):
+        from qbit_network.crypto import sha3_256
+        hdr_a = b'{"index":5,"same":"same"}'
+        hash_a = sha3_256(hdr_a).hex()
+        tx = Transaction.evidence(
+            wallet.address, validator_address="qv1bad",
+            block_index=5,
+            block_a_hash=hash_a, block_b_hash=hash_a,
+            block_a_sig="aa" * 100, block_b_sig="bb" * 100,
+            block_a_header=hdr_a.hex(), block_b_header=hdr_a.hex(),
+            nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "must differ" in err
+
+    def test_evidence_negative_block_index(self, wallet):
+        from qbit_network.crypto import sha3_256
+        hdr_a = b'{"a":1}'
+        hdr_b = b'{"b":2}'
+        tx = Transaction.evidence(
+            wallet.address, validator_address="qv1bad",
+            block_index=-1,
+            block_a_hash=sha3_256(hdr_a).hex(), block_b_hash=sha3_256(hdr_b).hex(),
+            block_a_sig="aa" * 100, block_b_sig="bb" * 100,
+            block_a_header=hdr_a.hex(), block_b_header=hdr_b.hex(),
+            nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "block_index" in err
+
+    def test_evidence_header_hash_mismatch(self, wallet):
+        tx = Transaction.evidence(
+            wallet.address, validator_address="qv1bad",
+            block_index=5,
+            block_a_hash="aa" * 32, block_b_hash="bb" * 32,
+            block_a_sig="cc" * 100, block_b_sig="dd" * 100,
+            block_a_header="ee" * 10, block_b_header="ff" * 10,
+            nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "does not hash" in err
+
+    # ---- TRANSFER ----
+
+    def test_transfer_valid(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address, amount=1000, nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_transfer_with_memo(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address, amount=1, memo="test", nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_transfer_zero_amount(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address, amount=0, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "positive integer" in err
+
+    def test_transfer_negative_amount(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address, amount=-100, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+
+    def test_transfer_to_self(self, wallet):
+        tx = Transaction.transfer(wallet.address, wallet.address, amount=100, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "self" in err
+
+    def test_transfer_no_recipient(self, wallet):
+        tx = Transaction(TxType.TRANSFER, wallet.address,
+                         payload={"amount": 100}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "recipient" in err
+
+    def test_transfer_bad_recipient_format(self, wallet):
+        tx = Transaction.transfer(wallet.address, "badaddr", amount=100, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "valid qv1 address" in err
+
+    def test_transfer_memo_too_long(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address, amount=100,
+                                  memo="x" * 257, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "256" in err
+
+    # ---- REVOKE_KEY ----
+
+    def test_revoke_key_valid(self, wallet):
+        tx = Transaction.revoke_key(wallet.address, "signing", "compromised", nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_revoke_key_all_combos(self, wallet):
+        for kt in ("signing", "encryption", "validator"):
+            for reason in ("compromised", "rotation", "decommission"):
+                tx = Transaction.revoke_key(wallet.address, kt, reason, nonce=0)
+                ok, err = tx.validate_payload()
+                assert ok, f"failed for {kt}/{reason}: {err}"
+
+    def test_revoke_key_bad_type(self, wallet):
+        tx = Transaction.revoke_key(wallet.address, "unknown", "compromised", nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "key_type" in err
+
+    def test_revoke_key_bad_reason(self, wallet):
+        tx = Transaction.revoke_key(wallet.address, "signing", "bored", nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "reason" in err
+
+    def test_revoke_key_empty_fields(self, wallet):
+        tx = Transaction(TxType.REVOKE_KEY, wallet.address,
+                         payload={"key_type": "", "reason": ""}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+
+    # ---- ISSUE_TOKEN ----
+
+    def test_issue_token_valid(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "TestToken", "TT",
+                                     decimals=8, max_supply=1_000_000, nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_issue_token_empty_name(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "", "TT", decimals=8, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "name" in err
+
+    def test_issue_token_bad_name_chars(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "Test@Token!", "TT",
+                                     decimals=8, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "alphanumeric" in err
+
+    def test_issue_token_name_too_long(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "A" * 65, "TT",
+                                     decimals=8, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "64" in err
+
+    def test_issue_token_bad_symbol(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "Test", "lowercase",
+                                     decimals=8, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "symbol" in err
+
+    def test_issue_token_symbol_too_short(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "Test", "T", decimals=8, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "at least" in err
+
+    def test_issue_token_symbol_too_long(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "Test", "TOOLONGSY",
+                                     decimals=8, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "exceeds" in err
+
+    def test_issue_token_reserved_symbol(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "Native", "QBIT",
+                                     decimals=8, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "reserved" in err
+
+    def test_issue_token_bad_decimals(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "Test", "TT",
+                                     decimals=19, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "decimals" in err
+
+    def test_issue_token_negative_max_supply(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "Test", "TT",
+                                     decimals=8, max_supply=-1, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "max_supply" in err
+
+    def test_issue_token_bad_transferable(self, wallet):
+        tx = Transaction(TxType.ISSUE_TOKEN, wallet.address,
+                         payload={"name": "Test", "symbol": "TT", "decimals": 8,
+                                  "max_supply": 0, "transferable": "yes"}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "boolean" in err
+
+    # ---- MINT_TOKEN ----
+
+    def test_mint_token_valid(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.mint_token(alice.address, bob.address,
+                                    token_id="aa" * 16, amount=1000, nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_mint_token_bad_token_id(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.mint_token(alice.address, bob.address,
+                                    token_id="short", amount=100, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "token_id" in err
+
+    def test_mint_token_zero_amount(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.mint_token(alice.address, bob.address,
+                                    token_id="aa" * 16, amount=0, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "positive" in err
+
+    def test_mint_token_no_recipient(self, wallet):
+        tx = Transaction(TxType.MINT_TOKEN, wallet.address,
+                         payload={"token_id": "aa" * 16, "amount": 100}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "recipient" in err
+
+    def test_mint_token_bad_recipient(self, wallet):
+        tx = Transaction.mint_token(wallet.address, "badaddr",
+                                    token_id="aa" * 16, amount=100, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "valid qv1" in err
+
+    # ---- TRANSFER_TOKEN ----
+
+    def test_transfer_token_valid(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer_token(alice.address, bob.address,
+                                        token_id="bb" * 16, amount=50, nonce=0)
+        ok, err = tx.validate_payload()
+        assert ok, f"expected valid but got: {err}"
+
+    def test_transfer_token_bad_token_id(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer_token(alice.address, bob.address,
+                                        token_id="xyz", amount=50, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "token_id" in err
+
+    def test_transfer_token_zero_amount(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer_token(alice.address, bob.address,
+                                        token_id="bb" * 16, amount=0, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "positive" in err
+
+    def test_transfer_token_to_self(self, wallet):
+        tx = Transaction.transfer_token(wallet.address, wallet.address,
+                                        token_id="bb" * 16, amount=50, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "self" in err
+
+    def test_transfer_token_no_recipient(self, wallet):
+        tx = Transaction(TxType.TRANSFER_TOKEN, wallet.address,
+                         payload={"token_id": "bb" * 16, "amount": 50}, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "recipient" in err
+
+    def test_transfer_token_memo_too_long(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer_token(alice.address, bob.address,
+                                        token_id="bb" * 16, amount=50,
+                                        memo="x" * 257, nonce=0)
+        ok, err = tx.validate_payload()
+        assert not ok
+        assert "256" in err
+
+
+class TestSigningAllTypes:
+    """Signing + verification roundtrip for all 14 TX types."""
+
+    def test_sign_verify_register_validator(self, wallet):
+        tx = Transaction.register_validator(
+            wallet.address, wallet.signing_pk, wallet.address, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        assert tx.verify() is True
+
+    def test_sign_verify_stake(self, wallet):
+        tx = Transaction.stake(wallet.address, "qv1validator", amount=100, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        assert tx.verify() is True
+
+    def test_sign_verify_delegate(self, wallet):
+        tx = Transaction.delegate(wallet.address, "qv1validator", amount=100, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        assert tx.verify() is True
+
+    def test_sign_verify_unstake(self, wallet):
+        tx = Transaction.unstake(wallet.address, "qv1validator", amount=100, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        assert tx.verify() is True
+
+    def test_sign_verify_evidence(self, wallet):
+        from qbit_network.crypto import sha3_256
+        hdr_a = b'{"a":1}'
+        hdr_b = b'{"b":2}'
+        tx = Transaction.evidence(
+            wallet.address, "qv1bad", block_index=5,
+            block_a_hash=sha3_256(hdr_a).hex(), block_b_hash=sha3_256(hdr_b).hex(),
+            block_a_sig="aa" * 100, block_b_sig="bb" * 100,
+            block_a_header=hdr_a.hex(), block_b_header=hdr_b.hex(), nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        assert tx.verify() is True
+
+    def test_sign_verify_transfer(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address, amount=100, nonce=0)
+        tx.sign(alice.signing_sk, alice.signing_pk)
+        assert tx.verify() is True
+
+    def test_sign_verify_revoke_key(self, wallet):
+        tx = Transaction.revoke_key(wallet.address, "signing", "rotation", nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        assert tx.verify() is True
+
+    def test_sign_verify_issue_token(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "Test", "TT",
+                                     decimals=8, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        assert tx.verify() is True
+
+    def test_sign_verify_mint_token(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.mint_token(alice.address, bob.address,
+                                    token_id="aa" * 16, amount=100, nonce=0)
+        tx.sign(alice.signing_sk, alice.signing_pk)
+        assert tx.verify() is True
+
+    def test_sign_verify_transfer_token(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer_token(alice.address, bob.address,
+                                        token_id="bb" * 16, amount=50, nonce=0)
+        tx.sign(alice.signing_sk, alice.signing_pk)
+        assert tx.verify() is True
+
+
+class TestFromDictAllTypes:
+    """from_dict → to_dict roundtrip for all 14 TX types."""
+
+    def _roundtrip(self, tx, wallet):
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        d = tx.to_dict()
+        restored = Transaction.from_dict(d)
+        assert restored.tx_id == tx.tx_id
+        assert restored.tx_type == tx.tx_type
+        assert restored.verify() is True
+        return restored
+
+    def test_roundtrip_register_validator(self, wallet):
+        tx = Transaction.register_validator(
+            wallet.address, wallet.signing_pk, wallet.address, nonce=0)
+        self._roundtrip(tx, wallet)
+
+    def test_roundtrip_stake(self, wallet):
+        tx = Transaction.stake(wallet.address, "qv1validator", amount=100, nonce=0)
+        self._roundtrip(tx, wallet)
+
+    def test_roundtrip_delegate(self, wallet):
+        tx = Transaction.delegate(wallet.address, "qv1validator", amount=500, nonce=0)
+        self._roundtrip(tx, wallet)
+
+    def test_roundtrip_unstake(self, wallet):
+        tx = Transaction.unstake(wallet.address, "qv1validator", amount=100, nonce=0)
+        self._roundtrip(tx, wallet)
+
+    def test_roundtrip_evidence(self, wallet):
+        from qbit_network.crypto import sha3_256
+        hdr_a = b'{"a":1}'
+        hdr_b = b'{"b":2}'
+        tx = Transaction.evidence(
+            wallet.address, "qv1bad", block_index=5,
+            block_a_hash=sha3_256(hdr_a).hex(), block_b_hash=sha3_256(hdr_b).hex(),
+            block_a_sig="aa" * 100, block_b_sig="bb" * 100,
+            block_a_header=hdr_a.hex(), block_b_header=hdr_b.hex(), nonce=0)
+        self._roundtrip(tx, wallet)
+
+    def test_roundtrip_transfer(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address,
+                                  amount=999, memo="hello", nonce=0)
+        self._roundtrip(tx, alice)
+
+    def test_roundtrip_revoke_key(self, wallet):
+        tx = Transaction.revoke_key(wallet.address, "encryption", "decommission", nonce=0)
+        self._roundtrip(tx, wallet)
+
+    def test_roundtrip_issue_token(self, wallet):
+        tx = Transaction.issue_token(wallet.address, "MyToken", "MT",
+                                     decimals=6, max_supply=1_000_000, nonce=0)
+        self._roundtrip(tx, wallet)
+
+    def test_roundtrip_mint_token(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.mint_token(alice.address, bob.address,
+                                    token_id="cc" * 16, amount=500, nonce=0)
+        self._roundtrip(tx, alice)
+
+    def test_roundtrip_transfer_token(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer_token(alice.address, bob.address,
+                                        token_id="dd" * 16, amount=100,
+                                        memo="token transfer", nonce=0)
+        self._roundtrip(tx, alice)
