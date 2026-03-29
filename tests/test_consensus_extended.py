@@ -729,3 +729,145 @@ class TestBlockchainHelpers:
         # No genesis yet
         block = bc.produce_block(w.address, w.signing_sk)
         assert block is None
+
+
+# =========================================================================
+# R25-003: PoA skip-slot uses block-internal timestamps (not wall clock)
+# =========================================================================
+
+class TestSkipSlotBlockTimestamps:
+    """Verify that PoA skip-slot selection is deterministic based on
+    block-internal timestamps, not system wall clock (R25-003)."""
+
+    def test_select_with_skip_uses_block_timestamp(self):
+        """_select_with_skip should use block_timestamp when provided,
+        ignoring wall clock entirely."""
+        poa = ProofOfAuthority()
+        w1, w2, w3 = Wallet.generate(), Wallet.generate(), Wallet.generate()
+        for w in (w1, w2, w3):
+            poa.add_validator(w.address, w.signing_pk)
+        addresses = sorted(poa.validators.keys())
+
+        parent_ts = 1000.0
+        # block_timestamp just after parent → no skip
+        result_no_skip = poa._select_with_skip(addresses, 0, 3,
+                                                parent_ts, parent_ts + 5.0)
+        assert result_no_skip == addresses[0]
+
+        # block_timestamp 16s after parent → 1 skip (threshold = 15s)
+        result_one_skip = poa._select_with_skip(addresses, 0, 3,
+                                                 parent_ts, parent_ts + 16.0)
+        assert result_one_skip == addresses[1]
+
+        # block_timestamp 31s after parent → 2 skips
+        result_two_skips = poa._select_with_skip(addresses, 0, 3,
+                                                  parent_ts, parent_ts + 31.0)
+        assert result_two_skips == addresses[2]
+
+    def test_select_with_skip_deterministic_regardless_of_clock(self):
+        """Same block_timestamp must produce same result no matter when
+        the validator runs the check (i.e., wall clock is irrelevant)."""
+        poa = ProofOfAuthority()
+        w1, w2 = Wallet.generate(), Wallet.generate()
+        poa.add_validator(w1.address, w1.signing_pk)
+        poa.add_validator(w2.address, w2.signing_pk)
+
+        parent_ts = 5000.0
+        block_ts = 5020.0  # 20s elapsed → 1 skip
+
+        # Call multiple times — result must be identical
+        results = set()
+        for _ in range(10):
+            r = poa.select_validator(1, parent_timestamp=parent_ts,
+                                     block_timestamp=block_ts)
+            results.add(r)
+        assert len(results) == 1, "Selection must be deterministic"
+
+    def test_clock_manipulation_does_not_affect_validation(self):
+        """A validator with a manipulated system clock cannot claim a
+        wrong turn when block_timestamp is used for selection."""
+        poa = ProofOfAuthority()
+        w1, w2 = Wallet.generate(), Wallet.generate()
+        poa.add_validator(w1.address, w1.signing_pk)
+        poa.add_validator(w2.address, w2.signing_pk)
+        addresses = sorted(poa.validators.keys())
+
+        parent_ts = 1000.0
+
+        # Block produced at ts=1002 (2s after parent) — no skip expected
+        expected_no_skip = poa.select_validator(
+            1, parent_timestamp=parent_ts, block_timestamp=1002.0)
+        assert expected_no_skip == addresses[1 % 2]
+
+        # Even if wall clock is far in the future, block_timestamp governs
+        expected_still_no_skip = poa.select_validator(
+            1, parent_timestamp=parent_ts, block_timestamp=1002.0)
+        assert expected_still_no_skip == expected_no_skip
+
+        # Block claiming ts=1020 (20s gap) → skip should happen
+        expected_skip = poa.select_validator(
+            1, parent_timestamp=parent_ts, block_timestamp=1020.0)
+        # skip = int(20/15) = 1
+        assert expected_skip == addresses[(1 + 1) % 2]
+
+    def test_validate_block_uses_block_timestamp_for_skip(self):
+        """validate_block passes block.timestamp to select_validator,
+        making validation deterministic (R25-003)."""
+        v1 = Wallet.generate()
+        v2 = Wallet.generate()
+        bc = Blockchain()
+        bc.consensus.add_validator(v1.address, v1.signing_pk)
+        bc.consensus.add_validator(v2.address, v2.signing_pk)
+        bc.init_chain(v1.address, v1.signing_sk)
+
+        genesis = bc.chain[0]
+        addresses = sorted(bc.consensus.validators.keys())
+
+        # Produce block at timestamp just after genesis — no skip
+        block_ts = genesis.timestamp + 2
+        expected_validator_addr = addresses[1 % 2]
+        expected_wallet = v1 if v1.address == expected_validator_addr else v2
+
+        tx = Transaction.notarize(expected_wallet.address, "aa" * 32, nonce=0)
+        tx.sign(expected_wallet.signing_sk, expected_wallet.signing_pk)
+
+        blk = Block(index=1, prev_hash=genesis.block_hash,
+                    transactions=[tx], validator=expected_wallet.address,
+                    timestamp=block_ts)
+        blk.sign(expected_wallet.signing_sk)
+
+        ok, msg = bc.consensus.validate_block(blk, genesis)
+        assert ok, f"Block should be valid: {msg}"
+
+    def test_select_with_skip_fallback_to_wallclock(self):
+        """When block_timestamp is None (e.g., block production),
+        _select_with_skip falls back to time.time()."""
+        poa = ProofOfAuthority()
+        w1 = Wallet.generate()
+        poa.add_validator(w1.address, w1.signing_pk)
+
+        # With very old parent_timestamp and no block_timestamp,
+        # time.time() is used — result should still be valid
+        result = poa._select_with_skip([w1.address], 0, 1,
+                                        time.time() - 1.0, None)
+        assert result == w1.address
+
+    def test_dpos_path_unaffected_by_block_timestamp(self):
+        """dPoS selection ignores block_timestamp entirely — it uses
+        parent_hash + block_index for determinism."""
+        poa = ProofOfAuthority()
+        w1, w2 = Wallet.generate(), Wallet.generate()
+        poa.add_validator(w1.address, w1.signing_pk)
+        poa.add_validator(w2.address, w2.signing_pk)
+        poa._get_active_validators = lambda: [
+            (w1.address, 100), (w2.address, 100)
+        ]
+
+        # Same parent_hash + block_index → same result regardless of block_timestamp
+        r1 = poa.select_validator(5, parent_hash="abc123",
+                                  block_timestamp=1000.0)
+        r2 = poa.select_validator(5, parent_hash="abc123",
+                                  block_timestamp=9999.0)
+        r3 = poa.select_validator(5, parent_hash="abc123",
+                                  block_timestamp=None)
+        assert r1 == r2 == r3

@@ -50,7 +50,8 @@ class ProofOfAuthority:
 
     def select_validator(self, block_index: int,
                          parent_timestamp: float | None = None,
-                         parent_hash: str = "") -> str | None:
+                         parent_hash: str = "",
+                         block_timestamp: float | None = None) -> str | None:
         # Try dPoS stake-weighted selection first
         if self._get_active_validators is not None and parent_hash:
             active = self._get_active_validators()
@@ -58,10 +59,11 @@ class ProofOfAuthority:
                 return self._select_dpos(block_index, parent_hash, active)
 
         # Fallback to PoA round-robin
-        return self._select_poa(block_index, parent_timestamp)
+        return self._select_poa(block_index, parent_timestamp, block_timestamp)
 
     def _select_poa(self, block_index: int,
-                    parent_timestamp: float | None = None) -> str | None:
+                    parent_timestamp: float | None = None,
+                    block_timestamp: float | None = None) -> str | None:
         """Original PoA round-robin selection."""
         if not self.validators:
             return None
@@ -69,7 +71,8 @@ class ProofOfAuthority:
         n = len(addresses)
         base = block_index % n
         if parent_timestamp is not None:
-            return self._select_with_skip(addresses, base, n, parent_timestamp)
+            return self._select_with_skip(addresses, base, n,
+                                          parent_timestamp, block_timestamp)
         return addresses[base]
 
     @staticmethod
@@ -92,7 +95,8 @@ class ProofOfAuthority:
         return active[-1][0]  # fallback
 
     def select_validator_with_skip(self, block_index: int,
-                                   parent_timestamp: float) -> str | None:
+                                   parent_timestamp: float,
+                                   block_timestamp: float | None = None) -> str | None:
         """Select validator with skip-slot: if the expected validator hasn't
         produced a block within BLOCK_INTERVAL * 3 (15s), allow the next one."""
         if not self.validators:
@@ -100,12 +104,15 @@ class ProofOfAuthority:
         addresses = sorted(self.validators.keys())
         n = len(addresses)
         base = block_index % n
-        return self._select_with_skip(addresses, base, n, parent_timestamp)
+        return self._select_with_skip(addresses, base, n,
+                                      parent_timestamp, block_timestamp)
 
     @staticmethod
     def _select_with_skip(addresses: list[str], base: int, n: int,
-                          parent_timestamp: float) -> str:
-        elapsed = time.time() - parent_timestamp
+                          parent_timestamp: float,
+                          block_timestamp: float | None = None) -> str:
+        current = block_timestamp if block_timestamp is not None else time.time()
+        elapsed = current - parent_timestamp
         skips = max(0, int(elapsed / (BLOCK_INTERVAL * 3)))
         return addresses[(base + skips) % n]
 
@@ -146,7 +153,8 @@ class ProofOfAuthority:
 
         expected = self.select_validator(block.index,
                                         parent_timestamp=parent.timestamp,
-                                        parent_hash=parent.block_hash)
+                                        parent_hash=parent.block_hash,
+                                        block_timestamp=block.timestamp)
         if expected and block.validator != expected:
             return False, (f"wrong validator turn: expected {expected[:16]}..., "
                            f"got {block.validator[:16]}...")
