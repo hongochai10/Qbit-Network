@@ -125,3 +125,27 @@ class TestWalletPersistence:
             json.dump(data, f)
         with pytest.raises(ValueError):
             Wallet.load(path, password="test")
+
+    def test_plaintext_save_emits_warning(self, wallet, tmp_dir, caplog):
+        """Saving without password logs a security warning."""
+        import logging
+        path = os.path.join(tmp_dir, "wallet.json")
+        with caplog.at_level(logging.WARNING, logger="qbit_network.wallet"):
+            wallet.save(path)
+        assert any("WITHOUT encryption" in r.message for r in caplog.records)
+
+    def test_encrypted_save_no_warning(self, wallet, tmp_dir, caplog):
+        """Saving with password does NOT log the plaintext warning."""
+        import logging
+        path = os.path.join(tmp_dir, "wallet.json")
+        with caplog.at_level(logging.WARNING, logger="qbit_network.wallet"):
+            wallet.save(path, password="test")
+        assert not any("WITHOUT encryption" in r.message for r in caplog.records)
+
+    def test_wallet_directory_permissions(self, wallet, tmp_dir):
+        """Wallet directory should be set to 0o700."""
+        subdir = os.path.join(tmp_dir, "wallets")
+        path = os.path.join(subdir, "wallet.json")
+        wallet.save(path)
+        mode = os.stat(subdir).st_mode & 0o777
+        assert mode == 0o700

@@ -1,11 +1,14 @@
 """QVault Wallet - dual PQC keypair identity."""
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from ..crypto import MLDSA, MLKEM, sha3_256, aes_encrypt, aes_decrypt
 from ..crypto.secure_bytes import SecureBytes
 from ..config import ADDRESS_PREFIX
+
+logger = logging.getLogger("qbit_network.wallet")
 
 # scrypt parameters (OWASP recommended minimum)
 _SCRYPT_N = 2**14   # CPU/memory cost (16384)
@@ -85,10 +88,21 @@ class Wallet:
         dirpath = os.path.dirname(filepath)
         if dirpath:
             os.makedirs(dirpath, exist_ok=True)
+            # Restrict wallet directory to owner-only access
+            try:
+                os.chmod(dirpath, 0o700)
+            except OSError:
+                logger.warning("could not set wallet directory permissions to 0700: %s", dirpath)
 
         if password:
             payload = self._encrypt(password)
         else:
+            logger.warning(
+                "SECURITY: saving wallet %s WITHOUT encryption — "
+                "secret keys will be stored as plaintext. "
+                "Use --wallet-password or QBIT_WALLET_PASSWORD to enable encryption.",
+                filepath,
+            )
             payload = {"encrypted": False, **self.to_dict()}
 
         # Atomic write — prevent corruption on crash
