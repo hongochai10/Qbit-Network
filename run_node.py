@@ -36,6 +36,8 @@ async def main():
                         help="Auto-generate and manage self-signed TLS cert in data_dir/tls/")
     parser.add_argument("--tls-hostname", default="localhost",
                         help="Hostname for TLS cert CN/SAN (default: localhost)")
+    parser.add_argument("--no-verify-on-load", action="store_true",
+                        help="Skip signature verification when loading chain from SQLite (faster startup)")
     args = parser.parse_args()
 
     validator = None
@@ -61,7 +63,8 @@ async def main():
         tls_hostname=args.tls_hostname,
     )
 
-    await node.start(validator_wallet=validator)
+    await node.start(validator_wallet=validator,
+                     verify_on_load=not args.no_verify_on_load)
 
     try:
         while node._running:

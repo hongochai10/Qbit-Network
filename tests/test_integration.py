@@ -431,13 +431,11 @@ class TestChainPersistence:
         conn.commit()
         conn.close()
 
-        # Reload -- loads structurally but tampered tx fails verify
+        # Reload -- tampered tx now caught on load (R24-004 signature verification)
         bc2 = Blockchain(data_dir=tmp_dir)
         bc2.consensus.add_validator(wallet.address, wallet.signing_pk)
-        loaded = bc2.load()
-        assert loaded is True
-        tampered_tx = bc2.get_block(1).transactions[0]
-        assert tampered_tx.verify() is False
+        with pytest.raises(ValueError, match="invalid signature"):
+            bc2.load()
 
 
 # ===========================================================================

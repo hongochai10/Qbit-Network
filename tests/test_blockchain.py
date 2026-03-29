@@ -347,16 +347,11 @@ class TestPersistence:
         conn.commit()
         conn.close()
 
-        # Reload — should detect invalid signature
+        # Reload — should detect invalid signature on load (R24-004)
         bc2 = Blockchain(data_dir=tmp_dir)
         bc2.consensus.add_validator(wallet.address, wallet.signing_pk)
-        # SQLite load doesn't validate sigs (by design for speed),
-        # so we verify the data is loaded but can detect corruption via verify
-        loaded = bc2.load()
-        assert loaded is True  # loads structurally
-        # The tampered tx will fail verify()
-        tampered_tx = bc2.get_block(1).transactions[0]
-        assert tampered_tx.verify() is False  # signature invalid
+        with pytest.raises(ValueError, match="invalid signature"):
+            bc2.load()
 
 
 # ========== REGISTER_VALIDATOR ==========

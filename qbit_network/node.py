@@ -1180,7 +1180,8 @@ class FullNode:
     # Lifecycle
     # ================================================================
 
-    async def start(self, validator_wallet: Wallet | None = None):
+    async def start(self, validator_wallet: Wallet | None = None,
+                    verify_on_load: bool = True):
         logger.info("=" * 60)
         logger.info("  QBit Network PQC Blockchain Node")
         logger.info("=" * 60)
@@ -1203,7 +1204,7 @@ class FullNode:
             self.p2p.encryption_pk = validator_wallet.encryption_pk
 
         # Load chain (validators are now known → block signatures are verified)
-        loaded = self.blockchain.load()
+        loaded = self.blockchain.load(verify_signatures=verify_on_load)
 
         if validator_wallet and not loaded:
             self.blockchain.init_chain(

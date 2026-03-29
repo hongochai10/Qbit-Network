@@ -41,8 +41,13 @@ class PersistenceMixin:
             raise
         logger.info(f"Saved {self._height + 1} blocks")
 
-    def load(self) -> bool:
-        """Load chain from disk. Uses SQLite if available, falls back to chain.json."""
+    def load(self, verify_signatures: bool = True) -> bool:
+        """Load chain from disk. Uses SQLite if available, falls back to chain.json.
+
+        Args:
+            verify_signatures: If True, verify TX and block signatures on load.
+                Disable for fast startup when DB integrity is trusted.
+        """
         if self._height >= 0:
             logger.warning("load() called on non-empty chain, skipping")
             return True
@@ -54,7 +59,7 @@ class PersistenceMixin:
         migrate_json_to_sqlite(self.data_dir)
         db_file = os.path.join(self.data_dir, "chain.db")
         if os.path.exists(db_file):
-            return self._load_from_sqlite()
+            return self._load_from_sqlite(verify_signatures=verify_signatures)
 
         # Fall back to chain.json
         chain_file = os.path.join(self.data_dir, "chain.json")
@@ -133,8 +138,13 @@ class PersistenceMixin:
         logger.info(f"Loaded {self._height + 1} blocks (validated from JSON)")
         return True
 
-    def _load_from_sqlite(self) -> bool:
-        """Load chain from SQLite, rebuild in-memory indices only (no in-memory block list)."""
+    def _load_from_sqlite(self, verify_signatures: bool = True) -> bool:
+        """Load chain from SQLite, rebuild in-memory indices only (no in-memory block list).
+
+        Args:
+            verify_signatures: If True, verify TX and block signatures during load
+                (matches JSON load path behaviour). Invalid signatures raise ValueError.
+        """
         from .store import SQLiteStore
         # Close existing connection to avoid leaking (SPRINT2-006)
         if self._store is not None:
@@ -145,6 +155,9 @@ class PersistenceMixin:
         store_height = self._store.height()
         if store_height < 0:
             return False
+
+        # Track validators discovered during load for block signature verification
+        load_validators: dict[str, bytes] = dict(self.consensus.validators) if verify_signatures else {}
 
         prev_hash: str | None = None
         for i in range(store_height + 1):
@@ -161,6 +174,36 @@ class PersistenceMixin:
                 if block.prev_hash != prev_hash:
                     logger.error(f"SQLite block #{i} prev_hash mismatch")
                     return False
+
+            # Signature verification (R24-004)
+            if verify_signatures:
+                for tx in block.transactions:
+                    if not tx.verify():
+                        raise ValueError(
+                            f"SQLite block #{block.index} contains tx with invalid "
+                            f"signature: {tx.tx_id[:16]}...")
+
+                if block.validator:
+                    pk = load_validators.get(block.validator)
+                    if pk:
+                        if not block.verify_signature(pk):
+                            raise ValueError(
+                                f"SQLite block #{block.index} has invalid validator signature")
+                    elif block.index > 0:
+                        logger.warning(
+                            f"SQLite block #{block.index} validator "
+                            f"{block.validator[:16]}... unknown -- signature not verified")
+
+                # Track REGISTER_VALIDATOR / REVOKE_KEY so subsequent blocks can be verified
+                for tx in block.transactions:
+                    if tx.tx_type == TxType.REGISTER_VALIDATOR:
+                        vpk_hex = tx.payload.get("validator_pubkey", "")
+                        vaddr = tx.payload.get("validator_address", "")
+                        if vpk_hex and vaddr:
+                            load_validators[vaddr] = bytes.fromhex(vpk_hex)
+                    elif tx.tx_type == TxType.REVOKE_KEY:
+                        if tx.payload.get("key_type") == "validator":
+                            load_validators.pop(tx.sender, None)
 
             prev_hash = block.block_hash
 
@@ -307,5 +350,6 @@ class PersistenceMixin:
         # Rebuild state trie from loaded balances and nonces (R19-SEC-001)
         self._rebuild_state_trie()
 
-        logger.info(f"Loaded {self._height + 1} blocks from SQLite")
+        verified_msg = " (signatures verified)" if verify_signatures else " (signature verification skipped)"
+        logger.info(f"Loaded {self._height + 1} blocks from SQLite{verified_msg}")
         return True
