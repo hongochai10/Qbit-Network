@@ -1012,3 +1012,154 @@ class TestRPCSubmitEvidence:
                 block_a_hash="", block_b_hash="b",
                 block_a_sig="c", block_b_sig="d",
                 block_a_header="e", block_b_header="f")
+
+
+# ===========================================================================
+# 10. Dynamic Fee Params on RPC methods (TEC-609)
+# ===========================================================================
+
+def _make_dynfee_node(tmp_dir, alice, bob, monkeypatch):
+    """Create a node with dynamic fees active (ACTIVATION_HEIGHT=0), two wallets funded."""
+    monkeypatch.setattr("qbit_network.config.DYNAMIC_FEE_ACTIVATION_HEIGHT", 0)
+    monkeypatch.setattr("qbit_network.core.blockchain.DYNAMIC_FEE_ACTIVATION_HEIGHT", 0)
+    monkeypatch.setattr("qbit_network.core.consensus.DYNAMIC_FEE_ACTIVATION_HEIGHT", 0)
+    node = _make_node(tmp_dir, alice)
+    node.wallets[bob.address] = bob
+    node.blockchain._credit(bob.address, 100_000_000_000)
+    # Register bob's encryption key
+    reg = Transaction.register_key(bob.address, bob.encryption_pk, nonce=0,
+                                   max_fee_per_weight=200, max_priority_fee=10)
+    reg.sign(bob.signing_sk, bob.signing_pk)
+    node.blockchain.submit_tx(reg)
+    block = node.blockchain.produce_block(alice.address, alice.signing_sk)
+    assert block is not None
+    return node
+
+
+@pytest.fixture
+def bob():
+    return Wallet.generate()
+
+
+class TestDynamicFeeRPCParams:
+    """Verify all RPC TX methods work with dynamic fees active (TEC-609)."""
+
+    @pytest.fixture
+    def dynfee_node(self, tmp_dir, wallet, bob, monkeypatch):
+        return _make_dynfee_node(tmp_dir, wallet, bob, monkeypatch)
+
+    @staticmethod
+    def _find_pool_tx(node, tx_id):
+        """Find a TX in the pool by ID."""
+        for tx in node.blockchain.tx_pool:
+            if tx.tx_id == tx_id:
+                return tx
+        return None
+
+    @pytest.mark.asyncio
+    async def test_transfer_auto_fees(self, dynfee_node, wallet, bob):
+        """Transfer with omitted fee params auto-computes from base_fee."""
+        result = await dynfee_node._rpc_transfer(
+            wallet_address=bob.address, to_address=wallet.address, amount=100)
+        assert "tx_id" in result
+        tx = self._find_pool_tx(dynfee_node, result["tx_id"])
+        assert tx is not None
+        assert tx.max_fee_per_weight > 0
+
+    @pytest.mark.asyncio
+    async def test_transfer_explicit_fees(self, dynfee_node, wallet, bob):
+        """Transfer with explicit fee params uses provided values."""
+        result = await dynfee_node._rpc_transfer(
+            wallet_address=bob.address, to_address=wallet.address, amount=100,
+            max_fee_per_weight=500, max_priority_fee=50)
+        assert "tx_id" in result
+        tx = self._find_pool_tx(dynfee_node, result["tx_id"])
+        assert tx is not None
+        assert tx.max_fee_per_weight == 500
+        assert tx.max_priority_fee == 50
+
+    @pytest.mark.asyncio
+    async def test_notarize_auto_fees(self, dynfee_node, bob):
+        result = await dynfee_node._rpc_notarize(
+            wallet_address=bob.address, document_hash="a" * 64)
+        assert "tx_id" in result
+        tx = self._find_pool_tx(dynfee_node, result["tx_id"])
+        assert tx is not None
+        assert tx.max_fee_per_weight > 0
+
+    @pytest.mark.asyncio
+    async def test_store_auto_fees(self, dynfee_node, bob):
+        result = await dynfee_node._rpc_store(
+            wallet_address=bob.address, document_hash="b" * 64, cid="QmTest")
+        assert "tx_id" in result
+        tx = self._find_pool_tx(dynfee_node, result["tx_id"])
+        assert tx is not None
+        assert tx.max_fee_per_weight > 0
+
+    @pytest.mark.asyncio
+    async def test_stake_auto_fees(self, dynfee_node, wallet, bob):
+        result = await dynfee_node._rpc_stake(
+            wallet_address=bob.address, validator_address=wallet.address, amount=1000)
+        assert "tx_id" in result
+        tx = self._find_pool_tx(dynfee_node, result["tx_id"])
+        assert tx is not None
+        assert tx.max_fee_per_weight > 0
+
+    @pytest.mark.asyncio
+    async def test_delegate_auto_fees(self, dynfee_node, wallet, bob):
+        result = await dynfee_node._rpc_delegate(
+            wallet_address=bob.address, validator_address=wallet.address, amount=1000)
+        assert "tx_id" in result
+        tx = self._find_pool_tx(dynfee_node, result["tx_id"])
+        assert tx is not None
+        assert tx.max_fee_per_weight > 0
+
+    @pytest.mark.asyncio
+    async def test_unstake_auto_fees(self, dynfee_node, wallet, bob):
+        # First stake, produce block, then unstake
+        await dynfee_node._rpc_stake(
+            wallet_address=bob.address, validator_address=wallet.address, amount=1000)
+        dynfee_node.blockchain.produce_block(wallet.address, wallet.signing_sk)
+        result = await dynfee_node._rpc_unstake(
+            wallet_address=bob.address, validator_address=wallet.address, amount=500)
+        assert "tx_id" in result
+        tx = self._find_pool_tx(dynfee_node, result["tx_id"])
+        assert tx is not None
+        assert tx.max_fee_per_weight > 0
+
+    @pytest.mark.asyncio
+    async def test_compute_fee_defaults_inactive(self, tmp_dir, wallet, bob):
+        """When dynamic fees inactive, defaults to 0."""
+        node = _make_node(tmp_dir, wallet)
+        mf, mp = node._compute_fee_defaults(None, None)
+        assert mf == 0
+        assert mp == 0
+
+    @pytest.mark.asyncio
+    async def test_compute_fee_defaults_explicit_passthrough(self, dynfee_node):
+        """Explicit values pass through unchanged."""
+        mf, mp = dynfee_node._compute_fee_defaults(999, 42)
+        assert mf == 999
+        assert mp == 42
+
+    @pytest.mark.asyncio
+    async def test_compute_fee_defaults_auto(self, dynfee_node):
+        """Auto-compute: max_fee = base_fee * 2, priority = max(1, base_fee // 10)."""
+        mf, mp = dynfee_node._compute_fee_defaults(None, None)
+        bf = dynfee_node.blockchain._current_base_fee()
+        assert mf == bf * 2
+        assert mp == max(1, bf // 10)
+
+    @pytest.mark.asyncio
+    async def test_backward_compat_zero_fees_inactive(self, tmp_dir, wallet, bob):
+        """Without dynamic fees, RPC methods still work with fee=0 (legacy)."""
+        node = _make_node(tmp_dir, wallet)
+        node.wallets[bob.address] = bob
+        node.blockchain._credit(bob.address, 100_000_000_000)
+        result = await node._rpc_transfer(
+            wallet_address=bob.address, to_address=wallet.address, amount=100)
+        assert "tx_id" in result
+        tx = self._find_pool_tx(node, result["tx_id"])
+        assert tx is not None
+        assert tx.max_fee_per_weight == 0
+        assert tx.max_priority_fee == 0

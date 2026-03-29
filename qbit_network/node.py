@@ -307,6 +307,32 @@ class FullNode:
         m("qv_getStateProofAt", self._rpc_get_state_proof_at)
         m("qv_getReceiptProof", self._rpc_get_receipt_proof)
 
+    def _compute_fee_defaults(self, max_fee_per_weight, max_priority_fee):
+        """Return (max_fee_per_weight, max_priority_fee) with sensible defaults.
+
+        When dynamic fees are active and the caller passes None (omitted),
+        auto-compute: max_fee = base_fee * 2, priority = max(1, base_fee // 10).
+        When dynamic fees are inactive, defaults to 0.
+        """
+        from .config import DYNAMIC_FEE_ACTIVATION_HEIGHT
+        bc = self.blockchain
+        dynamic_active = (bc.height >= 0
+                          and bc.height + 1 >= DYNAMIC_FEE_ACTIVATION_HEIGHT)
+        if max_fee_per_weight is not None and max_priority_fee is not None:
+            return int(max_fee_per_weight), int(max_priority_fee)
+        if not dynamic_active:
+            return (max_fee_per_weight or 0), (max_priority_fee or 0)
+        current_bf = bc._current_base_fee()
+        if max_fee_per_weight is None:
+            max_fee_per_weight = current_bf * 2
+        else:
+            max_fee_per_weight = int(max_fee_per_weight)
+        if max_priority_fee is None:
+            max_priority_fee = max(1, current_bf // 10)
+        else:
+            max_priority_fee = int(max_priority_fee)
+        return max_fee_per_weight, max_priority_fee
+
     async def _rpc_block_number(self):
         return self.blockchain.height
 
@@ -407,11 +433,14 @@ class FullNode:
         pending = self.blockchain._pool_sender_count.get(address, 0)
         return base + pending
 
-    async def _rpc_register_key(self, wallet_address=""):
+    async def _rpc_register_key(self, wallet_address="",
+                               max_fee_per_weight=None, max_priority_fee=None):
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.register_key(
-                w.address, w.encryption_pk, nonce=self._next_nonce(w.address))
+                w.address, w.encryption_pk, nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp)
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
         if not ok:
@@ -420,7 +449,9 @@ class FullNode:
         await self._ws_notify_tx(tx)
         return {"tx_id": result}
 
-    async def _rpc_register_validator(self, wallet_address=""):
+    async def _rpc_register_validator(self, wallet_address="",
+                                     max_fee_per_weight=None,
+                                     max_priority_fee=None):
         """Register a wallet's signing key as a validator on-chain.
 
         The wallet signs the tx, proving ownership of the validator key.
@@ -429,12 +460,14 @@ class FullNode:
         w = self._get_wallet(wallet_address)
         if self.blockchain.is_registered_validator(w.address):
             raise ValueError(f"validator already registered: {w.address[:16]}...")
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.register_validator(
                 sender=w.address,
                 validator_pubkey=w.signing_pk,
                 validator_address=w.address,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
@@ -444,7 +477,8 @@ class FullNode:
         await self._ws_notify_tx(tx)
         return {"tx_id": result, "validator_address": w.address}
 
-    async def _rpc_revoke_key(self, wallet_address="", key_type="", reason=""):
+    async def _rpc_revoke_key(self, wallet_address="", key_type="", reason="",
+                             max_fee_per_weight=None, max_priority_fee=None):
         """Revoke a key on-chain. Self-revocation only."""
         if not isinstance(key_type, str):
             raise ValueError("key_type must be string")
@@ -457,12 +491,14 @@ class FullNode:
         if reason not in valid_reasons:
             raise ValueError(f"reason must be one of {sorted(valid_reasons)}")
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.revoke_key(
                 sender=w.address,
                 key_type=key_type,
                 reason=reason,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
@@ -472,19 +508,22 @@ class FullNode:
         await self._ws_notify_tx(tx)
         return {"tx_id": result, "key_type": key_type, "reason": reason}
 
-    async def _rpc_stake(self, wallet_address="", validator_address="", amount=0):
+    async def _rpc_stake(self, wallet_address="", validator_address="", amount=0,
+                         max_fee_per_weight=None, max_priority_fee=None):
         """Stake weight on a validator (self-stake)."""
         if not isinstance(validator_address, str) or not validator_address:
             raise ValueError("validator_address must be non-empty string")
         if not isinstance(amount, int) or amount < 1:
             raise ValueError("amount must be positive integer")
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.stake(
                 sender=w.address,
                 validator_address=validator_address,
                 amount=amount,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
@@ -494,19 +533,22 @@ class FullNode:
         await self._ws_notify_tx(tx)
         return {"tx_id": result, "validator_address": validator_address, "amount": amount}
 
-    async def _rpc_delegate(self, wallet_address="", validator_address="", amount=0):
+    async def _rpc_delegate(self, wallet_address="", validator_address="", amount=0,
+                            max_fee_per_weight=None, max_priority_fee=None):
         """Delegate stake weight to a validator."""
         if not isinstance(validator_address, str) or not validator_address:
             raise ValueError("validator_address must be non-empty string")
         if not isinstance(amount, int) or amount < 1:
             raise ValueError("amount must be positive integer")
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.delegate(
                 sender=w.address,
                 validator_address=validator_address,
                 amount=amount,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
@@ -516,19 +558,22 @@ class FullNode:
         await self._ws_notify_tx(tx)
         return {"tx_id": result, "validator_address": validator_address, "amount": amount}
 
-    async def _rpc_unstake(self, wallet_address="", validator_address="", amount=0):
+    async def _rpc_unstake(self, wallet_address="", validator_address="", amount=0,
+                           max_fee_per_weight=None, max_priority_fee=None):
         """Begin unstaking weight from a validator."""
         if not isinstance(validator_address, str) or not validator_address:
             raise ValueError("validator_address must be non-empty string")
         if not isinstance(amount, int) or amount < 1:
             raise ValueError("amount must be positive integer")
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.unstake(
                 sender=w.address,
                 validator_address=validator_address,
                 amount=amount,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
@@ -555,11 +600,14 @@ class FullNode:
         active = self.blockchain.get_active_validators()
         return [{"validator": addr, "total_stake": total} for addr, total in active]
 
-    async def _rpc_notarize(self, wallet_address="", document_hash="", metadata=""):
+    async def _rpc_notarize(self, wallet_address="", document_hash="", metadata="",
+                            max_fee_per_weight=None, max_priority_fee=None):
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.notarize(
-                w.address, document_hash, metadata, nonce=self._next_nonce(w.address))
+                w.address, document_hash, metadata, nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp)
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
         if not ok:
@@ -568,11 +616,14 @@ class FullNode:
         await self._ws_notify_tx(tx)
         return {"tx_id": result}
 
-    async def _rpc_store(self, wallet_address="", document_hash="", cid="", metadata=""):
+    async def _rpc_store(self, wallet_address="", document_hash="", cid="", metadata="",
+                         max_fee_per_weight=None, max_priority_fee=None):
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.store(
-                w.address, document_hash, cid, metadata, nonce=self._next_nonce(w.address))
+                w.address, document_hash, cid, metadata, nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp)
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
         if not ok:
@@ -582,7 +633,8 @@ class FullNode:
         return {"tx_id": result}
 
     async def _rpc_share(self, wallet_address="", recipient_address="",
-                         cid="", recipient_encryption_pk="", expires=0):
+                         cid="", recipient_encryption_pk="", expires=0,
+                         max_fee_per_weight=None, max_priority_fee=None):
         w = self._get_wallet(wallet_address)
         if not recipient_encryption_pk:
             pk_hex = self.blockchain.get_encryption_pk(recipient_address)
@@ -594,11 +646,13 @@ class FullNode:
 
         pk_bytes = bytes.fromhex(recipient_encryption_pk)
         ciphertext, shared_secret = MLKEM.encapsulate(pk_bytes)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
 
         async with self._lock_for(w.address):
             tx = Transaction.share(
                 w.address, recipient_address, cid, ciphertext, expires,
-                nonce=self._next_nonce(w.address))
+                nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp)
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
         if not ok:
@@ -770,7 +824,8 @@ class FullNode:
         return {"state_root": self.blockchain.get_state_root()}
 
     async def _rpc_transfer(self, wallet_address="", to_address="",
-                            amount=0, memo=""):
+                            amount=0, memo="",
+                            max_fee_per_weight=None, max_priority_fee=None):
         """Transfer QBIT tokens (protected)."""
         if not isinstance(wallet_address, str) or not wallet_address:
             raise ValueError("wallet_address must be non-empty string")
@@ -785,6 +840,7 @@ class FullNode:
         w = self._get_wallet(wallet_address)
         if w.address == to_address:
             raise ValueError("cannot transfer to self")
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.transfer(
                 sender=w.address,
@@ -792,6 +848,7 @@ class FullNode:
                 amount=amount,
                 memo=memo,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
@@ -838,7 +895,9 @@ class FullNode:
 
     async def _rpc_issue_token(self, wallet_address="", name="",
                                 symbol="", decimals=0, max_supply=0,
-                                transferable=True):
+                                transferable=True,
+                                max_fee_per_weight=None,
+                                max_priority_fee=None):
         """Issue a new token (protected)."""
         if not isinstance(wallet_address, str) or not wallet_address:
             raise ValueError("wallet_address must be non-empty string")
@@ -853,6 +912,7 @@ class FullNode:
         if not isinstance(transferable, bool):
             raise ValueError("transferable must be a boolean")
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.issue_token(
                 sender=w.address,
@@ -862,6 +922,7 @@ class FullNode:
                 max_supply=max_supply,
                 transferable=transferable,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
@@ -877,7 +938,9 @@ class FullNode:
         return {"tx_id": result, "token_id": token_id, "symbol": symbol}
 
     async def _rpc_mint_token(self, wallet_address="", token_id="",
-                               recipient="", amount=0):
+                               recipient="", amount=0,
+                               max_fee_per_weight=None,
+                               max_priority_fee=None):
         """Mint tokens (protected, issuer only)."""
         if not isinstance(wallet_address, str) or not wallet_address:
             raise ValueError("wallet_address must be non-empty string")
@@ -888,6 +951,7 @@ class FullNode:
         if not isinstance(amount, int) or amount <= 0:
             raise ValueError("amount must be a positive integer")
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.mint_token(
                 sender=w.address,
@@ -895,6 +959,7 @@ class FullNode:
                 token_id=token_id,
                 amount=amount,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
@@ -906,7 +971,9 @@ class FullNode:
                 "amount": amount, "recipient": recipient}
 
     async def _rpc_transfer_token(self, wallet_address="", token_id="",
-                                   recipient="", amount=0, memo=""):
+                                   recipient="", amount=0, memo="",
+                                   max_fee_per_weight=None,
+                                   max_priority_fee=None):
         """Transfer custom tokens (protected)."""
         if not isinstance(wallet_address, str) or not wallet_address:
             raise ValueError("wallet_address must be non-empty string")
@@ -917,6 +984,7 @@ class FullNode:
         if not isinstance(amount, int) or amount <= 0:
             raise ValueError("amount must be a positive integer")
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.transfer_token(
                 sender=w.address,
@@ -925,6 +993,7 @@ class FullNode:
                 amount=amount,
                 memo=memo,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
@@ -1038,7 +1107,9 @@ class FullNode:
     async def _rpc_submit_evidence(self, wallet_address="", validator_address="",
                                    block_index=0, block_a_hash="", block_b_hash="",
                                    block_a_sig="", block_b_sig="",
-                                   block_a_header="", block_b_header=""):
+                                   block_a_header="", block_b_header="",
+                                   max_fee_per_weight=None,
+                                   max_priority_fee=None):
         """Submit double-sign evidence (protected)."""
         if not isinstance(wallet_address, str) or not wallet_address:
             raise ValueError("wallet_address required")
@@ -1053,6 +1124,7 @@ class FullNode:
                 raise ValueError(f"{name} must be non-empty string")
 
         w = self._get_wallet(wallet_address)
+        mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.evidence(
                 sender=w.address,
@@ -1065,6 +1137,7 @@ class FullNode:
                 block_a_header=block_a_header,
                 block_b_header=block_b_header,
                 nonce=self._next_nonce(w.address),
+                max_fee_per_weight=mf, max_priority_fee=mp,
             )
             tx.sign(w.signing_sk, w.signing_pk)
             ok, result = self.blockchain.submit_tx(tx)
