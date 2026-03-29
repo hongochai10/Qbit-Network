@@ -292,7 +292,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          python -m pytest tests/test_integration.py tests/test_v020_features.py -x -v --tb=short --junitxml=integration-results.xml
+          python -m pytest tests/test_integration.py tests/test_v020_features.py tests/test_node.py -x -v --tb=short --junitxml=integration-results.xml
 
       - name: Upload test results
         if: always()

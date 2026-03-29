@@ -1,0 +1,63 @@
+{
+  "benchmark": "QBit Network Production Load",
+  "version": "0.8.0",
+  "timestamp": "2026-03-29T03:40:22Z",
+  "results": [
+    {
+      "level": 1000,
+      "mldsa_sign_ops_sec": 3762.828898609317,
+      "mldsa_verify_ops_sec": 15213.850458409512,
+      "tx_submit_latency": {
+        "count": 1000,
+        "p50_ms": 0.07341700256802142,
+        "p95_ms": 0.10133298928849399,
+        "p99_ms": 0.1360829919576645,
+        "min_ms": 0.07091698353178799,
+        "max_ms": 0.17608399502933025,
+        "mean_ms": 0.07754113062401302
+      },
+      "blocks_produced": 5,
+      "block_production_sec": 0.08280712497071363,
+      "blocks_per_sec": 60.38127759861665,
+      "tx_per_sec": 12076.255519723329,
+      "sqlite_blocks_written": 5,
+      "sqlite_write_sec": 0.18984091700986028,
+      "sqlite_blocks_per_sec": 26.337841592601986,
+      "state_trie_entries": 2000,
+      "state_trie_rebuild_ms": 3.101167007116601,
+      "peak_memory_mb": 4.573728561401367,
+      "current_memory_mb": 4.529735565185547,
+      "bottlenecks": [
+        "No significant bottlenecks detected at this load level"
+      ]
+    },
+    {
+      "level": 10000,
+      "mldsa_sign_ops_sec": 3915.8164620201865,
+      "mldsa_verify_ops_sec": 15787.895061447802,
+      "tx_submit_latency": {
+        "count": 10000,
+        "p50_ms": 0.07387500954791903,
+        "p95_ms": 0.09854199015535414,
+        "p99_ms": 0.13283398584462702,
+        "min_ms": 0.07012501009739935,
+        "max_ms": 11.655790993245319,
+        "mean_ms": 0.0792510491592111
+      },
+      "blocks_produced": 32,
+      "block_production_sec": 0.5521010389784351,
+      "blocks_per_sec": 57.960405325826436,
+      "tx_per_sec": 11592.081065165288,
+      "sqlite_blocks_written": 32,
+      "sqlite_write_sec": 1.215431746066315,
+      "sqlite_blocks_per_sec": 26.328092962493717,
+      "state_trie_entries": 20000,
+      "state_trie_rebuild_ms": 31.692624994320795,
+      "peak_memory_mb": 44.026248931884766,
+      "current_memory_mb": 43.99204444885254,
+      "bottlenecks": [
+        "No significant bottlenecks detected at this load level"
+      ]
+    }
+  ]
+}

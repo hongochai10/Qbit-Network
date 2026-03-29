@@ -1,0 +1,35 @@
+{
+  "benchmark": "QBit Network Production Load",
+  "version": "0.8.0",
+  "timestamp": "2026-03-29T03:39:38Z",
+  "results": [
+    {
+      "level": 1000,
+      "mldsa_sign_ops_sec": 3520.5069542386186,
+      "mldsa_verify_ops_sec": 15900.779182060098,
+      "tx_submit_latency": {
+        "count": 1000,
+        "p50_ms": 0.07366598583757877,
+        "p95_ms": 0.10558401118032634,
+        "p99_ms": 0.1374160056002438,
+        "min_ms": 0.07112498860806227,
+        "max_ms": 0.17449998995289207,
+        "mean_ms": 0.07804249835317023
+      },
+      "blocks_produced": 5,
+      "block_production_sec": 0.08221745907212608,
+      "blocks_per_sec": 60.81433379756605,
+      "tx_per_sec": 12162.86675951321,
+      "sqlite_blocks_written": 5,
+      "sqlite_write_sec": 0.18296866698074155,
+      "sqlite_blocks_per_sec": 27.32708327883417,
+      "state_trie_entries": 2000,
+      "state_trie_rebuild_ms": 2.9793750145472586,
+      "peak_memory_mb": 4.573728561401367,
+      "current_memory_mb": 4.529735565185547,
+      "bottlenecks": [
+        "No significant bottlenecks detected at this load level"
+      ]
+    }
+  ]
+}
