@@ -2,11 +2,11 @@
 
 ## Summary
 
-- **Total rounds**: 23 (including all v0.8.0 sprints)
-- **Total issues found**: 239+
-- **Total fixed**: 237+
+- **Total rounds**: 24 (including all v0.8.0 sprints)
+- **Total issues found**: 240+
+- **Total fixed**: 238+
 - **Accepted risks / open**: 2 (R21-010 informational, R23-002 latent/safe)
-- **Latest**: Round 23 PQC deep-dive + issue hunt — complete 2026-03-29
+- **Latest**: Round 24 epoch reward supply inflation fix — 2026-03-29
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -414,3 +414,13 @@ Scope: PQC resistance verification (researcher), focused security audit on race 
 | R23-007 | LOW | `_wallet_locks` eviction can delete actively held lock | Fixed: only evict unlocked entries |
 
 **Round 23 summary:** 7 found, 6 fixed, 1 accepted (latent/safe), 0 deferred
+
+## Round 24 — Financial Layer Security (1 issue)
+
+Scope: Critical supply inflation vulnerability in epoch reward distribution.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R24-001 | CRIT | Epoch reward supply inflation — `_distribute_epoch_rewards()` credits delegators full `delegator_pool` but only debits `min(total_distributed, val_bal)` from validator. If validator transfers rewards before epoch boundary, `credits > debits` creates QBIT from nothing | Fixed: cap `delegator_pool = min(delegator_pool, val_bal)` before distribution; debit full `total_distributed` (now always ≤ `val_bal`). Added exploit regression test |
+
+**Round 24 summary:** 1 found, 1 fixed, 0 accepted, 0 deferred

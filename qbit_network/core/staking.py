@@ -213,6 +213,13 @@ class StakingMixin:
             validator_commission = epoch_rewards * commission_rate // 100
             delegator_pool = epoch_rewards - validator_commission
 
+            # R24-001: Cap delegator_pool to validator's available balance
+            # to prevent supply inflation when validator spent rewards
+            # before epoch boundary
+            val_bal = self._balances.get(validator_addr, 0)
+            if delegator_pool > val_bal:
+                delegator_pool = val_bal
+
             # Distribute to delegators proportionally
             total_distributed = 0
             for delegator_addr, delegator_stake in stakes.items():
@@ -226,11 +233,8 @@ class StakingMixin:
 
             # Debit the distributed amount from validator to maintain supply conservation
             if total_distributed > 0:
-                val_bal = self._balances.get(validator_addr, 0)
-                debit_amt = min(total_distributed, val_bal)
-                if debit_amt > 0:
-                    self._debit(validator_addr, debit_amt)
-                    debits.append((validator_addr, debit_amt))
+                self._debit(validator_addr, total_distributed)
+                debits.append((validator_addr, total_distributed))
 
             # Reset epoch rewards for this validator
             self._epoch_rewards[validator_addr] = 0

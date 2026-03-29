@@ -434,6 +434,54 @@ class TestEpochRewardDistribution:
         submit_and_mine(bc, wallet, tx)
         assert bc.get_epoch_rewards(wallet.address) == INITIAL_BLOCK_REWARD
 
+    def test_r24_001_epoch_reward_inflation_prevented(self, funded_chain, wallet):
+        """R24-001: Validator who spent rewards before epoch boundary must not
+        inflate supply. Delegator credits are capped to validator's available
+        balance so credits == debits (supply conservation).
+
+        Exploit scenario: validator accumulates 100 QBIT epoch rewards, transfers
+        80 away, then epoch distribution tries to credit 80 to delegators but
+        validator only has 20. Fix: cap delegator_pool to validator balance."""
+        bc = funded_chain
+        delegator_addr = "qv1delegator_r24"
+
+        # Set up: validator has 100 epoch rewards, delegator staked 500
+        bc._epoch_rewards[wallet.address] = 100
+        bc._stakes[wallet.address] = {
+            wallet.address: 500,  # self-stake
+            delegator_addr: 500,  # delegator
+        }
+        bc._total_stake[wallet.address] = 1000
+        bc._validator_commission[wallet.address] = 0  # 0% commission for simplicity
+
+        # Simulate validator spent rewards: only 20 balance remaining
+        bc._balances[wallet.address] = 20
+
+        supply_before = sum(bc._balances.values()) + sum(bc._total_stake.values())
+
+        # Trigger epoch distribution
+        bc._distribute_epoch_rewards(1)
+
+        supply_after = sum(bc._balances.values()) + sum(bc._total_stake.values())
+
+        # Supply conservation: total supply must not increase
+        assert supply_after == supply_before, (
+            f"Supply inflation! before={supply_before}, after={supply_after}, "
+            f"diff={supply_after - supply_before}")
+
+        # Verify delegator got capped amount (20 not 50)
+        delegator_bal = bc.get_balance(delegator_addr)
+        assert delegator_bal <= 20, (
+            f"Delegator got {delegator_bal} but validator only had 20")
+
+        # Verify credits == debits in distribution record
+        dist = bc._last_epoch_distributions.get(1)
+        assert dist is not None
+        total_credited = sum(amt for _, amt in dist["credits"])
+        total_debited = sum(amt for _, amt in dist["debits"])
+        assert total_credited == total_debited, (
+            f"credits={total_credited} != debits={total_debited}")
+
 
 # ========== Part 3: Supply Tracking ==========
 
