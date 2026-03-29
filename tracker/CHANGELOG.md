@@ -1,5 +1,26 @@
 # Changelog
 
+## Post-v0.8.0: CEO Audit Round 25 (2026-03-29)
+
+### Security Audit
+- **Round 25**: Full codebase audit — 9 findings (3 MEDIUM, 4 LOW, 2 INFO)
+- R25-001: WebSocket unauthenticated subscriptions (MEDIUM) — assigned
+- R25-002: REST auth pattern fragile (MEDIUM) — assigned
+- R25-003: PoA skip-slot clock manipulation (MEDIUM) — assigned
+- R25-004 to R25-009: Low/info findings documented
+
+### Bug Fixes
+- **Fix 2 SSRF test failures**: Replace deprecated `asyncio.get_event_loop().run_until_complete()` with `asyncio.run()` in test_sprint3_openapi_sdk_webhooks.py
+
+### Testing
+- Test suite expanded to 2,125 tests (was 1,781)
+- All tests pass after fix (99.86% → 100%)
+
+### Tracker
+- Updated AUDIT_LOG.md with Round 25 findings
+- Created 7 Paperclip subtasks for assigned work
+- Created comprehensive plan document (TEC-634)
+
 ## v0.8.0 Sprint 1: Multi-Asset Tokens (2026-03-28)
 
 ### New Features

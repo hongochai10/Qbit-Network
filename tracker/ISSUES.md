@@ -1,8 +1,20 @@
 # Issue Tracker
 
-## Open Issues
+## Open Issues (Round 25 — 2026-03-29)
 
-None. All tracked issues are closed as of v0.7.0 (2026-03-26).
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R25-001 | MEDIUM | WebSocket subscriptions unauthenticated — enables surveillance | Security Engineer | P1 | todo |
+| R25-002 | MEDIUM | REST auth per-handler pattern fragile — risk of missed auth | Senior Backend Engineer | P1 | todo |
+| R25-003 | MEDIUM | PoA skip-slot uses wall clock — validator clock manipulation | Architect | P1 | todo |
+| R25-005 | LOW | Wallet files saved without encryption by default | Security Engineer | P2 | todo |
+| R25-007 | LOW | CORS wildcard allows cross-origin probing | Senior Backend Engineer | P2 | todo |
+
+Accepted risks (no action required):
+- R25-004 (LOW): SQLite synchronous=NORMAL — self-corrects via peer re-sync
+- R25-006 (LOW): _pending_debits O(n) scan — known since R16-002
+- R25-008 (INFO): TLS uses classical SECP256R1 — transport-only
+- R25-009 (INFO): No TX timestamp age check at block validation — not exploitable
 
 ## Closed Issues
 
@@ -26,11 +38,11 @@ None. All tracked issues are closed as of v0.7.0 (2026-03-26).
 | ISS-016 | Security | TLS implemented but self-signed cert UX needs improvement | `TLSManager` auto-generates, renews, and hot-reloads self-signed certificates; `--tls-auto` flag (v0.4.0-sprint3) | 2026-03-25 |
 | ISS-017 | Client | CLI missing STORE/SHARE | CLI store/share commands added in v0.2.1 | 2026-03-25 |
 
-See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (202+ issues across 18 rounds).
+See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (249+ issues across 25 rounds).
 
-## Final Project Summary (v0.7.0, 2026-03-26)
+## Project Summary (v0.8.0, 2026-03-29)
 
-- All 17 tracked issues closed
-- 0 open issues, 0 accepted risks with outstanding mitigations
-- 18 audit rounds completed
-- 1507 tests passing
+- 17 original issues closed, 5 new R25 issues open (assigned)
+- 4 accepted risks (no action required)
+- 25 audit rounds completed
+- 2,125 tests passing (100% after R25 test fix)

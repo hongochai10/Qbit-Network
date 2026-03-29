@@ -579,7 +579,7 @@ class TestWebhookSSRFIPv6Mapped(unittest.TestCase):
         webhook_internal = mgr._webhooks[wh["id"]]
         event = {"type": "Transfer", "data": {"amount": 100}}
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             mgr._deliver_one(webhook_internal, event, 1)
         )
         self.assertFalse(result)
@@ -600,7 +600,7 @@ class TestWebhookSSRFIPv6Mapped(unittest.TestCase):
         webhook_internal = mgr._webhooks[wh["id"]]
         event = {"type": "Transfer", "data": {"amount": 100}}
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             mgr._deliver_one(webhook_internal, event, 1)
         )
         self.assertFalse(result)

@@ -2,11 +2,12 @@
 
 ## Summary
 
-- **Total rounds**: 24 (including all v0.8.0 sprints)
-- **Total issues found**: 240+
+- **Total rounds**: 25 (including all v0.8.0 sprints)
+- **Total issues found**: 249+
 - **Total fixed**: 238+
 - **Accepted risks / open**: 2 (R21-010 informational, R23-002 latent/safe)
-- **Latest**: Round 24 epoch reward supply inflation fix — 2026-03-29
+- **New findings (R25)**: 3 MEDIUM, 4 LOW, 2 INFO — defense-in-depth improvements
+- **Latest**: Round 25 CEO full audit — 2026-03-29
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -424,3 +425,25 @@ Scope: Critical supply inflation vulnerability in epoch reward distribution.
 | R24-001 | CRIT | Epoch reward supply inflation — `_distribute_epoch_rewards()` credits delegators full `delegator_pool` but only debits `min(total_distributed, val_bal)` from validator. If validator transfers rewards before epoch boundary, `credits > debits` creates QBIT from nothing | Fixed: cap `delegator_pool = min(delegator_pool, val_bal)` before distribution; debit full `total_distributed` (now always ≤ `val_bal`). Added exploit regression test |
 
 **Round 24 summary:** 1 found, 1 fixed, 0 accepted, 0 deferred
+
+## Round 25 — CEO Full Audit (9 findings)
+
+Scope: Comprehensive codebase audit covering security, architecture, testing, documentation, and operational readiness. Conducted as part of TEC-634 CEO audit initiative.
+
+**Test suite status:** 2,125 tests collected, 2,122 pass, 2 fail (fixed during audit), 1 skip (expected).
+
+| # | Sev | Issue | Status |
+|---|-----|-------|--------|
+| R25-001 | MED | WebSocket `/ws` endpoint accepts subscriptions without authentication — enables unauthenticated real-time surveillance of all chain activity | Open — assigned to Security Engineer (TEC-652) |
+| R25-002 | MED | REST API auth relies on per-handler `_check_auth()` calls — fragile pattern, new endpoints may silently skip auth | Open — assigned to Senior Backend Engineer (TEC-655) |
+| R25-003 | MED | PoA fallback `_select_with_skip` uses `time.time()` wall clock — manipulable by validators with skewed clocks | Open — assigned to Architect (TEC-654) |
+| R25-004 | LOW | SQLite `synchronous=NORMAL` with WAL — risks losing last 1-2 blocks on power failure. Self-corrects via peer re-sync | Accepted risk — config option recommended for validators |
+| R25-005 | LOW | `_save_wallets` in node.py saves without encryption — ML-DSA/ML-KEM secret keys stored as plaintext JSON | Open — assigned to Security Engineer (TEC-656) |
+| R25-006 | LOW | `_pending_debits()` O(n) scan on TX pool per submission — degraded latency at MAX_TX_POOL_SIZE | Known (R16-002) — incremental cache recommended |
+| R25-007 | LOW | CORS defaults to `*` — malicious websites can probe local node REST API | Open — assigned to Senior Backend Engineer (TEC-657) |
+| R25-008 | INFO | TLS self-signed cert uses classical SECP256R1 — transport-only, consensus uses PQC | Accepted (known from R23) |
+| R25-009 | INFO | No TX timestamp age enforcement at block validation — semantically inconsistent but not exploitable | Accepted — block timestamp validation sufficient |
+
+**Additional fix during audit:** 2 test failures in `test_sprint3_openapi_sdk_webhooks.py` (TestWebhookSSRFIPv6Mapped) fixed — replaced deprecated `asyncio.get_event_loop().run_until_complete()` with `asyncio.run()`.
+
+**Round 25 summary:** 9 found, 1 fixed (test), 5 open (assigned), 3 accepted
