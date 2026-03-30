@@ -233,8 +233,11 @@ class WebhookManager:
                         )
                         return False
             except (socket.gaierror, OSError) as dns_err:
-                logger.debug(f"Webhook {webhook['id'][:8]}... DNS resolution failed: {dns_err}")
-                # Fall through to let aiohttp handle it (will fail with connection error)
+                logger.warning(
+                    f"Webhook {webhook['id'][:8]}... DNS resolution failed: {dns_err}, "
+                    f"blocking delivery (fail-safe against DNS rebinding)"
+                )
+                return False
 
             try:
                 async with aiohttp.ClientSession() as session:

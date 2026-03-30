@@ -606,6 +606,48 @@ class TestWebhookSSRFIPv6Mapped(unittest.TestCase):
         self.assertFalse(result)
 
 
+class TestWebhookDNSFailure(unittest.TestCase):
+    """R27-001: DNS resolution failure must fail-safe (no fallthrough)."""
+
+    @unittest.mock.patch("socket.getaddrinfo")
+    def test_dns_gaierror_blocks_delivery(self, mock_dns):
+        """When getaddrinfo raises gaierror, delivery must return False."""
+        import asyncio
+        from qbit_network.network.webhooks import WebhookManager
+
+        mgr = WebhookManager()
+        wh = mgr.register("https://nonexistent.invalid/hook", ["Transfer"], "secret")
+
+        mock_dns.side_effect = socket.gaierror("Name or service not known")
+
+        webhook_internal = mgr._webhooks[wh["id"]]
+        event = {"type": "Transfer", "data": {"amount": 100}}
+
+        result = asyncio.run(
+            mgr._deliver_one(webhook_internal, event, 1)
+        )
+        self.assertFalse(result)
+
+    @unittest.mock.patch("socket.getaddrinfo")
+    def test_dns_oserror_blocks_delivery(self, mock_dns):
+        """When getaddrinfo raises OSError, delivery must return False."""
+        import asyncio
+        from qbit_network.network.webhooks import WebhookManager
+
+        mgr = WebhookManager()
+        wh = mgr.register("https://example.com/hook", ["Transfer"], "secret")
+
+        mock_dns.side_effect = OSError("Network is unreachable")
+
+        webhook_internal = mgr._webhooks[wh["id"]]
+        event = {"type": "Transfer", "data": {"amount": 100}}
+
+        result = asyncio.run(
+            mgr._deliver_one(webhook_internal, event, 1)
+        )
+        self.assertFalse(result)
+
+
 class TestWebhookHMAC(unittest.TestCase):
     """Test HMAC signature computation for webhooks."""
 
@@ -639,14 +681,7 @@ class TestWebhookDelivery(unittest.TestCase):
     """Test webhook delivery logic (async)."""
 
     def _run(self, coro):
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                raise RuntimeError("closed")
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
+        return asyncio.run(coro)
 
     def setUp(self):
         from qbit_network.network.webhooks import WebhookManager
