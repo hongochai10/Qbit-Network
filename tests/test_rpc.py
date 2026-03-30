@@ -496,8 +496,16 @@ class TestPublicChainMethods:
     @pytest.mark.asyncio
     async def test_get_logs_with_filters(self, client):
         body = await _call(client, "qv_getLogs",
-                           params={"event_type": "transfer", "limit": 5})
+                           params={"event_type": "Transfer", "limit": 5})
         assert "result" in body
+
+    @pytest.mark.asyncio
+    async def test_get_logs_invalid_event_type(self, client):
+        """R26-005: unknown event_type returns error."""
+        body = await _call(client, "qv_getLogs",
+                           params={"event_type": "nonexistent"})
+        assert body["error"]["code"] == -32603
+        assert "unknown event_type" in body["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_get_logs_invalid_limit(self, client):

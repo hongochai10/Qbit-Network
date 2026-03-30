@@ -1016,17 +1016,22 @@ class RESTApi:
         bc = self._node.blockchain
         if token_id not in bc._token_registry:
             return _err(404, "token not found", status=404)
-        holders = bc.get_token_holders(token_id)
+        page = int(request.query.get("page", 1))
+        limit = int(request.query.get("limit", 100))
+        holders = bc.get_token_holders(token_id, page=page, limit=limit)
         return _ok({"token_id": token_id, "holders": holders,
-                     "total": len(holders)})
+                     "total": len(holders), "page": page, "limit": limit})
 
     async def _get_address_tokens(self, request: web.Request) -> web.Response:
         addr = request.match_info.get("addr", "")
         if not addr:
             return _err(400, "address is required")
         bc = self._node.blockchain
-        tokens = bc.get_address_tokens(addr)
-        return _ok({"address": addr, "tokens": tokens})
+        page = int(request.query.get("page", 1))
+        limit = int(request.query.get("limit", 100))
+        tokens = bc.get_address_tokens(addr, page=page, limit=limit)
+        return _ok({"address": addr, "tokens": tokens,
+                     "page": page, "limit": limit})
 
     async def _issue_token_rest(self, request: web.Request) -> web.Response:
         try:

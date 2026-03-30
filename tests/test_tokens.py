@@ -1084,6 +1084,36 @@ class TestTokenQueries:
         assert t["decimals"] == 12
         assert t["amount"] == 42
 
+    def test_get_token_holders_pagination(self, funded_chain, wallet, wallet2, wallet3):
+        """R26-006: get_token_holders supports pagination."""
+        bc = funded_chain
+        _, _, token_id = issue_token(bc, wallet, "Pag", "PAG", 8)
+        mint_token(bc, wallet, wallet.address, token_id, 5000)
+        mint_token(bc, wallet, wallet2.address, token_id, 3000)
+        mint_token(bc, wallet, wallet3.address, token_id, 1000)
+
+        page1 = bc.get_token_holders(token_id, page=1, limit=2)
+        assert len(page1) == 2
+        assert page1[0]["amount"] == 5000
+        page2 = bc.get_token_holders(token_id, page=2, limit=2)
+        assert len(page2) == 1
+        assert page2[0]["amount"] == 1000
+
+    def test_get_address_tokens_pagination(self, funded_chain, wallet):
+        """R26-007: get_address_tokens supports pagination."""
+        bc = funded_chain
+        _, _, tid1 = issue_token(bc, wallet, "A1", "A1", 8)
+        _, _, tid2 = issue_token(bc, wallet, "A2", "A2", 6)
+        _, _, tid3 = issue_token(bc, wallet, "A3", "A3", 4)
+        mint_token(bc, wallet, wallet.address, tid1, 100)
+        mint_token(bc, wallet, wallet.address, tid2, 200)
+        mint_token(bc, wallet, wallet.address, tid3, 300)
+
+        page1 = bc.get_address_tokens(wallet.address, page=1, limit=2)
+        assert len(page1) == 2
+        page2 = bc.get_address_tokens(wallet.address, page=2, limit=2)
+        assert len(page2) == 1
+
 
 # ========================================================================
 # 20-22. RECEIPT EVENTS

@@ -130,16 +130,24 @@ class QueryMixin:
         """Get token balance for an address."""
         return self._token_balances.get((token_id, address), 0)
 
-    def get_token_holders(self, token_id: str) -> list[dict]:
-        """Get all holders of a token."""
+    def get_token_holders(self, token_id: str, page: int = 1,
+                          limit: int = 100) -> list[dict]:
+        """Get holders of a token with pagination."""
+        page = max(1, page)
+        limit = max(1, min(limit, 100))
         holders = []
         for (tid, addr), amount in self._token_balances.items():
             if tid == token_id and amount > 0:
                 holders.append({"address": addr, "amount": amount})
-        return sorted(holders, key=lambda h: h["amount"], reverse=True)
+        holders.sort(key=lambda h: h["amount"], reverse=True)
+        start = (page - 1) * limit
+        return holders[start:start + limit]
 
-    def get_address_tokens(self, address: str) -> list[dict]:
-        """Get all token balances for an address."""
+    def get_address_tokens(self, address: str, page: int = 1,
+                           limit: int = 100) -> list[dict]:
+        """Get all token balances for an address with pagination."""
+        page = max(1, page)
+        limit = max(1, min(limit, 100))
         tokens = []
         for (tid, addr), amount in self._token_balances.items():
             if addr == address and amount > 0:
@@ -151,7 +159,8 @@ class QueryMixin:
                     "decimals": reg.get("decimals", 0),
                     "amount": amount,
                 })
-        return tokens
+        start = (page - 1) * limit
+        return tokens[start:start + limit]
 
     # ---- Light client queries ----
 

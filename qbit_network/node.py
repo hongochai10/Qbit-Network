@@ -896,11 +896,16 @@ class FullNode:
         tokens = self.blockchain.list_tokens(page=page, limit=limit)
         return {"tokens": tokens, "total": len(self.blockchain._token_registry)}
 
-    async def _rpc_get_address_tokens(self, address=""):
+    async def _rpc_get_address_tokens(self, address="", page=1, limit=100):
         """Get all token balances for an address (public)."""
         if not isinstance(address, str) or not address:
             raise ValueError("address must be a non-empty string")
-        return self.blockchain.get_address_tokens(address)
+        if not isinstance(page, int) or page < 1:
+            raise ValueError("page must be a positive integer")
+        if not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        limit = min(limit, 100)
+        return self.blockchain.get_address_tokens(address, page=page, limit=limit)
 
     async def _rpc_issue_token(self, wallet_address="", name="",
                                 symbol="", decimals=0, max_supply=0,
@@ -1057,6 +1062,12 @@ class FullNode:
         """Query events (public)."""
         if not isinstance(event_type, str):
             raise ValueError("event_type must be a string")
+        if event_type:
+            from qbit_network.network.webhooks import VALID_EVENT_TYPES
+            if event_type not in VALID_EVENT_TYPES:
+                raise ValueError(
+                    f"unknown event_type '{event_type}'; "
+                    f"valid types: {sorted(VALID_EVENT_TYPES)}")
         if block_index is not None and not isinstance(block_index, int):
             raise ValueError("block_index must be an integer or null")
         if not isinstance(sender, str):
