@@ -90,6 +90,7 @@ class RPCServer:
         "qv_stake", "qv_delegate", "qv_unstake",
         "qv_transfer",
         "qv_issueToken", "qv_mintToken", "qv_transferToken",
+        "qv_registerWebhook", "qv_listWebhooks", "qv_deleteWebhook",
     }
 
     # Methods that MUST NOT be served over plain HTTP (secret-returning)
@@ -126,6 +127,8 @@ class RPCServer:
         self._runner = None
         self._mount_dashboard()
 
+    _DASHBOARD_ALLOWED_EXT = frozenset((".html", ".js", ".css", ".png", ".svg"))
+
     def _mount_dashboard(self):
         """Serve the dashboard SPA at /dashboard/ from the bundled dashboard/ dir."""
         dashboard_dir = os.path.join(
@@ -140,10 +143,25 @@ class RPCServer:
                     return web.FileResponse(index_path)
                 raise web.HTTPNotFound()
 
+            async def _dashboard_static(request):
+                """Serve static assets with extension allowlist — no directory traversal."""
+                rel = request.match_info["path"]
+                safe = os.path.normpath(rel)
+                if safe.startswith("..") or os.path.isabs(safe):
+                    raise web.HTTPNotFound()
+                full = os.path.join(dashboard_dir, safe)
+                if not os.path.commonpath([dashboard_dir, full]).startswith(dashboard_dir):
+                    raise web.HTTPNotFound()
+                _, ext = os.path.splitext(safe)
+                if ext.lower() not in self._DASHBOARD_ALLOWED_EXT:
+                    raise web.HTTPNotFound()
+                if os.path.isfile(full):
+                    return web.FileResponse(full)
+                raise web.HTTPNotFound()
+
             self._app.router.add_get("/dashboard", _dashboard_index)
             self._app.router.add_get("/dashboard/", _dashboard_index)
-            # Serve any other static assets from the dashboard directory
-            self._app.router.add_static("/dashboard/static/", dashboard_dir)
+            self._app.router.add_get("/dashboard/static/{path:.*}", _dashboard_static)
             logger.info(f"Dashboard mounted at /dashboard/ (serving from {dashboard_dir})")
 
     def attach_websocket(self, ws_manager):

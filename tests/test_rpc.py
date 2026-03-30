@@ -831,6 +831,22 @@ class TestProtectedWebhookMethods:
         assert body["error"]["code"] == -32603
 
 
+class TestWebhookMethodsRequireAuth:
+    """R26-001 regression: webhook RPC methods must require auth."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", [
+        "qv_registerWebhook",
+        "qv_listWebhooks",
+        "qv_deleteWebhook",
+    ])
+    async def test_webhook_methods_reject_unauthenticated(self, client, method):
+        """Unauthenticated calls to webhook methods return -32600."""
+        body = await _call(client, method)
+        assert body["error"]["code"] == -32600
+        assert "authentication required" in body["error"]["message"]
+
+
 class TestProtectedTokenMethods:
     """Token issue/mint/transfer (protected)."""
 

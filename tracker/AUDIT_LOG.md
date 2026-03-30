@@ -2,12 +2,12 @@
 
 ## Summary
 
-- **Total rounds**: 25 (including all v0.8.0 sprints)
-- **Total issues found**: 249+
-- **Total fixed**: 238+
+- **Total rounds**: 26 (including all v0.8.0 sprints)
+- **Total issues found**: 258+
+- **Total fixed**: 243+
 - **Accepted risks / open**: 2 (R21-010 informational, R23-002 latent/safe)
-- **New findings (R25)**: 3 MEDIUM, 4 LOW, 2 INFO — defense-in-depth improvements
-- **Latest**: Round 25 CEO full audit — 2026-03-29
+- **New findings (R26)**: 1 HIGH, 3 MEDIUM, 3 LOW, 2 INFO — security + coverage gaps
+- **Latest**: Round 26 CEO audit — 2026-03-30
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -447,3 +447,31 @@ Scope: Comprehensive codebase audit covering security, architecture, testing, do
 **Additional fix during audit:** 2 test failures in `test_sprint3_openapi_sdk_webhooks.py` (TestWebhookSSRFIPv6Mapped) fixed — replaced deprecated `asyncio.get_event_loop().run_until_complete()` with `asyncio.run()`.
 
 **Round 25 summary:** 9 found, 1 fixed (test), 5 open (assigned), 3 accepted
+
+## Round 26 — CEO Full Audit (9 findings)
+
+Scope: Comprehensive codebase audit, security review (Round 26), test suite analysis (2,180 tests), coverage measurement (78%), and tracker/docs review. Conducted as part of TEC-703. All 5 R25 open issues confirmed FIXED in recent commits.
+
+**Test suite status:** 2,180 tests collected, 2,179 pass, 0 fail, 1 skip (expected).
+**Code coverage:** 78% overall (4,830/6,823 statements).
+
+| # | Sev | Issue | Status |
+|---|-----|-------|--------|
+| R26-001 | HIGH | RPC webhook methods (`qv_registerWebhook`, `qv_listWebhooks`, `qv_deleteWebhook`) missing from `PROTECTED_METHODS` — unauthenticated webhook registration/deletion via JSON-RPC. REST API path correctly requires auth | **Fixed** — added to `PROTECTED_METHODS`, regression test added |
+| R26-002 | MED | Dashboard `_mount_dashboard` serves entire `dashboard/` dir via `add_static()` — files placed in dashboard dir by mistake become publicly accessible without auth | Open — P1 |
+| R26-003 | MED | RPC `_exec` passes list params as `*args` — positional unpacking may bypass named-parameter validation in some methods | Open — P1 |
+| R26-004 | MED | `_generate_self_signed()` in `rpc.py` writes TLS key non-atomically — crash mid-write corrupts key file, node falls back to cleartext HTTP | Open — P1 |
+| R26-005 | LOW | `_rpc_get_logs` accepts arbitrary `event_type` without validation against known types — inconsistent with webhook registration which validates | Open — P2 |
+| R26-006 | LOW | `get_token_holders()` iterates full `_token_balances` dict O(n) — no pagination on REST endpoint | Open — P2 |
+| R26-007 | LOW | `get_address_tokens()` same O(n) scan without pagination — REST endpoint unpaginated | Open — P2 |
+| R26-008 | INFO | Duplicate TLS cert generation code in `rpc.py` vs `tls_manager.py` — maintenance risk | Open — P3 |
+| R26-009 | INFO | `/` info endpoint lists webhook methods as public (consequence of R26-001) — auto-fixed when R26-001 resolved | **Fixed** — auto-resolved by R26-001 fix |
+
+**Coverage gaps identified:**
+- `rest_api.py` 51% — token/light-client REST endpoints untested
+- `rpc.py` 56% — staking/token RPC methods untested
+- `persistence.py` 58% — SQLite load/save paths untested
+- `p2p.py` 66% — server-side handshake, gossip handlers
+- `node.py` 71% — startup/shutdown, peer discovery
+
+**Round 26 summary:** 9 found, 0 fixed yet, 9 open (R26-001 is P0 HIGH priority)
