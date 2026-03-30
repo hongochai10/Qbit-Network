@@ -15,7 +15,7 @@ from ..config import (
     TLS_CERT_VALIDITY_DAYS, TLS_RENEWAL_THRESHOLD_DAYS,
 )
 from .rate_limiter import RateLimiter
-from .tls_manager import TLSManager
+from .tls_manager import TLSManager, _atomic_write
 
 logger = logging.getLogger("qbit_network.rpc")
 
@@ -62,15 +62,12 @@ def _generate_self_signed(data_dir: str) -> tuple[str, str]:
         cert_path = os.path.join(cert_dir, "cert.pem")
         key_path = os.path.join(cert_dir, "key.pem")
 
-        with open(cert_path, "wb") as f:
-            f.write(cert.public_bytes(serialization.Encoding.PEM))
-        with open(key_path, "wb") as f:
-            f.write(key.private_bytes(
-                serialization.Encoding.PEM,
-                serialization.Format.TraditionalOpenSSL,
-                serialization.NoEncryption(),
-            ))
-        os.chmod(key_path, 0o600)
+        _atomic_write(cert_path, cert.public_bytes(serialization.Encoding.PEM))
+        _atomic_write(key_path, key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.Format.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ), mode=0o600)
 
         return cert_path, key_path
     except ImportError:
