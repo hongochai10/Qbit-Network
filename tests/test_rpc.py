@@ -205,6 +205,34 @@ class TestRPCProtocol:
         assert "methods" in body
         assert isinstance(body["methods"], list)
 
+    @pytest.mark.asyncio
+    async def test_list_params_normalized_to_dict(self, client):
+        """List params are normalized to named kwargs (R26-003)."""
+        # qv_blockNumber takes no params — empty list should work
+        body = await _call(client, "qv_blockNumber", params=[])
+        assert "result" in body
+
+    @pytest.mark.asyncio
+    async def test_list_params_too_many_rejected(self, client):
+        """Too many positional params returns -32602 (R26-003)."""
+        # qv_blockNumber takes zero params — any positional arg is too many
+        body = await _call(client, "qv_blockNumber", params=["extra"])
+        assert body["error"]["code"] == -32602
+        assert "too many positional params" in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_list_params_protected_method_normalized(self, client):
+        """List params on protected method are normalized, not passed as *args (R26-003)."""
+        # qv_notarize expects named params (address, doc_hash, label, nonce)
+        # Passing as list should normalize to dict and go through same validation
+        body = await _call_auth(client, "qv_notarize",
+                                params=["addr", "hash123", "label", 0])
+        # The call may fail (invalid address) but should NOT fail with
+        # a positional-arg type mismatch — it should reach the method logic
+        if "error" in body:
+            assert body["error"]["code"] == -32603  # internal (method logic)
+            assert "too many positional" not in body["error"]["message"]
+
 
 # ===================================================================
 # 2. Auth tests

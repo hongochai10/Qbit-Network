@@ -1,6 +1,7 @@
 """JSON-RPC 2.0 API server with bearer token authentication and optional TLS."""
 import asyncio
 import hmac
+import inspect
 import ipaddress
 import json
 import logging
@@ -323,8 +324,24 @@ class RPCServer:
 
         try:
             if isinstance(params, list):
-                result = await fn(*params)
-            elif isinstance(params, dict):
+                # Normalize positional list params to named dict params
+                # to prevent bypassing keyword-argument validation.
+                sig = inspect.signature(fn)
+                names = [
+                    p.name for p in sig.parameters.values()
+                    if p.kind in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    )
+                ]
+                if len(params) > len(names):
+                    return {"jsonrpc": "2.0", "id": rid,
+                            "error": {"code": -32602,
+                                      "message": f"too many positional params: "
+                                                  f"expected at most {len(names)}, "
+                                                  f"got {len(params)}"}}
+                params = dict(zip(names, params))
+            if isinstance(params, dict):
                 result = await fn(**params)
             else:
                 result = await fn()
