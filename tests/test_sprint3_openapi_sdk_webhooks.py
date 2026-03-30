@@ -706,10 +706,8 @@ class TestWebhookDelivery(unittest.TestCase):
 
         mock_session = MagicMock()
         mock_session.post = make_post_ctx
-        session_ctx = AsyncMock()
-        session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-        session_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_aiohttp.ClientSession.return_value = session_ctx
+        mock_session.closed = False
+        mock_aiohttp.ClientSession.return_value = mock_session
         mock_aiohttp.ClientTimeout = MagicMock()
 
         events = [{"type": "Transfer", "data": {"amount": 100}, "tx_id": "t1"}]
@@ -752,11 +750,8 @@ class TestWebhookDelivery(unittest.TestCase):
 
         mock_session = MagicMock()
         mock_session.post = make_post_ctx
-
-        session_ctx = AsyncMock()
-        session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-        session_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_aiohttp.ClientSession.return_value = session_ctx
+        mock_session.closed = False
+        mock_aiohttp.ClientSession.return_value = mock_session
         mock_aiohttp.ClientTimeout = MagicMock()
 
         wh_internal = self.mgr._webhooks[wh_data["id"]]
@@ -784,10 +779,8 @@ class TestWebhookDelivery(unittest.TestCase):
 
         mock_session = MagicMock()
         mock_session.post = make_post_ctx
-        session_ctx = AsyncMock()
-        session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-        session_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_aiohttp.ClientSession.return_value = session_ctx
+        mock_session.closed = False
+        mock_aiohttp.ClientSession.return_value = mock_session
         mock_aiohttp.ClientTimeout = MagicMock()
 
         wh_internal = self.mgr._webhooks[wh_data["id"]]
@@ -818,10 +811,8 @@ class TestWebhookDelivery(unittest.TestCase):
 
         mock_session = MagicMock()
         mock_session.post = make_post_ctx
-        session_ctx = AsyncMock()
-        session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-        session_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_aiohttp.ClientSession.return_value = session_ctx
+        mock_session.closed = False
+        mock_aiohttp.ClientSession.return_value = mock_session
         mock_aiohttp.ClientTimeout = MagicMock()
 
         self._run(self.mgr._deliver_one(
@@ -872,6 +863,42 @@ class TestWebhookValidEventTypes(unittest.TestCase):
             "TokenIssued", "TokenMinted", "TokenTransferred",
         }
         self.assertEqual(VALID_EVENT_TYPES, expected)
+
+
+class TestWebhookSessionLifecycle(unittest.TestCase):
+    """R27-004: WebhookManager reuses a single ClientSession."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_session_initialized_none(self):
+        from qbit_network.network.webhooks import WebhookManager
+        mgr = WebhookManager()
+        self.assertIsNone(mgr._session)
+
+    def test_get_session_creates_once(self):
+        from qbit_network.network.webhooks import WebhookManager
+        mgr = WebhookManager()
+
+        async def _test():
+            s1 = await mgr._get_session()
+            s2 = await mgr._get_session()
+            self.assertIs(s1, s2, "Should reuse the same session")
+            await mgr.stop()
+
+        self._run(_test())
+
+    def test_stop_closes_session(self):
+        from qbit_network.network.webhooks import WebhookManager
+        mgr = WebhookManager()
+
+        async def _test():
+            session = await mgr._get_session()
+            self.assertFalse(session.closed)
+            await mgr.stop()
+            self.assertIsNone(mgr._session)
+
+        self._run(_test())
 
 
 if __name__ == "__main__":

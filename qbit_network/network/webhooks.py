@@ -40,6 +40,13 @@ class WebhookManager:
     def __init__(self):
         self._webhooks: dict[str, dict[str, Any]] = {}  # id -> webhook dict
         self._delivery_tasks: list[asyncio.Task] = []
+        self._session: aiohttp.ClientSession | None = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Return the shared ClientSession, creating it if needed."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
 
     # ------------------------------------------------------------------
     # Registration
@@ -240,24 +247,24 @@ class WebhookManager:
                 return False
 
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        webhook["url"],
-                        data=payload,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=DELIVERY_TIMEOUT),
-                    ) as resp:
-                        if 200 <= resp.status < 300:
-                            webhook["consecutive_failures"] = 0
-                            if webhook["status"] == "failing":
-                                webhook["status"] = "active"
-                            return True
+                session = await self._get_session()
+                async with session.post(
+                    webhook["url"],
+                    data=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=DELIVERY_TIMEOUT),
+                ) as resp:
+                    if 200 <= resp.status < 300:
+                        webhook["consecutive_failures"] = 0
+                        if webhook["status"] == "failing":
+                            webhook["status"] = "active"
+                        return True
 
-                        logger.debug(
-                            f"Webhook {webhook['id'][:8]}... "
-                            f"delivery attempt {attempt + 1} failed: "
-                            f"HTTP {resp.status}"
-                        )
+                    logger.debug(
+                        f"Webhook {webhook['id'][:8]}... "
+                        f"delivery attempt {attempt + 1} failed: "
+                        f"HTTP {resp.status}"
+                    )
             except Exception as e:
                 logger.debug(
                     f"Webhook {webhook['id'][:8]}... "
@@ -281,11 +288,14 @@ class WebhookManager:
         return False
 
     async def stop(self) -> None:
-        """Cancel all pending delivery tasks."""
+        """Cancel all pending delivery tasks and close the shared session."""
         for task in list(self._delivery_tasks):
             if not task.done():
                 task.cancel()
         self._delivery_tasks.clear()
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
 
 def _safe_webhook(webhook: dict) -> dict:

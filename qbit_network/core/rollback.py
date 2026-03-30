@@ -101,8 +101,7 @@ class RollbackMixin:
                             tx_list.remove(tx.tx_id)
         self._events_by_block.pop(idx, None)
         # Remove block-level events
-        ble = getattr(self, '_block_level_events', {})
-        ble.pop(idx, None)
+        self._block_level_events.pop(idx, None)
         # Reset finalized height if we rolled back past it
         if self._finalized_height >= idx:
             self._finalized_height = idx - 1

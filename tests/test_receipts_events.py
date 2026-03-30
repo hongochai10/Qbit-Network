@@ -634,6 +634,36 @@ class TestBlockLevelEvents:
         assert reward_events[0]["validator"] == wallet.address
         assert reward_events[0]["amount"] > 0
 
+    def test_block_level_events_persist_to_sqlite(self, wallet, tmp_dir):
+        """R27-003: block-level events survive node restart via SQLite."""
+        bc = Blockchain(data_dir=tmp_dir)
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk, validator_pk=wallet.signing_pk)
+        bc.activate_financial_layer(wallet.address)
+
+        nonce = bc.get_nonce(wallet.address) + bc._pool_sender_count.get(wallet.address, 0)
+        tx = Transaction.notarize(wallet.address, _hex_hash("persist_test"), nonce=nonce)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        block, _ = submit_and_mine(bc, wallet, tx)
+
+        events_before = bc.get_block_level_events(block.index)
+        assert len(events_before) > 0, "Expected block-level events"
+
+        # Simulate restart: create new Blockchain from same data_dir
+        bc2 = Blockchain(data_dir=tmp_dir)
+        bc2.consensus.add_validator(wallet.address, wallet.signing_pk)
+        # In-memory cache is empty after restart
+        assert bc2._block_level_events == {}
+        # But events load from SQLite
+        events_after = bc2.get_block_level_events(block.index)
+        assert events_after == events_before
+
+    def test_block_level_events_initialized_in_init(self):
+        """R27-003: _block_level_events is properly initialized, not lazy getattr."""
+        bc = Blockchain()
+        assert hasattr(bc, '_block_level_events')
+        assert bc._block_level_events == {}
+
 
 # ========== RPC Methods (unit-level) ==========
 

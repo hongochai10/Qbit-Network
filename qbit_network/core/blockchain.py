@@ -151,6 +151,7 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         self._receipts: dict[str, TransactionReceipt] = {}  # tx_id -> receipt
         self._events_by_type: dict[str, list[str]] = {}     # event_type -> [tx_id, ...]
         self._events_by_block: dict[int, list[str]] = {}    # block_index -> [tx_id, ...]
+        self._block_level_events: dict[int, list[dict]] = {}  # block_index -> [BlockReward/EpochTransition events]
 
         # Simple finality rule
         self._finalized_height: int = -1
@@ -921,8 +922,6 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                 build_event("EpochTransition", epoch=self._current_epoch))
 
         # Store block-level events (not tied to any specific TX)
-        self._block_level_events: dict[int, list[dict]] = getattr(
-            self, '_block_level_events', {})
         self._block_level_events[idx] = _block_level_events
         # Prune old block-level events beyond MAX_REORG_DEPTH (R19-SEC-005)
         ble_prune_before = idx - MAX_REORG_DEPTH - 1
@@ -969,10 +968,12 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         if self._store is not None and self._financial_active:
             self._persist_balances_after_block(block, idx, matured_stakers)
 
-        # Persist receipts to SQLite (batch commit to avoid N+1, R19-PERF-003)
+        # Persist receipts and block-level events to SQLite (batch commit, R19-PERF-003)
         if self._store is not None:
             for receipt in block_receipts:
                 self._store.put_receipt(receipt, commit=False)
+            if _block_level_events:
+                self._store.put_block_level_events(idx, _block_level_events, commit=False)
             self._store.commit()
 
         # Update finality

@@ -127,6 +127,11 @@ CREATE TABLE IF NOT EXISTS token_balances (
 );
 CREATE INDEX IF NOT EXISTS idx_token_balances_addr ON token_balances(address);
 CREATE INDEX IF NOT EXISTS idx_tokens_symbol ON tokens(symbol);
+CREATE TABLE IF NOT EXISTS block_level_events (
+    block_index INTEGER NOT NULL,
+    event_data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ble_block ON block_level_events(block_index);
 """
 
 
@@ -657,13 +662,38 @@ class SQLiteStore:
             events=json.loads(r[5])) for r in rows]
 
     def delete_receipts_for_block(self, block_index: int, commit: bool = True):
-        """Remove all receipts and events for a given block (for rollback)."""
+        """Remove all receipts, events, and block-level events for a given block (for rollback)."""
         self._db.execute(
             "DELETE FROM events WHERE block_index >= ?", (block_index,))
         self._db.execute(
             "DELETE FROM receipts WHERE block_index >= ?", (block_index,))
+        self._db.execute(
+            "DELETE FROM block_level_events WHERE block_index >= ?", (block_index,))
         if commit:
             self._db.commit()
+
+    # ---- Block-level event storage ----
+
+    def put_block_level_events(self, block_index: int, events: list[dict],
+                               commit: bool = True):
+        """Persist block-level events (BlockReward, EpochTransition) for a block."""
+        if not events:
+            return
+        events_json = json.dumps(events, separators=(",", ":"))
+        self._db.execute(
+            "INSERT OR REPLACE INTO block_level_events (block_index, event_data) "
+            "VALUES (?, ?)", (block_index, events_json))
+        if commit:
+            self._db.commit()
+
+    def get_block_level_events(self, block_index: int) -> list[dict]:
+        """Retrieve block-level events for a block index."""
+        row = self._db.execute(
+            "SELECT event_data FROM block_level_events WHERE block_index = ?",
+            (block_index,)).fetchone()
+        if not row:
+            return []
+        return json.loads(row[0])
 
     def query_events(self, event_type: str = "", block_index: int | None = None,
                      limit: int = 20) -> list[dict]:

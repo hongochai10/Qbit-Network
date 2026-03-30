@@ -213,6 +213,17 @@ class ReceiptMixin:
         return results
 
     def get_block_level_events(self, block_index: int) -> list[dict]:
-        """Return block-level events (BlockReward, EpochTransition) for a block."""
-        ble = getattr(self, '_block_level_events', {})
-        return ble.get(block_index, [])
+        """Return block-level events (BlockReward, EpochTransition) for a block.
+
+        Checks in-memory cache first, then falls back to SQLite if available.
+        """
+        events = self._block_level_events.get(block_index)
+        if events is not None:
+            return events
+        # Fallback to SQLite persistence (survives restart)
+        if self._store is not None:
+            events = self._store.get_block_level_events(block_index)
+            if events:
+                self._block_level_events[block_index] = events
+                return events
+        return []
