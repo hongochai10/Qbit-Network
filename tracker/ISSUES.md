@@ -5,7 +5,7 @@
 | ID | Severity | Description | Owner | Priority | Status |
 |----|----------|-------------|-------|----------|--------|
 | R26-001 | HIGH | RPC webhook methods missing from PROTECTED_METHODS — unauthenticated webhook registration | security-auditor | P0 | done |
-| R26-002 | MEDIUM | Dashboard static file scope too broad — serves entire dashboard/ dir | blockchain-dev | P1 | todo |
+| R26-002 | MEDIUM | Dashboard static file scope too broad — serves entire dashboard/ dir | blockchain-dev | P1 | done |
 | R26-003 | MEDIUM | RPC list params positional unpacking bypasses validation | blockchain-dev | P1 | todo |
 | R26-004 | MEDIUM | TLS key non-atomic write in rpc.py _generate_self_signed | blockchain-dev | P1 | todo |
 | R26-005 | LOW | _rpc_get_logs no event_type validation | blockchain-dev | P2 | todo |

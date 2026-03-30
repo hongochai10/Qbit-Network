@@ -458,7 +458,7 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 | # | Sev | Issue | Status |
 |---|-----|-------|--------|
 | R26-001 | HIGH | RPC webhook methods (`qv_registerWebhook`, `qv_listWebhooks`, `qv_deleteWebhook`) missing from `PROTECTED_METHODS` — unauthenticated webhook registration/deletion via JSON-RPC. REST API path correctly requires auth | **Fixed** — added to `PROTECTED_METHODS`, regression test added |
-| R26-002 | MED | Dashboard `_mount_dashboard` serves entire `dashboard/` dir via `add_static()` — files placed in dashboard dir by mistake become publicly accessible without auth | Open — P1 |
+| R26-002 | MED | Dashboard `_mount_dashboard` serves entire `dashboard/` dir via `add_static()` — files placed in dashboard dir by mistake become publicly accessible without auth | **Fixed** — replaced `add_static()` with custom handler + extension allowlist (.html/.js/.css/.png/.svg) + traversal guard |
 | R26-003 | MED | RPC `_exec` passes list params as `*args` — positional unpacking may bypass named-parameter validation in some methods | Open — P1 |
 | R26-004 | MED | `_generate_self_signed()` in `rpc.py` writes TLS key non-atomically — crash mid-write corrupts key file, node falls back to cleartext HTTP | Open — P1 |
 | R26-005 | LOW | `_rpc_get_logs` accepts arbitrary `event_type` without validation against known types — inconsistent with webhook registration which validates | Open — P2 |
