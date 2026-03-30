@@ -13,8 +13,7 @@ MAX_WS_CONNECTIONS = 100
 MAX_SUBSCRIPTIONS_PER_CLIENT = 10
 MAX_WS_MESSAGE_SIZE = 8 * 1024  # 8 KB
 WS_RATE_LIMIT = 10  # max messages per second per client
-WS_HEARTBEAT_INTERVAL = 30.0  # seconds between server pings
-WS_HEARTBEAT_TIMEOUT = 10.0  # seconds to wait for pong
+WS_HEARTBEAT_INTERVAL = 30.0  # seconds between server pings (aiohttp auto-closes on missed pong)
 
 VALID_CHANNELS = {"new_block", "new_tx", "chain_stats", "finalized"}
 

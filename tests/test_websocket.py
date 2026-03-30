@@ -4,7 +4,7 @@ import json
 import pytest
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
-from aiohttp import web
+from aiohttp import web, WSMsgType
 from aiohttp.test_utils import AioHTTPTestCase, TestServer
 
 from qbit_network.network.websocket import (
@@ -16,6 +16,7 @@ from qbit_network.network.websocket import (
     MAX_SUBSCRIPTIONS_PER_CLIENT,
     WS_RATE_LIMIT,
     MAX_WS_MESSAGE_SIZE,
+    WS_HEARTBEAT_INTERVAL,
 )
 
 
@@ -961,5 +962,91 @@ async def test_ws_auth_subscribe_and_receive():
             assert event["data"]["index"] == 7
 
             await ws.close()
+    finally:
+        await server.close()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket heartbeat enforcement tests (R27-002)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ws_heartbeat_parameter_is_set():
+    """WebSocketResponse is constructed with heartbeat=WS_HEARTBEAT_INTERVAL.
+
+    Verifies that the server-side WebSocket uses aiohttp's built-in heartbeat
+    mechanism, which sends automatic pings and closes stale connections.
+    """
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws_client = await session.ws_connect(server.make_url("/ws"))
+
+            # The server-side WebSocketResponse objects are tracked in mgr._all_clients.
+            # Each one should have heartbeat set to WS_HEARTBEAT_INTERVAL.
+            assert mgr.connected_count() == 1
+            server_ws = next(iter(mgr._all_clients))
+            assert server_ws._heartbeat == WS_HEARTBEAT_INTERVAL
+
+            await ws_client.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_heartbeat_stale_connection_auto_closes():
+    """A client that does not respond to pings is auto-closed by aiohttp heartbeat.
+
+    Uses a very short heartbeat interval (0.3s) so the test completes quickly.
+    The server pings; the client ignores pongs by receiving raw without responding;
+    aiohttp detects the missing pong and closes the connection.
+    """
+    mgr = WebSocketManager()
+    app = web.Application()
+    app["ws_manager"] = mgr
+
+    async def short_heartbeat_handler(request: web.Request) -> web.WebSocketResponse:
+        """Handler with very short heartbeat for testing timeout behavior."""
+        ws = web.WebSocketResponse(
+            max_msg_size=MAX_WS_MESSAGE_SIZE,
+            heartbeat=0.3,  # very short for fast test
+            autoping=True,
+        )
+        await ws.prepare(request)
+        mgr._all_clients.add(ws)
+        try:
+            async for msg in ws:
+                if msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE,
+                                WSMsgType.CLOSING, WSMsgType.CLOSED):
+                    break
+        except Exception:
+            pass
+        finally:
+            mgr.remove_all(ws)
+        return ws
+
+    app.router.add_get("/ws", short_heartbeat_handler)
+    server = TestServer(app)
+    await server.start_server()
+
+    try:
+        import socket
+        # Use a raw socket connection that won't respond to WebSocket pings.
+        # aiohttp's heartbeat will detect the missing pong and close the connection.
+        async with aiohttp.ClientSession() as session:
+            ws_client = await session.ws_connect(
+                server.make_url("/ws"),
+                autoping=False,  # do NOT auto-respond to server pings
+            )
+
+            assert mgr.connected_count() == 1
+
+            # Wait for heartbeat timeout to kick in (heartbeat=0.3s, so ~0.6-1s total)
+            # aiohttp sends ping after 0.3s, waits another 0.3s for pong, then closes.
+            await asyncio.sleep(1.5)
+
+            # The server should have auto-closed the stale connection
+            assert mgr.connected_count() == 0
     finally:
         await server.close()
