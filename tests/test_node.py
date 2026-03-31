@@ -1163,3 +1163,45 @@ class TestDynamicFeeRPCParams:
         assert tx is not None
         assert tx.max_fee_per_weight == 0
         assert tx.max_priority_fee == 0
+
+    # -- R28-001: fee param type safety regression tests --
+
+    @pytest.mark.asyncio
+    async def test_fee_defaults_rejects_string(self, dynfee_node):
+        """String fee values must raise ValueError."""
+        with pytest.raises(ValueError, match="must be an integer"):
+            dynfee_node._compute_fee_defaults("100", 1)
+        with pytest.raises(ValueError, match="must be an integer"):
+            dynfee_node._compute_fee_defaults(1, "50")
+
+    @pytest.mark.asyncio
+    async def test_fee_defaults_rejects_float(self, dynfee_node):
+        """Float fee values must raise ValueError."""
+        with pytest.raises(ValueError, match="must be an integer"):
+            dynfee_node._compute_fee_defaults(1.5, 1)
+        with pytest.raises(ValueError, match="must be an integer"):
+            dynfee_node._compute_fee_defaults(1, 2.5)
+
+    @pytest.mark.asyncio
+    async def test_fee_defaults_rejects_negative(self, dynfee_node):
+        """Negative fee values must raise ValueError."""
+        with pytest.raises(ValueError, match="must be non-negative"):
+            dynfee_node._compute_fee_defaults(-1, 1)
+        with pytest.raises(ValueError, match="must be non-negative"):
+            dynfee_node._compute_fee_defaults(1, -10)
+
+    @pytest.mark.asyncio
+    async def test_fee_defaults_rejects_oversized(self, dynfee_node):
+        """Values exceeding 2**63 must raise ValueError."""
+        with pytest.raises(ValueError, match="exceeds maximum"):
+            dynfee_node._compute_fee_defaults(2**64, 1)
+        with pytest.raises(ValueError, match="exceeds maximum"):
+            dynfee_node._compute_fee_defaults(1, 2**64)
+
+    @pytest.mark.asyncio
+    async def test_fee_defaults_rejects_bool(self, dynfee_node):
+        """Bool values must raise ValueError (bool is subclass of int)."""
+        with pytest.raises(ValueError, match="must be an integer"):
+            dynfee_node._compute_fee_defaults(True, 1)
+        with pytest.raises(ValueError, match="must be an integer"):
+            dynfee_node._compute_fee_defaults(1, False)

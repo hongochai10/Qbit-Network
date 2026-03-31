@@ -316,6 +316,21 @@ class FullNode:
         m("qv_getStateProofAt", self._rpc_get_state_proof_at)
         m("qv_getReceiptProof", self._rpc_get_receipt_proof)
 
+    @staticmethod
+    def _validate_fee_param(value, name):
+        """Validate a fee parameter is a non-negative integer within bounds."""
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"{name} must be an integer, got {type(value).__name__}"
+            )
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative, got {value}")
+        if value > 2**63:
+            raise ValueError(f"{name} exceeds maximum allowed value")
+        return value
+
     def _compute_fee_defaults(self, max_fee_per_weight, max_priority_fee):
         """Return (max_fee_per_weight, max_priority_fee) with sensible defaults.
 
@@ -323,23 +338,25 @@ class FullNode:
         auto-compute: max_fee = base_fee * 2, priority = max(1, base_fee // 10).
         When dynamic fees are inactive, defaults to 0.
         """
+        max_fee_per_weight = self._validate_fee_param(
+            max_fee_per_weight, "max_fee_per_weight"
+        )
+        max_priority_fee = self._validate_fee_param(
+            max_priority_fee, "max_priority_fee"
+        )
         from .config import DYNAMIC_FEE_ACTIVATION_HEIGHT
         bc = self.blockchain
         dynamic_active = (bc.height >= 0
                           and bc.height + 1 >= DYNAMIC_FEE_ACTIVATION_HEIGHT)
         if max_fee_per_weight is not None and max_priority_fee is not None:
-            return int(max_fee_per_weight), int(max_priority_fee)
+            return max_fee_per_weight, max_priority_fee
         if not dynamic_active:
             return (max_fee_per_weight or 0), (max_priority_fee or 0)
         current_bf = bc._current_base_fee()
         if max_fee_per_weight is None:
             max_fee_per_weight = current_bf * 2
-        else:
-            max_fee_per_weight = int(max_fee_per_weight)
         if max_priority_fee is None:
             max_priority_fee = max(1, current_bf // 10)
-        else:
-            max_priority_fee = int(max_priority_fee)
         return max_fee_per_weight, max_priority_fee
 
     async def _rpc_block_number(self):
@@ -1192,16 +1209,16 @@ class FullNode:
     def _lock_for(self, address: str) -> asyncio.Lock:
         """Get or create a per-address lock for atomic nonce+submit.
 
-        Bounded to _MAX_WALLET_LOCKS entries; oldest are evicted on overflow (R15-004).
+        Bounded to _MAX_WALLET_LOCKS entries; oldest unlocked are evicted on
+        overflow (R15-004, R23-007).  If the cap is reached and no unlocked
+        entry can be evicted, raises ValueError to prevent memory exhaustion
+        (R28-003).
         """
         if address in self._wallet_locks:
-            # Move to end (most recently used)
             self._wallet_locks.move_to_end(address)
             return self._wallet_locks[address]
-        lock = asyncio.Lock()
-        self._wallet_locks[address] = lock
-        # R23-007: only evict locks that are not currently held
-        while len(self._wallet_locks) > self._MAX_WALLET_LOCKS:
+        # Evict oldest unlocked entries until under cap
+        while len(self._wallet_locks) >= self._MAX_WALLET_LOCKS:
             evicted = False
             for k, v in self._wallet_locks.items():
                 if not v.locked():
@@ -1209,7 +1226,11 @@ class FullNode:
                     evicted = True
                     break
             if not evicted:
-                break  # all locks held, stop evicting
+                raise ValueError(
+                    "wallet lock pool exhausted: all slots in use, try again later"
+                )
+        lock = asyncio.Lock()
+        self._wallet_locks[address] = lock
         return lock
 
     # ================================================================
