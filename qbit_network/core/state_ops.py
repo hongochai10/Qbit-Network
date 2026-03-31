@@ -5,6 +5,15 @@ on self._state_trie, self._balances, and self._sender_nonce which are
 initialised by Blockchain.__init__.
 """
 
+import re
+
+_TOKEN_ID_RE = re.compile(r'^[0-9a-fA-F]{32}$')
+
+
+def _validate_token_id(tid: str) -> bool:
+    """Return True if *tid* is a safe 32-char hex token identifier."""
+    return isinstance(tid, str) and bool(_TOKEN_ID_RE.match(tid))
+
 
 class StateTrieMixin:
     """Mixin providing state trie rebuild, proof generation, and root access."""
@@ -33,8 +42,12 @@ class StateTrieMixin:
         token_balances = getattr(self, '_token_balances', {})
         for (tid, addr), bal in token_balances.items():
             if bal > 0:
+                if not _validate_token_id(tid):
+                    raise ValueError(f"invalid token_id in state: {tid!r}")
                 trie.set(f"token:{tid}:balance:{addr}", bal.to_bytes(8, 'big'))
         for tid, reg in token_registry.items():
+            if not _validate_token_id(tid):
+                raise ValueError(f"invalid token_id in state: {tid!r}")
             trie.set(f"token:{tid}:supply",
                      reg["total_minted"].to_bytes(8, 'big'))
 
@@ -61,6 +74,8 @@ class StateTrieMixin:
 
     def get_token_state_proof(self, token_id: str, address: str) -> dict | None:
         """Generate a Merkle state proof for a token balance."""
+        if not _validate_token_id(token_id):
+            return None
         trie_key = f"token:{token_id}:balance:{address}"
         return self._state_trie.get_proof(trie_key)
 
