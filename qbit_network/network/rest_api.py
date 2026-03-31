@@ -348,12 +348,11 @@ class RESTApi:
             return pag
         page, limit = pag
 
-        all_tx_ids = self._node.blockchain.get_txs_by_sender(addr)
-        total = len(all_tx_ids)
+        bc = self._node.blockchain
+        total = bc.get_txs_by_sender_count(addr)
         start = (page - 1) * limit
-        end = min(start + limit, total)
 
-        tx_ids_page = all_tx_ids[start:end] if start < total else []
+        tx_ids_page = bc.get_txs_by_sender_page(addr, start, limit) if start < total else []
         txs = []
         for tid in tx_ids_page:
             tx = self._node.blockchain.get_tx(tid)
@@ -377,8 +376,8 @@ class RESTApi:
         bc = self._node.blockchain
         nonce = bc.get_nonce(addr)
         encryption_pk = bc.get_encryption_pk(addr)
-        sent_tx_ids = bc.get_txs_by_sender(addr)
-        received_tx_ids = bc.get_txs_by_recipient(addr)
+        sent_count = bc.get_txs_by_sender_count(addr)
+        received_count = bc.get_txs_by_recipient_count(addr)
 
         # Use O(1) notarization counter instead of iterating all sender txs
         notarization_count = bc.get_notarization_count(addr)
@@ -391,8 +390,8 @@ class RESTApi:
             "balance": balance,
             "next_nonce": nonce,
             "encryption_pk": encryption_pk,
-            "sent_tx_count": len(sent_tx_ids),
-            "received_tx_count": len(received_tx_ids),
+            "sent_tx_count": sent_count,
+            "received_tx_count": received_count,
             "notarization_count": notarization_count,
             "is_validator": is_validator,
         })

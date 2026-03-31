@@ -59,8 +59,18 @@ class QueryMixin:
     def get_txs_by_sender(self, address: str) -> list[str]:
         return self._txs_by_sender.get(address, [])
 
+    def get_txs_by_sender_count(self, address: str) -> int:
+        return len(self._txs_by_sender.get(address, []))
+
+    def get_txs_by_sender_page(self, address: str, offset: int, limit: int) -> list[str]:
+        ids = self._txs_by_sender.get(address, [])
+        return ids[offset:offset + limit]
+
     def get_txs_by_recipient(self, address: str) -> list[str]:
         return self._txs_by_recipient.get(address, [])
+
+    def get_txs_by_recipient_count(self, address: str) -> int:
+        return len(self._txs_by_recipient.get(address, []))
 
     def verify_document(self, document_hash: str) -> dict | None:
         tx_id = self._notarizations.get(document_hash)

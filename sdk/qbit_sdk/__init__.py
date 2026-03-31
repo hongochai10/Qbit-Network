@@ -10,7 +10,7 @@ from .exceptions import (
     InsufficientBalance, ValidationError,
 )
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __all__ = [
     "QBitClient",
     "Block", "Transaction", "Wallet", "NodeInfo", "BalanceInfo",

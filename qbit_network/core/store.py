@@ -258,11 +258,29 @@ class SQLiteStore:
             (address,)).fetchall()
         return [r[0] for r in rows]
 
+    def get_txs_by_sender_count(self, address: str) -> int:
+        row = self._db.execute(
+            "SELECT COUNT(*) FROM txs WHERE sender=?",
+            (address,)).fetchone()
+        return row[0]
+
+    def get_txs_by_sender_page(self, address: str, offset: int, limit: int) -> list[str]:
+        rows = self._db.execute(
+            "SELECT tx_id FROM txs WHERE sender=? ORDER BY nonce LIMIT ? OFFSET ?",
+            (address, limit, offset)).fetchall()
+        return [r[0] for r in rows]
+
     def get_txs_by_recipient(self, address: str) -> list[str]:
         rows = self._db.execute(
             "SELECT tx_id FROM txs WHERE recipient=? ORDER BY block_idx, tx_idx",
             (address,)).fetchall()
         return [r[0] for r in rows]
+
+    def get_txs_by_recipient_count(self, address: str) -> int:
+        row = self._db.execute(
+            "SELECT COUNT(*) FROM txs WHERE recipient=?",
+            (address,)).fetchone()
+        return row[0]
 
     def put_validator(self, address: str, pubkey_hex: str, commit: bool = True):
         """Register or update a validator's signing pubkey.
