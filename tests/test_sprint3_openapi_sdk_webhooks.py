@@ -561,91 +561,182 @@ class TestWebhookSSRFIPv6Mapped(unittest.TestCase):
         wh = self.mgr.register("http://[::ffff:8.8.8.8]/hook", ["Transfer"], "s")
         self.assertEqual(wh["status"], "active")
 
-    @unittest.mock.patch("socket.getaddrinfo")
-    def test_delivery_rejects_ipv6_mapped_resolved(self, mock_dns):
-        """Delivery-time DNS resolving to ::ffff:127.0.0.1 must be blocked."""
+    def test_delivery_rejects_ipv6_mapped_resolved(self):
+        """Delivery-time DNS resolving to ::ffff:127.0.0.1 must be blocked (R27-001 resolver)."""
         import asyncio
-        from qbit_network.network.webhooks import WebhookManager
+        from qbit_network.network.webhooks import WebhookManager, _SSRFSafeResolver
 
         mgr = WebhookManager()
-        # Register with a public-looking hostname
         wh = mgr.register("https://example.com/hook", ["Transfer"], "secret")
 
-        # Mock DNS to return IPv6-mapped loopback
-        mock_dns.return_value = [
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('::ffff:127.0.0.1', 443, 0, 0))
-        ]
+        # Mock the resolver's inner resolve to return IPv6-mapped loopback
+        async def fake_resolve(host, port=0, family=socket.AF_INET):
+            return [{"hostname": host, "host": "::ffff:127.0.0.1", "port": 443,
+                     "family": socket.AF_INET6, "proto": 0, "flags": 0}]
 
         webhook_internal = mgr._webhooks[wh["id"]]
         event = {"type": "Transfer", "data": {"amount": 100}}
 
-        result = asyncio.run(
-            mgr._deliver_one(webhook_internal, event, 1)
-        )
+        async def run():
+            session = await mgr._get_session()
+            resolver = session.connector._resolver
+            resolver._inner.resolve = fake_resolve
+            return await mgr._deliver_one(webhook_internal, event, 1)
+
+        result = asyncio.run(run())
         self.assertFalse(result)
 
-    @unittest.mock.patch("socket.getaddrinfo")
-    def test_delivery_rejects_ipv6_mapped_private(self, mock_dns):
-        """Delivery-time DNS resolving to ::ffff:10.0.0.1 must be blocked."""
+    def test_delivery_rejects_ipv6_mapped_private(self):
+        """Delivery-time DNS resolving to ::ffff:10.0.0.1 must be blocked (R27-001 resolver)."""
         import asyncio
-        from qbit_network.network.webhooks import WebhookManager
+        from qbit_network.network.webhooks import WebhookManager, _SSRFSafeResolver
 
         mgr = WebhookManager()
         wh = mgr.register("https://example.com/hook", ["Transfer"], "secret")
 
-        mock_dns.return_value = [
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('::ffff:10.0.0.1', 443, 0, 0))
-        ]
+        async def fake_resolve(host, port=0, family=socket.AF_INET):
+            return [{"hostname": host, "host": "::ffff:10.0.0.1", "port": 443,
+                     "family": socket.AF_INET6, "proto": 0, "flags": 0}]
 
         webhook_internal = mgr._webhooks[wh["id"]]
         event = {"type": "Transfer", "data": {"amount": 100}}
 
-        result = asyncio.run(
-            mgr._deliver_one(webhook_internal, event, 1)
-        )
+        async def run():
+            session = await mgr._get_session()
+            resolver = session.connector._resolver
+            resolver._inner.resolve = fake_resolve
+            return await mgr._deliver_one(webhook_internal, event, 1)
+
+        result = asyncio.run(run())
         self.assertFalse(result)
 
 
 class TestWebhookDNSFailure(unittest.TestCase):
     """R27-001: DNS resolution failure must fail-safe (no fallthrough)."""
 
-    @unittest.mock.patch("socket.getaddrinfo")
-    def test_dns_gaierror_blocks_delivery(self, mock_dns):
-        """When getaddrinfo raises gaierror, delivery must return False."""
+    def test_dns_gaierror_blocks_delivery(self):
+        """When resolver raises gaierror, delivery must return False."""
         import asyncio
         from qbit_network.network.webhooks import WebhookManager
 
         mgr = WebhookManager()
         wh = mgr.register("https://nonexistent.invalid/hook", ["Transfer"], "secret")
 
-        mock_dns.side_effect = socket.gaierror("Name or service not known")
+        async def fake_resolve(host, port=0, family=socket.AF_INET):
+            raise socket.gaierror("Name or service not known")
 
         webhook_internal = mgr._webhooks[wh["id"]]
         event = {"type": "Transfer", "data": {"amount": 100}}
 
-        result = asyncio.run(
-            mgr._deliver_one(webhook_internal, event, 1)
-        )
+        async def run():
+            session = await mgr._get_session()
+            resolver = session.connector._resolver
+            resolver._inner.resolve = fake_resolve
+            return await mgr._deliver_one(webhook_internal, event, 1)
+
+        result = asyncio.run(run())
         self.assertFalse(result)
 
-    @unittest.mock.patch("socket.getaddrinfo")
-    def test_dns_oserror_blocks_delivery(self, mock_dns):
-        """When getaddrinfo raises OSError, delivery must return False."""
+    def test_dns_oserror_blocks_delivery(self):
+        """When resolver raises OSError, delivery must return False."""
         import asyncio
         from qbit_network.network.webhooks import WebhookManager
 
         mgr = WebhookManager()
         wh = mgr.register("https://example.com/hook", ["Transfer"], "secret")
 
-        mock_dns.side_effect = OSError("Network is unreachable")
+        async def fake_resolve(host, port=0, family=socket.AF_INET):
+            raise OSError("Network is unreachable")
 
         webhook_internal = mgr._webhooks[wh["id"]]
         event = {"type": "Transfer", "data": {"amount": 100}}
 
-        result = asyncio.run(
-            mgr._deliver_one(webhook_internal, event, 1)
-        )
+        async def run():
+            session = await mgr._get_session()
+            resolver = session.connector._resolver
+            resolver._inner.resolve = fake_resolve
+            return await mgr._deliver_one(webhook_internal, event, 1)
+
+        result = asyncio.run(run())
         self.assertFalse(result)
+
+
+class TestSSRFSafeResolver(unittest.TestCase):
+    """R27-001: _SSRFSafeResolver must reject private IPs at resolve time,
+    eliminating the TOCTOU gap between DNS pre-check and aiohttp connect."""
+
+    def _run_resolver_test(self, fake_results):
+        """Create resolver inside event loop and resolve with fake results."""
+        from qbit_network.network.webhooks import _SSRFSafeResolver
+
+        async def _test():
+            resolver = _SSRFSafeResolver()
+
+            async def fake_resolve(host, port=0, family=socket.AF_INET):
+                return fake_results
+
+            resolver._inner.resolve = fake_resolve
+            return await resolver.resolve("test.example.com", 443)
+
+        return asyncio.run(_test())
+
+    def test_allows_public_ip(self):
+        results = self._run_resolver_test([
+            {"hostname": "example.com", "host": "93.184.216.34", "port": 443,
+             "family": socket.AF_INET, "proto": 0, "flags": 0}
+        ])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["host"], "93.184.216.34")
+
+    def test_rejects_loopback(self):
+        with self.assertRaises(OSError) as ctx:
+            self._run_resolver_test([
+                {"hostname": "evil.com", "host": "127.0.0.1", "port": 443,
+                 "family": socket.AF_INET, "proto": 0, "flags": 0}
+            ])
+        self.assertIn("SSRF blocked", str(ctx.exception))
+
+    def test_rejects_private_10(self):
+        with self.assertRaises(OSError):
+            self._run_resolver_test([
+                {"hostname": "evil.com", "host": "10.0.0.1", "port": 443,
+                 "family": socket.AF_INET, "proto": 0, "flags": 0}
+            ])
+
+    def test_rejects_private_192(self):
+        with self.assertRaises(OSError):
+            self._run_resolver_test([
+                {"hostname": "evil.com", "host": "192.168.1.1", "port": 443,
+                 "family": socket.AF_INET, "proto": 0, "flags": 0}
+            ])
+
+    def test_rejects_link_local(self):
+        with self.assertRaises(OSError):
+            self._run_resolver_test([
+                {"hostname": "evil.com", "host": "169.254.169.254", "port": 80,
+                 "family": socket.AF_INET, "proto": 0, "flags": 0}
+            ])
+
+    def test_rejects_ipv6_mapped_private(self):
+        with self.assertRaises(OSError):
+            self._run_resolver_test([
+                {"hostname": "evil.com", "host": "::ffff:10.0.0.1", "port": 443,
+                 "family": socket.AF_INET6, "proto": 0, "flags": 0}
+            ])
+
+    def test_rejects_ipv6_mapped_loopback(self):
+        with self.assertRaises(OSError):
+            self._run_resolver_test([
+                {"hostname": "evil.com", "host": "::ffff:127.0.0.1", "port": 443,
+                 "family": socket.AF_INET6, "proto": 0, "flags": 0}
+            ])
+
+    def test_allows_ipv6_mapped_public(self):
+        results = self._run_resolver_test([
+            {"hostname": "example.com", "host": "::ffff:8.8.8.8", "port": 443,
+             "family": socket.AF_INET6, "proto": 0, "flags": 0}
+        ])
+        self.assertEqual(len(results), 1)
 
 
 class TestWebhookHMAC(unittest.TestCase):

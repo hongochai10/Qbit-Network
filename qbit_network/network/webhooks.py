@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
+from aiohttp.resolver import DefaultResolver, AbstractResolver
 
 logger = logging.getLogger("qbit_network.webhooks")
 
@@ -34,6 +35,34 @@ VALID_EVENT_TYPES = frozenset({
 })
 
 
+class _SSRFSafeResolver(AbstractResolver):
+    """DNS resolver that rejects private/loopback/link-local/reserved IPs.
+
+    Wraps the default resolver so that validation happens at connect time,
+    closing the TOCTOU gap between a pre-check and the actual connection
+    (R27-001).
+    """
+
+    def __init__(self) -> None:
+        self._inner = DefaultResolver()
+
+    async def resolve(self, host: str, port: int = 0,
+                      family: int = socket.AF_INET) -> list[dict[str, Any]]:
+        results = await self._inner.resolve(host, port, family)
+        for entry in results:
+            addr = ipaddress.ip_address(entry["host"])
+            if hasattr(addr, "ipv4_mapped") and addr.ipv4_mapped is not None:
+                addr = addr.ipv4_mapped
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                raise OSError(
+                    f"SSRF blocked: {host} resolved to private/reserved IP {addr}"
+                )
+        return results
+
+    async def close(self) -> None:
+        await self._inner.close()
+
+
 class WebhookManager:
     """Manages webhook registration, storage, and async delivery."""
 
@@ -43,9 +72,14 @@ class WebhookManager:
         self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Return the shared ClientSession, creating it if needed."""
+        """Return the shared ClientSession, creating it if needed.
+
+        Uses a custom SSRF-safe resolver that validates resolved IPs at
+        connect time, eliminating the DNS rebinding TOCTOU gap (R27-001).
+        """
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            connector = aiohttp.TCPConnector(resolver=_SSRFSafeResolver())
+            self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 
     # ------------------------------------------------------------------
@@ -223,28 +257,9 @@ class WebhookManager:
             if webhook["status"] == "deleted":
                 return False
 
-            # R20-001: DNS rebinding SSRF protection — validate resolved IPs at delivery time
-            try:
-                parsed = urlparse(webhook["url"])
-                hostname = parsed.hostname or ""
-                resolved = socket.getaddrinfo(hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
-                for family, _type, _proto, _canon, sockaddr in resolved:
-                    addr = ipaddress.ip_address(sockaddr[0])
-                    # R25-001: unwrap IPv6-mapped IPv4 (e.g. ::ffff:127.0.0.1)
-                    if hasattr(addr, 'ipv4_mapped') and addr.ipv4_mapped is not None:
-                        addr = addr.ipv4_mapped
-                    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-                        logger.warning(
-                            f"Webhook {webhook['id'][:8]}... DNS resolved to "
-                            f"private/reserved IP {addr}, blocking delivery"
-                        )
-                        return False
-            except (socket.gaierror, OSError) as dns_err:
-                logger.warning(
-                    f"Webhook {webhook['id'][:8]}... DNS resolution failed: {dns_err}, "
-                    f"blocking delivery (fail-safe against DNS rebinding)"
-                )
-                return False
+            # R27-001: SSRF protection is now enforced at connect time via
+            # _SSRFSafeResolver in the TCPConnector, eliminating the TOCTOU
+            # gap between a pre-flight DNS check and the actual connection.
 
             try:
                 session = await self._get_session()
@@ -265,6 +280,17 @@ class WebhookManager:
                         f"delivery attempt {attempt + 1} failed: "
                         f"HTTP {resp.status}"
                     )
+            except (aiohttp.ClientError, OSError) as e:
+                if "SSRF blocked" in str(e):
+                    logger.warning(
+                        f"Webhook {webhook['id'][:8]}... "
+                        f"SSRF blocked by resolver: {e}"
+                    )
+                    return False
+                logger.debug(
+                    f"Webhook {webhook['id'][:8]}... "
+                    f"delivery attempt {attempt + 1} error: {e}"
+                )
             except Exception as e:
                 logger.debug(
                     f"Webhook {webhook['id'][:8]}... "
