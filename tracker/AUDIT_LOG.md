@@ -2,14 +2,15 @@
 
 ## Summary
 
-- **Total rounds**: 28 (including all v0.8.0 sprints)
-- **Total issues found**: 270+
-- **Total fixed**: 249+
+- **Total rounds**: 29 (including all v0.8.0 sprints)
+- **Total issues found**: 275+
+- **Total fixed**: 257+
 - **Accepted risks / open**: 2 (R21-010 informational, R23-002 latent/safe)
 - **R26 status**: 4 done (R26-001/002/003/004), 3 open (R26-005/006/007), 2 INFO (1 done)
-- **R27 findings**: 2 MEDIUM, 2 LOW — webhook SSRF, block events, WebSocket heartbeat
-- **R28 findings**: 3 MEDIUM, 4 LOW, 1 INFO — fee type safety, wallet locks DoS, trie key defense
-- **Latest**: Round 28 CEO audit — 2026-03-31
+- **R27 findings**: 2 MEDIUM, 2 LOW — webhook SSRF, block events (R27-002/004 fixed)
+- **R28 findings**: 3 MEDIUM, 4 LOW, 1 INFO — fee type safety, wallet locks DoS, trie key defense (R28-003 fixed)
+- **R29 findings**: 2 MEDIUM, 2 LOW, 1 INFO — token holder DoS, inbound P2P IP bypass, state proof key probing
+- **Latest**: Round 29 CEO audit — 2026-03-31
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -487,14 +488,14 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 
 | ID | Sev | Issue | Status |
 |----|-----|-------|--------|
-| R27-001 | MED | Webhook SSRF: `socket.gaierror` falls through to aiohttp resolve — DNS rebinding TOCTOU gap in `webhooks.py:235-237` | Open — P1 |
+| R27-001 | MED | Webhook SSRF: `socket.gaierror` falls through to aiohttp resolve — DNS rebinding TOCTOU gap in `webhooks.py:235-237` | **Fixed** — `_SSRFSafeResolver` at connect time (`27a2dce`, TEC-926) |
 | R27-002 | LOW | WebSocket heartbeat constants `WS_HEARTBEAT_INTERVAL`/`WS_HEARTBEAT_TIMEOUT` defined but not passed to `web.WebSocketResponse()` — zombie connections accumulate | Open — P1 |
-| R27-003 | MED | `_block_level_events` not initialized in `Blockchain.__init__()`, not persisted to SQLite — lost on restart, webhook subscribers miss BlockReward/EpochTransition events | Open — P2 |
+| R27-003 | MED | `_block_level_events` not initialized in `Blockchain.__init__()`, not persisted to SQLite — lost on restart, webhook subscribers miss BlockReward/EpochTransition events | **Fixed** — events persisted to SQLite via `put_block_level_events` (`e6c9d8d`, TEC-926) |
 | R27-004 | LOW | `webhooks.py:240` creates new `aiohttp.ClientSession()` per event delivery — resource waste, connection pooling not leveraged | Open — P2 |
 
 **Architecture assessment:** Clean layered design (crypto → core → network → node). Mixin decomposition of blockchain.py well-executed. No circular dependencies. State trie rebuild O(n) per block is a future scalability concern.
 
-**Round 27 summary:** 4 found, 0 fixed yet, 4 open. No critical blockers. Project rated production-ready for target use case.
+**Round 27 summary:** 4 found, 4 fixed (R27-001/002/003/004), 0 open. No critical blockers. Project rated production-ready for target use case.
 
 ## Round 28 — CEO Full Audit (8 findings)
 
@@ -506,7 +507,7 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 
 | ID | Sev | Issue | Status |
 |----|-----|-------|--------|
-| R28-001 | MED | `_compute_fee_defaults` in `node.py:331` silently casts string/float fee params via `int()` — type safety bypass, overpay risk | Open — P1 (TEC-890) |
+| R28-001 | MED | `_compute_fee_defaults` in `node.py:331` silently casts string/float fee params via `int()` — type safety bypass, overpay risk | **Fixed** — `_validate_fee_param()` rejects non-int types (`250fc1c`, TEC-926) |
 | R28-002 | MED | State trie key injection via `token_id` colon in `state_ops.py:36` — defense-in-depth gap (currently blocked by hex regex) | **Fixed** — `_validate_token_id()` + ValueError in rebuild, None in proof (TEC-895) |
 | R28-003 | MED | `_wallet_locks` OrderedDict in `node.py:59` unbounded growth under concurrent raw TX submission — DoS via memory exhaustion | Open — P1 (TEC-891) |
 | R28-004 | LOW | ISSUE_TOKEN `token_id` not included in receipt events or Merkle — silent fork risk in legacy mode (state_root="" chains) | **Fixed** — `token_id` already in TokenIssued event + Merkle proof; added explicit verification test (TEC-897) |
@@ -521,4 +522,48 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 - pytest `-x` flag masks downstream failures in 2,600+ test suite (TEC-894)
 - Coverage gaps: `rest_api.py` 51%, `rpc.py` 56%, `persistence.py` 58% (TEC-893)
 
-**Round 28 summary:** 8 found (3 MED, 4 LOW, 1 INFO), 0 fixed yet, 7 open, 1 accepted. No critical/high issues. 8 subtasks created (TEC-890 to TEC-897).
+**Round 28 summary:** 8 found (3 MED, 4 LOW, 1 INFO), 5 fixed (R28-001/002/003/004/007), 2 open (R28-005/006), 1 accepted. No critical/high issues. 8 subtasks created (TEC-890 to TEC-897).
+
+## Round 29 — CEO Comprehensive Audit (2026-03-31)
+
+**Scope:** Full codebase review — 40 Python source files, 29th audit round
+**Auditor:** CEO + Security Auditor agents
+**Method:** Parallel agent audit (codebase structure, security, documentation, agents)
+
+### Status corrections from prior rounds
+
+| ID | Prior Status | Corrected Status | Evidence |
+|----|-------------|------------------|----------|
+| R27-002 | todo | **FIXED** | `websocket.py:198` now passes `heartbeat=WS_HEARTBEAT_INTERVAL` |
+| R27-004 | todo | **FIXED** | Shared `_session` via `_get_session()` at `webhooks.py:45-49` |
+| R28-003 | todo | **FIXED** | Cap enforcement at `node.py:1221-1231` |
+
+### New findings
+
+| ID | Sev | Issue | Status |
+|----|-----|-------|--------|
+| R29-001 | MED | `get_token_holders()` in `query.py:143-158` materializes full holder list (O(n) dicts + O(n log n) sort) before pagination — DoS via unauthenticated public endpoint | Open — P1 (TEC-925) |
+| R29-002 | MED | Inbound P2P connections in `p2p.py:919-936` bypass `_is_safe_peer()` validation — private IPs accepted when `ALLOW_PRIVATE_PEERS=false` | Open — P1 (TEC-925) |
+| R29-003 | LOW | `qv_getStateProofAt` in `node.py:1048-1054` accepts arbitrary trie key — unauthenticated token balance enumeration | Open — P2 (TEC-925) |
+| R29-004 | LOW | Inbound P2P first message in `p2p.py:941` uses `readline()` — incompatible with binary wire format, peer slot exhaustion | Open — P3 |
+| R29-005 | INFO | Version string mismatch `__init__.py` (0.2.0) vs `config.py` (0.8.0) — persists from R28 | Open (TEC-928) |
+
+### Documentation inconsistencies identified
+
+- README.md, CLAUDE.md: claim "22 audit rounds, 0 open issues" (actual: 29/10)
+- SECURITY.md: states "22 audit rounds" (actual: 29)
+- ARCHITECTURE.md: lists "11 TX types" (actual: 14)
+- ROADMAP_v1.md: states "23 audit rounds" (actual: 29)
+- CHANGELOG.md: missing Rounds 23-28 entries
+
+### Subtasks created
+
+| Task | Title | Assignee | Priority |
+|------|-------|----------|----------|
+| TEC-925 | Security: Fix R29-001 + R29-002 | security-engineer | HIGH |
+| TEC-926 | Backend: Fix R27-001 + R27-003 + R28-001 | senior-backend-engineer | HIGH |
+| TEC-927 | Docs: Sync all documentation | technical-writer | HIGH |
+| TEC-928 | QA: REST API coverage + fuzz tests | qa-engineer | MEDIUM |
+| TEC-929 | DevOps: Prometheus metrics + health check | devops-engineer | MEDIUM |
+
+**Round 29 summary:** 5 found (2 MED, 2 LOW, 1 INFO), 3 prior items corrected to fixed. 10 total open issues across all rounds. No critical/high blockers. 5 subtasks created (TEC-925 to TEC-929) under parent TEC-899.

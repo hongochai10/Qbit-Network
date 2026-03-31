@@ -1,5 +1,23 @@
 # Changelog
 
+## Post-v0.8.0: TEC-926 Backend Fixes (2026-03-31)
+
+### Security Fixes
+- **R27-001**: Webhook SSRF TOCTOU gap closed — `_SSRFSafeResolver` validates resolved IPs at connect time, eliminating DNS rebinding attack vector (`27a2dce`)
+- **R27-003**: Block-level events now persisted to SQLite via `put_block_level_events()` — survive node restart (`e6c9d8d`)
+- **R28-001**: Fee param type safety — `_validate_fee_param()` rejects non-int types (bool, str, float) with explicit `ValueError` (`250fc1c`)
+
+### Testing
+- All 2,706 tests passing, 0 failures
+- No regressions from prior fixes
+
+### Tracker Updates
+- Updated ISSUES.md: R27-001, R27-003, R28-001 marked done
+- Updated AUDIT_LOG.md: R27/R28 round summaries corrected
+- Open issues reduced from 10 to 7 (0 critical/high)
+
+---
+
 ## Post-v0.8.0: CEO Audit Round 28 (2026-03-31)
 
 ### Security Fixes
@@ -8,7 +26,7 @@
 
 ### Security Audit
 - **Round 28**: Full security audit — 8 findings (3 MEDIUM, 4 LOW, 1 INFO)
-  - R28-001 (MEDIUM): Fee param type safety — `int()` cast accepts string/float
+  - R28-001 (MEDIUM): Fee param type safety — `int()` cast accepts string/float — **FIXED** (`250fc1c`, TEC-926)
   - R28-002 (MEDIUM): State trie key injection defense-in-depth gap — **FIXED**
   - R28-003 (MEDIUM): `_wallet_locks` unbounded growth DoS vector
   - R28-004 (LOW): ISSUE_TOKEN token_id not in receipt events — **FIXED** (already present; added Merkle proof verification test)
@@ -39,11 +57,11 @@
   - R26-002 (MEDIUM): Dashboard static file serving restricted to extension allowlist (`488ecce`)
   - R26-003 (MEDIUM): RPC list params normalized to named kwargs (`fff66b9`)
   - R26-004 (MEDIUM): TLS cert/key atomic writes (`b0515a8`)
-- **Round 27**: CEO comprehensive audit — 4 new findings (2 MEDIUM, 2 LOW)
-  - R27-001 (MEDIUM): Webhook SSRF DNS fallthrough — assigned to Security Engineer
-  - R27-002 (LOW): WebSocket heartbeat not enforced — assigned to Senior Backend Engineer
-  - R27-003 (MEDIUM): _block_level_events not persisted — assigned to Senior Backend Engineer
-  - R27-004 (LOW): Webhook ClientSession per-event — assigned to Senior Backend Engineer
+- **Round 27**: CEO comprehensive audit — 4 findings, all fixed
+  - R27-001 (MEDIUM): Webhook SSRF DNS fallthrough — **FIXED** (`27a2dce`, TEC-926)
+  - R27-002 (LOW): WebSocket heartbeat not enforced — **FIXED** (R29 verified)
+  - R27-003 (MEDIUM): _block_level_events not persisted — **FIXED** (`e6c9d8d`, TEC-926)
+  - R27-004 (LOW): Webhook ClientSession per-event — **FIXED** (R29 verified)
 
 ### Tracker Updates
 - Updated ISSUES.md: R26-003/004 marked done, 4 new R27 findings added
@@ -165,6 +183,40 @@
 
 ### Tests
 - 1781 tests, 0 failures, 22 audit rounds
+
+---
+
+## Post-v0.8.0: Security Audit Round 24 (2026-03-29)
+
+### Security Audit
+- **Round 24**: Financial layer security — 1 CRITICAL finding
+  - R24-001 (CRITICAL): Epoch reward supply inflation — `_distribute_epoch_rewards()` credits delegators but under-debits validator when validator transfers rewards before epoch boundary, creating QBIT from nothing — **FIXED**: cap `delegator_pool = min(delegator_pool, val_bal)`, debit full `total_distributed`; added exploit regression test
+  - SQLite signature verification on load added (`dd36c8b`)
+
+---
+
+## Post-v0.8.0: Security Audit Round 23 (2026-03-29)
+
+### Security Audit
+- **Round 23**: PQC deep-dive + issue hunt — 7 findings (1 HIGH, 3 MED, 3 LOW), 6 fixed, 1 accepted
+  - R23-001 (HIGH): Partial block application on state/receipts root mismatch — wrapped in `_append_block_inner_safe()` with rollback-on-failure
+  - R23-003 (MED): `_rpc_send_raw_tx` nonce race — wrapped with `_lock_for(tx.sender)`
+  - R23-004 (MED): Token TXs not gated by `TOKEN_ACTIVATION_HEIGHT` at pool admission — added check
+  - R23-006 (LOW): `_rpc_get_logs` limit not capped — fixed `limit = min(limit, 100)`
+  - R23-007 (LOW): `_wallet_locks` eviction deletes held lock — fixed eviction logic
+
+### PQC Analysis
+- Blockchain confirmed quantum-resistant for all consensus/identity/data operations
+- Only TLS cert (SECP256R1) is classical — transport-only, accepted tradeoff
+
+---
+
+## Post-v0.8.0: Security Audit Round 22 (2026-03-28)
+
+### Security Audit
+- **Round 22**: v0.8.0 final verification — 2 findings, 2 fixed
+  - Cross-reference with 22 prior audit rounds — 232+ issues, 0 open at time of release
+  - Full codebase audit across all 39 Python source files
 
 ---
 

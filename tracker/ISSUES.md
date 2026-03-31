@@ -18,23 +18,33 @@
 
 | ID | Severity | Description | Owner | Priority | Status |
 |----|----------|-------------|-------|----------|--------|
-| R27-001 | MEDIUM | Webhook SSRF DNS fallthrough — gaierror falls through to aiohttp resolve (DNS rebinding) | security-engineer | P1 | todo |
-| R27-002 | LOW | WebSocket heartbeat constants not passed to WebSocketResponse — zombie connections | senior-backend-engineer | P1 | todo |
-| R27-003 | MEDIUM | _block_level_events not initialized in __init__(), lost on restart | senior-backend-engineer | P2 | todo |
-| R27-004 | LOW | Webhook creates new aiohttp.ClientSession per event delivery — resource waste | senior-backend-engineer | P2 | todo |
+| R27-001 | MEDIUM | Webhook SSRF DNS fallthrough — gaierror falls through to aiohttp resolve (DNS rebinding) | security-engineer | P1 | done (TEC-926) |
+| R27-002 | LOW | WebSocket heartbeat constants not passed to WebSocketResponse — zombie connections | senior-backend-engineer | P1 | done (R29 verified) |
+| R27-003 | MEDIUM | _block_level_events not initialized in __init__(), lost on restart | senior-backend-engineer | P2 | done (TEC-926) |
+| R27-004 | LOW | Webhook creates new aiohttp.ClientSession per event delivery — resource waste | senior-backend-engineer | P2 | done (R29 verified) |
 
 ## New Findings (Round 28 — CEO Audit 2026-03-31)
 
 | ID | Severity | Description | Owner | Priority | Status |
 |----|----------|-------------|-------|----------|--------|
-| R28-001 | MEDIUM | _compute_fee_defaults silently casts string/float fee params via int() — type safety bypass | security-engineer | P1 | todo (TEC-890) |
+| R28-001 | MEDIUM | _compute_fee_defaults silently casts string/float fee params via int() — type safety bypass | security-engineer | P1 | done (TEC-926) |
 | R28-002 | MEDIUM | State trie key injection via token_id colon — defense-in-depth gap | security-engineer | P2 | done (TEC-895) |
-| R28-003 | MEDIUM | _wallet_locks unbounded growth under concurrent raw TX — DoS memory exhaustion | senior-backend-engineer | P1 | todo (TEC-891) |
+| R28-003 | MEDIUM | _wallet_locks unbounded growth under concurrent raw TX — DoS memory exhaustion | senior-backend-engineer | P1 | done (R29 verified) |
 | R28-004 | LOW | ISSUE_TOKEN token_id not in receipt/Merkle — silent fork risk in legacy mode | senior-backend-engineer | P2 | done (TEC-897) |
 | R28-005 | LOW | REST _txs_by_sender materializes full list for pagination total — memory spike | founding-engineer | P2 | todo (TEC-896) |
 | R28-006 | LOW | P2P _on_connect dispatches HELLO_AUTH before auth completes | senior-backend-engineer | P3 | todo |
 | R28-007 | LOW | get_token_holders/get_address_tokens block event loop on large datasets (extends R26-006/007) | senior-backend-engineer | P1 | done (TEC-892) |
 | R28-008 | INFO | SecureBytes cannot zero source bytes from keygen — CPython limitation | — | — | accepted |
+
+## New Findings (Round 29 — CEO Comprehensive Audit 2026-03-31)
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R29-001 | MEDIUM | get_token_holders() materializes full holder list before pagination — DoS via public endpoint | security-engineer | P1 | todo (TEC-925) |
+| R29-002 | MEDIUM | Inbound P2P connections bypass _is_safe_peer() — private IPs accepted | security-engineer | P1 | todo (TEC-925) |
+| R29-003 | LOW | qv_getStateProofAt accepts arbitrary trie key — unauthenticated token balance probing | security-engineer | P2 | todo (TEC-925) |
+| R29-004 | LOW | Inbound P2P first message uses readline() — incompatible with binary wire format | senior-backend-engineer | P3 | todo |
+| R29-005 | INFO | Version string mismatch __init__.py (0.2.0) vs config.py (0.8.0) | qa-engineer | P2 | todo (TEC-928) |
 
 Accepted risks (no action required):
 - R25-004 (LOW): SQLite synchronous=NORMAL — self-corrects via peer re-sync
@@ -70,13 +80,16 @@ Accepted risks (no action required):
 | R25-005 | Security | Wallet files saved without encryption | Added directory permissions and plaintext warning (`bb21a88`) | 2026-03-29 |
 | R25-007 | Security | CORS wildcard allows cross-origin probing | Default restrictive CORS, added --cors-origin flag (`3a64749`) | 2026-03-29 |
 
-See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (258+ issues across 26 rounds).
+See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (275+ issues across 29 rounds).
 
-## Project Summary (v0.8.0, 2026-03-30)
+## Project Summary (v0.8.0, 2026-03-31)
 
 - 22 closed issues (17 original + 5 R25 resolved)
-- R26: 4 done, 3 open (R26-005/006/007), 2 INFO (1 done)
-- R27: 4 new findings (2 MEDIUM, 2 LOW)
-- 4 accepted risks (no action required)
-- 27 audit rounds completed
-- 2,203 tests passing, 78% code coverage
+- R26: 4 done, 2 open (R26-005/008), 1 INFO done
+- R27: 4 fixed (R27-001/002/003/004), 0 open
+- R28: 4 fixed (R28-001/002/003/004/007), 3 open (R28-005/006/008 accepted)
+- R29: 5 new findings (2 MED, 2 LOW, 1 INFO), all open
+- 5 accepted risks (no action required)
+- 29 audit rounds completed
+- 2,706 tests passing
+- 7 open issues total (1 MED, 4 LOW, 2 INFO) — 0 critical/high
