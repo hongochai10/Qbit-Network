@@ -34,6 +34,27 @@ class _MockP2P:
 class MockNode:
     """Lightweight node substitute -- owns a real blockchain + wallets."""
 
+    class _MockWebhookManager:
+        """Minimal webhook manager mock."""
+        def __init__(self):
+            self._hooks = {}
+            self._next_id = 1
+
+        def register(self, url, events, secret):
+            wid = f"wh-{self._next_id}"
+            self._next_id += 1
+            self._hooks[wid] = {"id": wid, "url": url, "events": events}
+            return {"id": wid, "url": url, "events": events}
+
+        def list_webhooks(self):
+            return list(self._hooks.values())
+
+        def delete(self, webhook_id):
+            return self._hooks.pop(webhook_id, None) is not None
+
+        async def deliver(self, *args, **kwargs):
+            pass
+
     def __init__(self):
         self.wallet = Wallet.generate()
         self.blockchain = Blockchain()
@@ -47,6 +68,7 @@ class MockNode:
         self._wallet_locks: dict = {}
         self._shared_secrets = {}
         self.p2p = _MockP2P()
+        self.webhook_manager = self._MockWebhookManager()
 
         # Notarize a document so query tests have data
         tx = Transaction.notarize(
@@ -206,6 +228,60 @@ class MockNode:
             "fee_model": "dynamic",
         }
 
+    # --- Transfer / Evidence / Token / Light client stubs ---
+
+    async def _rpc_transfer(self, wallet_address="", to_address="",
+                            amount=0, memo=""):
+        if not wallet_address:
+            raise ValueError("wallet_address required")
+        return {"tx_id": "mock-transfer-tx", "status": "pending"}
+
+    async def _rpc_get_state_proof(self, address="", key_type="balance"):
+        if key_type not in ("balance", "nonce"):
+            raise ValueError(f"invalid key_type: {key_type}")
+        return {"address": address, "key_type": key_type, "value": 0, "proof": []}
+
+    async def _rpc_get_state_root(self):
+        return {"state_root": "0" * 64, "height": self.blockchain.height}
+
+    async def _rpc_get_balance(self, address=""):
+        if not address:
+            raise ValueError("address required")
+        return {"address": address, "balance": 0, "formatted": "0"}
+
+    async def _rpc_get_supply(self):
+        return {"total_minted": 0, "total_burned": 0, "circulating": 0,
+                "max_supply": "unlimited"}
+
+    async def _rpc_get_receipt(self, tx_id=""):
+        if not tx_id:
+            raise ValueError("tx_id required")
+        return None
+
+    async def _rpc_get_logs(self, event_type="", block_index=None,
+                            sender="", limit=20):
+        return []
+
+    async def _rpc_get_finalized(self):
+        return {"finalized_height": self.blockchain.height, "finalized_hash": "abc"}
+
+    async def _rpc_issue_token(self, wallet_address, name, symbol,
+                               decimals, max_supply, transferable=True):
+        if not name:
+            raise ValueError("name required")
+        return {"tx_id": "mock-issue-tx", "symbol": symbol}
+
+    async def _rpc_mint_token(self, wallet_address, token_id,
+                              recipient, amount):
+        if not token_id:
+            raise ValueError("token_id required")
+        return {"tx_id": "mock-mint-tx"}
+
+    async def _rpc_transfer_token(self, wallet_address, token_id,
+                                  recipient, amount, memo=""):
+        if not token_id:
+            raise ValueError("token_id required")
+        return {"tx_id": "mock-transfer-token-tx"}
 
 AUTH_TOKEN = "test-token-12345"
 
@@ -1449,3 +1525,1197 @@ class TestMetricsEndpoint(AsyncRESTTestCase):
 
         resp = await self.client.get("/api/v1/metrics")
         self.assertNotEqual(resp.status, 401)
+
+
+# ===================================================================
+# TEC-893: Additional coverage — transfer, state, receipt, events,
+#          finalized, webhooks, tokens, light client
+# ===================================================================
+
+class TestTransferEndpoint(AsyncRESTTestCase):
+    """POST /transfer endpoint tests."""
+
+    async def test_transfer_valid(self):
+        node = self.app["_mock_node"]
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": node.wallet.address,
+                  "to_address": "qv1recipient", "amount": 100, "memo": "test"},
+        )
+        self.assertEqual(resp.status, 201)
+        body = await resp.json()
+        self.assertIn("tx_id", body["data"])
+
+    async def test_transfer_missing_wallet(self):
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"to_address": "qv1x", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_missing_to_address(self):
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1x", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_zero_amount(self):
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1x", "to_address": "qv1y", "amount": 0},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_non_integer_amount(self):
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1x", "to_address": "qv1y", "amount": 1.5},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_invalid_json(self):
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_non_dict_body(self):
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json=[1, 2, 3],
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_memo_must_be_string(self):
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1x", "to_address": "qv1y",
+                  "amount": 100, "memo": 123},
+        )
+        self.assertEqual(resp.status, 400)
+
+
+class TestStateEndpoints(AsyncRESTTestCase):
+    """State proof, state root, balance, supply, finalized endpoints."""
+
+    async def test_state_proof(self):
+        node = self.app["_mock_node"]
+        resp = await self.client.get(
+            f"/api/v1/state-proof/{node.wallet.address}")
+        self.assertEqual(resp.status, 200)
+
+    async def test_state_proof_with_key_type(self):
+        node = self.app["_mock_node"]
+        resp = await self.client.get(
+            f"/api/v1/state-proof/{node.wallet.address}?key=nonce")
+        self.assertEqual(resp.status, 200)
+
+    async def test_state_proof_invalid_key_type(self):
+        node = self.app["_mock_node"]
+        resp = await self.client.get(
+            f"/api/v1/state-proof/{node.wallet.address}?key=invalid")
+        self.assertEqual(resp.status, 400)
+
+    async def test_state_root(self):
+        resp = await self.client.get("/api/v1/state-root")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("state_root", body["data"])
+
+    async def test_balance(self):
+        node = self.app["_mock_node"]
+        resp = await self.client.get(f"/api/v1/balance/{node.wallet.address}")
+        self.assertEqual(resp.status, 200)
+
+    async def test_supply(self):
+        resp = await self.client.get("/api/v1/supply")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("total_minted", body["data"])
+
+    async def test_finalized(self):
+        resp = await self.client.get("/api/v1/finalized")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("finalized_height", body["data"])
+
+
+class TestReceiptEndpoint(AsyncRESTTestCase):
+    """Receipt and events endpoints."""
+
+    async def test_receipt_not_found(self):
+        resp = await self.client.get("/api/v1/receipt/aabbccdd00112233")
+        self.assertEqual(resp.status, 404)
+
+    async def test_receipt_invalid_txid(self):
+        resp = await self.client.get("/api/v1/receipt/not-hex!!!")
+        self.assertEqual(resp.status, 400)
+
+    async def test_events_default(self):
+        resp = await self.client.get("/api/v1/events")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("events", body["data"])
+
+    async def test_events_with_type(self):
+        resp = await self.client.get("/api/v1/events?type=Transfer")
+        self.assertEqual(resp.status, 200)
+
+    async def test_events_with_block_index(self):
+        resp = await self.client.get("/api/v1/events?block_index=0")
+        self.assertEqual(resp.status, 200)
+
+    async def test_events_invalid_limit(self):
+        resp = await self.client.get("/api/v1/events?limit=abc")
+        self.assertEqual(resp.status, 400)
+
+    async def test_events_limit_out_of_range(self):
+        resp = await self.client.get("/api/v1/events?limit=0")
+        self.assertEqual(resp.status, 400)
+
+    async def test_events_invalid_block_index(self):
+        resp = await self.client.get("/api/v1/events?block_index=abc")
+        self.assertEqual(resp.status, 400)
+
+
+class TestWebhookEndpoints(AsyncRESTTestCase):
+    """Webhook CRUD endpoints."""
+
+    async def test_register_webhook(self):
+        resp = await self.client.post(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"url": "https://example.com/hook",
+                  "events": ["Notarize"], "secret": "s3cret"},
+        )
+        self.assertEqual(resp.status, 201)
+        body = await resp.json()
+        self.assertIn("id", body["data"])
+
+    async def test_register_webhook_missing_url(self):
+        resp = await self.client.post(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"events": ["Notarize"], "secret": "s"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_register_webhook_empty_events(self):
+        resp = await self.client.post(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"url": "https://x.com", "events": [], "secret": "s"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_register_webhook_missing_secret(self):
+        resp = await self.client.post(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"url": "https://x.com", "events": ["Notarize"]},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_register_webhook_invalid_json(self):
+        resp = await self.client.post(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_register_webhook_non_dict(self):
+        resp = await self.client.post(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json=[1, 2],
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_list_webhooks(self):
+        resp = await self.client.get(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+        )
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("webhooks", body["data"])
+
+    async def test_delete_webhook_not_found(self):
+        resp = await self.client.delete(
+            "/api/v1/webhooks/nonexistent",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+        )
+        self.assertEqual(resp.status, 404)
+
+    async def test_webhook_register_and_delete(self):
+        # Register
+        resp = await self.client.post(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"url": "https://example.com/hook2",
+                  "events": ["Transfer"], "secret": "sec"},
+        )
+        body = await resp.json()
+        wid = body["data"]["id"]
+        # Delete
+        resp = await self.client.delete(
+            f"/api/v1/webhooks/{wid}",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+        )
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertTrue(body["data"]["deleted"])
+
+
+class TestTokenEndpoints(AsyncRESTTestCase):
+    """Token read/write endpoints."""
+
+    async def test_list_tokens(self):
+        resp = await self.client.get("/api/v1/tokens")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("tokens", body["data"])
+
+    async def test_get_token_not_found(self):
+        resp = await self.client.get("/api/v1/tokens/nonexistent")
+        self.assertEqual(resp.status, 404)
+
+    async def test_get_token_holders_not_found(self):
+        resp = await self.client.get("/api/v1/tokens/nonexistent/holders")
+        self.assertEqual(resp.status, 404)
+
+    async def test_get_address_tokens(self):
+        node = self.app["_mock_node"]
+        resp = await self.client.get(
+            f"/api/v1/address/{node.wallet.address}/tokens")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("tokens", body["data"])
+
+    async def test_issue_token(self):
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "qv1w", "name": "TestCoin", "symbol": "TC",
+                  "decimals": 8, "max_supply": 1000000},
+        )
+        self.assertEqual(resp.status, 201)
+
+    async def test_issue_token_missing_fields(self):
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "qv1w"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_issue_token_invalid_json(self):
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_mint_token(self):
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "qv1w", "token_id": "tok1",
+                  "recipient": "qv1r", "amount": 100},
+        )
+        self.assertEqual(resp.status, 201)
+
+    async def test_mint_token_missing_fields(self):
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "qv1w"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_mint_token_invalid_json(self):
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_token(self):
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "qv1w", "token_id": "tok1",
+                  "recipient": "qv1r", "amount": 50},
+        )
+        self.assertEqual(resp.status, 201)
+
+    async def test_transfer_token_missing_fields(self):
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "qv1w"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_token_invalid_json(self):
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+
+class TestLightClientEndpoints(AsyncRESTTestCase):
+    """Light client endpoints."""
+
+    async def test_list_headers(self):
+        resp = await self.client.get("/api/v1/headers")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("headers", body["data"])
+        self.assertIn("height", body["data"])
+
+    async def test_list_headers_with_params(self):
+        resp = await self.client.get("/api/v1/headers?start=0&count=5")
+        self.assertEqual(resp.status, 200)
+
+    async def test_list_headers_invalid_start(self):
+        resp = await self.client.get("/api/v1/headers?start=-1")
+        self.assertEqual(resp.status, 400)
+
+    async def test_list_headers_invalid_count(self):
+        resp = await self.client.get("/api/v1/headers?count=0")
+        self.assertEqual(resp.status, 400)
+
+    async def test_list_headers_count_too_large(self):
+        resp = await self.client.get("/api/v1/headers?count=200")
+        self.assertEqual(resp.status, 400)
+
+    async def test_list_headers_non_integer(self):
+        resp = await self.client.get("/api/v1/headers?start=abc")
+        self.assertEqual(resp.status, 400)
+
+    async def test_get_header_by_index(self):
+        resp = await self.client.get("/api/v1/headers/0")
+        self.assertEqual(resp.status, 200)
+
+    async def test_get_header_not_found(self):
+        resp = await self.client.get("/api/v1/headers/99999")
+        self.assertEqual(resp.status, 404)
+
+    async def test_state_proof_by_key(self):
+        node = self.app["_mock_node"]
+        resp = await self.client.get(
+            f"/api/v1/proofs/state/balance:{node.wallet.address}")
+        # May return 200 or 404 depending on state trie
+        self.assertIn(resp.status, (200, 404))
+
+    async def test_state_proof_by_key_with_block(self):
+        node = self.app["_mock_node"]
+        resp = await self.client.get(
+            f"/api/v1/proofs/state/balance:{node.wallet.address}?block=0")
+        self.assertIn(resp.status, (200, 404))
+
+    async def test_state_proof_by_key_invalid_block(self):
+        resp = await self.client.get(
+            "/api/v1/proofs/state/somekey?block=abc")
+        self.assertEqual(resp.status, 400)
+
+    async def test_receipt_proof(self):
+        resp = await self.client.get("/api/v1/proofs/receipt/aabbccdd")
+        # Either 200 or 404
+        self.assertIn(resp.status, (200, 404))
+
+
+class TestSubmitTxEndpoint(AsyncRESTTestCase):
+    """POST /txs submit transaction endpoint."""
+
+    async def test_submit_tx_non_dict(self):
+        resp = await self.client.post(
+            "/api/v1/txs",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json=[1, 2, 3],
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_submit_evidence_non_dict(self):
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json=[1, 2, 3],
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_block_by_index_negative(self):
+        """GET /blocks/-1 returns 400."""
+        resp = await self.client.get("/api/v1/blocks/-1")
+        self.assertEqual(resp.status, 400)
+
+    async def test_pagination_non_integer_page(self):
+        resp = await self.client.get("/api/v1/blocks?page=abc")
+        self.assertEqual(resp.status, 400)
+
+    async def test_pagination_non_integer_limit(self):
+        resp = await self.client.get("/api/v1/blocks?limit=abc")
+        self.assertEqual(resp.status, 400)
+
+
+class TestShareEndpointValidation(AsyncRESTTestCase):
+    """Detailed validation for POST /share endpoint."""
+
+    async def test_share_valid_request(self):
+        node = self.app["_mock_node"]
+        resp = await self.client.post(
+            "/api/v1/share",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": node.wallet.address,
+                "recipient_address": "qv1recipient",
+                "cid": "QmTest",
+                "recipient_encryption_pk": "aabb",
+                "expires": 0,
+            },
+        )
+        # Mock raises "share not supported" → 400
+        self.assertEqual(resp.status, 400)
+
+    async def test_share_non_string_cid(self):
+        resp = await self.client.post(
+            "/api/v1/share",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": "qv1w",
+                "recipient_address": "qv1r",
+                "cid": 123,
+            },
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_share_non_integer_expires(self):
+        resp = await self.client.post(
+            "/api/v1/share",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": "qv1w",
+                "recipient_address": "qv1r",
+                "cid": "Qm",
+                "recipient_encryption_pk": "pk",
+                "expires": "not_int",
+            },
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_share_invalid_json(self):
+        resp = await self.client.post(
+            "/api/v1/share",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_share_non_dict(self):
+        resp = await self.client.post(
+            "/api/v1/share",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json="string_body",
+        )
+        self.assertEqual(resp.status, 400)
+
+
+class TestRegisterValidatorEndpoint(AsyncRESTTestCase):
+    """POST /register-validator endpoint."""
+
+    async def test_register_validator_valid(self):
+        resp = await self.client.post(
+            "/api/v1/register-validator",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "qv1valid"},
+        )
+        # Mock raises error → 400
+        self.assertEqual(resp.status, 400)
+
+    async def test_register_validator_invalid_json(self):
+        resp = await self.client.post(
+            "/api/v1/register-validator",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_register_validator_non_dict(self):
+        resp = await self.client.post(
+            "/api/v1/register-validator",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json=[1, 2],
+        )
+        self.assertEqual(resp.status, 400)
+
+
+class TestDelegateUnstakeValidation(AsyncRESTTestCase):
+    """Detailed validation for delegate/unstake."""
+
+    async def test_delegate_invalid_json(self):
+        resp = await self.client.post(
+            "/api/v1/delegate",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_delegate_non_dict(self):
+        resp = await self.client.post(
+            "/api/v1/delegate",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json="string",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_unstake_invalid_json(self):
+        resp = await self.client.post(
+            "/api/v1/unstake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            data=b"not json",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_unstake_non_dict(self):
+        resp = await self.client.post(
+            "/api/v1/unstake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json=[1],
+        )
+        self.assertEqual(resp.status, 400)
+
+
+class TestPoolSummaryWithPendingTxs(AsyncRESTTestCase):
+    """Pool summary when there are pending transactions."""
+
+    async def test_pool_summary_with_pending_txs(self):
+        node = self.app["_mock_node"]
+        # Inject a transaction directly into the pool
+        tx = Transaction.notarize(
+            node.wallet.address, "pendingdochash", "pending meta",
+            nonce=node.blockchain.get_nonce(node.wallet.address))
+        tx.sign(node.wallet.signing_sk, node.wallet.signing_pk)
+        node.blockchain.tx_pool.append(tx)
+
+        resp = await self.client.get("/api/v1/pool")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertGreater(body["data"]["count"], 0)
+        self.assertIn("NOTARIZE", body["data"]["by_type"])
+
+
+class TestAuthEdgeCases(AsyncRESTTestCase):
+    """Edge cases for auth middleware."""
+
+    async def test_bearer_empty_token(self):
+        """Bearer prefix but empty token after stripping."""
+        resp = await self.client.post(
+            "/api/v1/wallets",
+            headers={"Authorization": "Bearer   "},
+        )
+        self.assertEqual(resp.status, 401)
+
+
+class TestReceiptFoundPath(AsyncRESTTestCase):
+    """Test receipt endpoint when receipt is found."""
+
+    async def test_receipt_found(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_receipt = AsyncMock(return_value={
+            "tx_id": "abc123", "status": "confirmed", "block_index": 1,
+            "gas_used": 100,
+        })
+        resp = await self.client.get("/api/v1/receipt/abc123")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertEqual(body["data"]["tx_id"], "abc123")
+
+    async def test_receipt_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_receipt = AsyncMock(side_effect=Exception("db error"))
+        resp = await self.client.get("/api/v1/receipt/abc123")
+        self.assertEqual(resp.status, 500)
+
+
+class TestErrorPathsViaPatching(AsyncRESTTestCase):
+    """Test error/exception paths in various endpoints using mock patching."""
+
+    async def test_state_root_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_state_root = AsyncMock(
+            side_effect=Exception("state error"))
+        resp = await self.client.get("/api/v1/state-root")
+        self.assertEqual(resp.status, 500)
+
+    async def test_balance_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_balance = AsyncMock(
+            side_effect=Exception("balance error"))
+        resp = await self.client.get(
+            f"/api/v1/balance/{node.wallet.address}")
+        self.assertEqual(resp.status, 500)
+
+    async def test_supply_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_supply = AsyncMock(
+            side_effect=Exception("supply error"))
+        resp = await self.client.get("/api/v1/supply")
+        self.assertEqual(resp.status, 500)
+
+    async def test_fee_info_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_fee_info = AsyncMock(
+            side_effect=Exception("fee error"))
+        resp = await self.client.get("/api/v1/fee")
+        self.assertEqual(resp.status, 500)
+
+    async def test_events_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_logs = AsyncMock(
+            side_effect=ValueError("invalid event type"))
+        resp = await self.client.get("/api/v1/events")
+        self.assertEqual(resp.status, 400)
+
+    async def test_events_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_logs = AsyncMock(
+            side_effect=Exception("events error"))
+        resp = await self.client.get("/api/v1/events")
+        self.assertEqual(resp.status, 500)
+
+    async def test_finalized_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_finalized = AsyncMock(
+            side_effect=Exception("finalized error"))
+        resp = await self.client.get("/api/v1/finalized")
+        self.assertEqual(resp.status, 500)
+
+    async def test_state_proof_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_state_proof = AsyncMock(
+            side_effect=Exception("proof error"))
+        resp = await self.client.get(
+            f"/api/v1/state-proof/{node.wallet.address}")
+        self.assertEqual(resp.status, 500)
+
+    async def test_transfer_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_transfer = AsyncMock(
+            side_effect=ValueError("insufficient balance"))
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "to_address": "w2",
+                  "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_transfer = AsyncMock(
+            side_effect=Exception("transfer error"))
+        resp = await self.client.post(
+            "/api/v1/transfer",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "to_address": "w2",
+                  "amount": 100},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_submit_evidence_success(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_submit_evidence = AsyncMock(
+            return_value={"tx_id": "ev-123"})
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"validator": "v1", "evidence_type": "double_sign"},
+        )
+        self.assertEqual(resp.status, 201)
+
+    async def test_submit_evidence_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_submit_evidence = AsyncMock(
+            side_effect=Exception("evidence error"))
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"validator": "v1", "evidence_type": "double_sign"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_submit_tx_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_send_raw_tx = AsyncMock(
+            side_effect=ValueError("invalid tx"))
+        resp = await self.client.post(
+            "/api/v1/txs",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"tx_type": "TRANSFER"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_submit_tx_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_send_raw_tx = AsyncMock(
+            side_effect=Exception("submit error"))
+        resp = await self.client.post(
+            "/api/v1/txs",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"tx_type": "TRANSFER"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_create_wallet_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_new_wallet = AsyncMock(
+            side_effect=Exception("wallet error"))
+        resp = await self.client.post(
+            "/api/v1/wallets",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_list_wallets_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_list_wallets = AsyncMock(
+            side_effect=Exception("wallets error"))
+        resp = await self.client.get(
+            "/api/v1/wallets",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_notarize_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_notarize = AsyncMock(
+            side_effect=ValueError("wallet not found"))
+        resp = await self.client.post(
+            "/api/v1/notarize",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "document_hash": "h1"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_notarize_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_notarize = AsyncMock(
+            side_effect=Exception("notarize error"))
+        resp = await self.client.post(
+            "/api/v1/notarize",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "document_hash": "h1"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_verify_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_verify_document = AsyncMock(
+            side_effect=Exception("verify error"))
+        resp = await self.client.post(
+            "/api/v1/verify",
+            json={"document_hash": "h1"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_store_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_store = AsyncMock(
+            side_effect=ValueError("store failed"))
+        resp = await self.client.post(
+            "/api/v1/store",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "document_hash": "h1"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_store_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_store = AsyncMock(
+            side_effect=Exception("store error"))
+        resp = await self.client.post(
+            "/api/v1/store",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "document_hash": "h1"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_share_success(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_share = AsyncMock(
+            return_value={"tx_id": "share-123"})
+        resp = await self.client.post(
+            "/api/v1/share",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "recipient_address": "w2",
+                  "cid": "qm123", "recipient_encryption_pk": "pk1",
+                  "expires": 0},
+        )
+        self.assertEqual(resp.status, 201)
+
+    async def test_share_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_share = AsyncMock(
+            side_effect=Exception("share error"))
+        resp = await self.client.post(
+            "/api/v1/share",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "recipient_address": "w2",
+                  "cid": "qm123", "recipient_encryption_pk": "pk1",
+                  "expires": 0},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_register_validator_success(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_register_validator = AsyncMock(
+            return_value={"tx_id": "rv-123"})
+        resp = await self.client.post(
+            "/api/v1/register-validator",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1"},
+        )
+        self.assertEqual(resp.status, 201)
+
+    async def test_register_validator_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_register_validator = AsyncMock(
+            side_effect=Exception("register error"))
+        resp = await self.client.post(
+            "/api/v1/register-validator",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_all_stakes_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_validator_stakes = AsyncMock(
+            side_effect=Exception("stakes error"))
+        resp = await self.client.get("/api/v1/stakes")
+        self.assertEqual(resp.status, 500)
+
+    async def test_validator_stake_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_stake = AsyncMock(
+            side_effect=ValueError("invalid address"))
+        resp = await self.client.get(
+            f"/api/v1/stakes/{node.wallet.address}")
+        self.assertEqual(resp.status, 400)
+
+    async def test_validator_stake_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_stake = AsyncMock(
+            side_effect=Exception("stake error"))
+        resp = await self.client.get(
+            f"/api/v1/stakes/{node.wallet.address}")
+        self.assertEqual(resp.status, 500)
+
+    async def test_stake_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_stake = AsyncMock(
+            side_effect=ValueError("insufficient balance"))
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "validator_address": "v1",
+                  "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_stake_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_stake = AsyncMock(
+            side_effect=Exception("stake error"))
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "validator_address": "v1",
+                  "amount": 100},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_delegate_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_delegate = AsyncMock(
+            side_effect=ValueError("delegate error"))
+        resp = await self.client.post(
+            "/api/v1/delegate",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "validator_address": "v1",
+                  "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_delegate_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_delegate = AsyncMock(
+            side_effect=Exception("delegate error"))
+        resp = await self.client.post(
+            "/api/v1/delegate",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "validator_address": "v1",
+                  "amount": 100},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_unstake_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_unstake = AsyncMock(
+            side_effect=ValueError("unstake error"))
+        resp = await self.client.post(
+            "/api/v1/unstake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "validator_address": "v1",
+                  "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_unstake_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_unstake = AsyncMock(
+            side_effect=Exception("unstake error"))
+        resp = await self.client.post(
+            "/api/v1/unstake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "validator_address": "v1",
+                  "amount": 100},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_webhook_register_value_error(self):
+        from unittest.mock import MagicMock
+        node = self.app["_mock_node"]
+        node.webhook_manager.register = MagicMock(
+            side_effect=ValueError("invalid url"))
+        resp = await self.client.post(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"url": "http://bad", "events": ["block"],
+                  "secret": "s3cret"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_webhook_register_internal_error(self):
+        from unittest.mock import MagicMock
+        node = self.app["_mock_node"]
+        node.webhook_manager.register = MagicMock(
+            side_effect=Exception("webhook error"))
+        resp = await self.client.post(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"url": "http://bad", "events": ["block"],
+                  "secret": "s3cret"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_list_webhooks_error(self):
+        from unittest.mock import MagicMock
+        node = self.app["_mock_node"]
+        node.webhook_manager.list_webhooks = MagicMock(
+            side_effect=Exception("list error"))
+        resp = await self.client.get(
+            "/api/v1/webhooks",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_delete_webhook_value_error(self):
+        from unittest.mock import MagicMock
+        node = self.app["_mock_node"]
+        node.webhook_manager.delete = MagicMock(
+            side_effect=ValueError("bad id"))
+        resp = await self.client.delete(
+            "/api/v1/webhooks/wh-99",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_delete_webhook_internal_error(self):
+        from unittest.mock import MagicMock
+        node = self.app["_mock_node"]
+        node.webhook_manager.delete = MagicMock(
+            side_effect=Exception("delete error"))
+        resp = await self.client.delete(
+            "/api/v1/webhooks/wh-99",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_issue_token_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_issue_token = AsyncMock(
+            side_effect=ValueError("token exists"))
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "name": "TC", "symbol": "TC",
+                  "decimals": 8, "max_supply": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_issue_token_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_issue_token = AsyncMock(
+            side_effect=Exception("issue error"))
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "name": "TC", "symbol": "TC",
+                  "decimals": 8, "max_supply": 100},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_mint_token_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_mint_token = AsyncMock(
+            side_effect=ValueError("over max supply"))
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "t1",
+                  "recipient": "r1", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_mint_token_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_mint_token = AsyncMock(
+            side_effect=Exception("mint error"))
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "t1",
+                  "recipient": "r1", "amount": 100},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_transfer_token_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_transfer_token = AsyncMock(
+            side_effect=ValueError("insufficient token balance"))
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "t1",
+                  "recipient": "r1", "amount": 50},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_token_internal_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_transfer_token = AsyncMock(
+            side_effect=Exception("transfer error"))
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "t1",
+                  "recipient": "r1", "amount": 50},
+        )
+        self.assertEqual(resp.status, 500)
+
+    async def test_notarize_non_string_metadata(self):
+        resp = await self.client.post(
+            "/api/v1/notarize",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "document_hash": "h1",
+                  "metadata": 123},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_store_non_string_cid(self):
+        resp = await self.client.post(
+            "/api/v1/store",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "document_hash": "h1",
+                  "cid": 123},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_store_non_string_metadata(self):
+        resp = await self.client.post(
+            "/api/v1/store",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "document_hash": "h1",
+                  "cid": "qm1", "metadata": 123},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_share_non_string_encryption_pk(self):
+        resp = await self.client.post(
+            "/api/v1/share",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "recipient_address": "w2",
+                  "cid": "qm1", "recipient_encryption_pk": 123,
+                  "expires": 0},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_verify_value_error(self):
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_verify_document = AsyncMock(
+            side_effect=ValueError("bad hash"))
+        resp = await self.client.post(
+            "/api/v1/verify",
+            json={"document_hash": "h1"},
+        )
+        self.assertEqual(resp.status, 400)
