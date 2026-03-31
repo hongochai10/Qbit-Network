@@ -2,12 +2,14 @@
 
 ## Summary
 
-- **Total rounds**: 26 (including all v0.8.0 sprints)
-- **Total issues found**: 258+
-- **Total fixed**: 243+
+- **Total rounds**: 28 (including all v0.8.0 sprints)
+- **Total issues found**: 270+
+- **Total fixed**: 249+
 - **Accepted risks / open**: 2 (R21-010 informational, R23-002 latent/safe)
-- **New findings (R26)**: 1 HIGH, 3 MEDIUM, 3 LOW, 2 INFO — security + coverage gaps
-- **Latest**: Round 26 CEO audit — 2026-03-30
+- **R26 status**: 4 done (R26-001/002/003/004), 3 open (R26-005/006/007), 2 INFO (1 done)
+- **R27 findings**: 2 MEDIUM, 2 LOW — webhook SSRF, block events, WebSocket heartbeat
+- **R28 findings**: 3 MEDIUM, 4 LOW, 1 INFO — fee type safety, wallet locks DoS, trie key defense
+- **Latest**: Round 28 CEO audit — 2026-03-31
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -459,8 +461,8 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 |---|-----|-------|--------|
 | R26-001 | HIGH | RPC webhook methods (`qv_registerWebhook`, `qv_listWebhooks`, `qv_deleteWebhook`) missing from `PROTECTED_METHODS` — unauthenticated webhook registration/deletion via JSON-RPC. REST API path correctly requires auth | **Fixed** — added to `PROTECTED_METHODS`, regression test added |
 | R26-002 | MED | Dashboard `_mount_dashboard` serves entire `dashboard/` dir via `add_static()` — files placed in dashboard dir by mistake become publicly accessible without auth | **Fixed** — replaced `add_static()` with custom handler + extension allowlist (.html/.js/.css/.png/.svg) + traversal guard |
-| R26-003 | MED | RPC `_exec` passes list params as `*args` — positional unpacking may bypass named-parameter validation in some methods | Open — P1 |
-| R26-004 | MED | `_generate_self_signed()` in `rpc.py` writes TLS key non-atomically — crash mid-write corrupts key file, node falls back to cleartext HTTP | Open — P1 |
+| R26-003 | MED | RPC `_exec` passes list params as `*args` — positional unpacking may bypass named-parameter validation in some methods | **Fixed** — normalized to named kwargs via inspect.signature (`fff66b9`) |
+| R26-004 | MED | `_generate_self_signed()` in `rpc.py` writes TLS key non-atomically — crash mid-write corrupts key file, node falls back to cleartext HTTP | **Fixed** — atomic writes via `_atomic_write` (`b0515a8`) |
 | R26-005 | LOW | `_rpc_get_logs` accepts arbitrary `event_type` without validation against known types — inconsistent with webhook registration which validates | Open — P2 |
 | R26-006 | LOW | `get_token_holders()` iterates full `_token_balances` dict O(n) — no pagination on REST endpoint | Open — P2 |
 | R26-007 | LOW | `get_address_tokens()` same O(n) scan without pagination — REST endpoint unpaginated | Open — P2 |
@@ -474,4 +476,49 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 - `p2p.py` 66% — server-side handshake, gossip handlers
 - `node.py` 71% — startup/shutdown, peer discovery
 
-**Round 26 summary:** 9 found, 0 fixed yet, 9 open (R26-001 is P0 HIGH priority)
+**Round 26 summary:** 9 found, 4 fixed (R26-001/002/003/004), 3 open (R26-005/006/007), 2 INFO (1 done)
+
+## Round 27 — CEO Comprehensive Audit (4 issues)
+
+**Date:** 2026-03-30
+**Auditor:** CEO Agent
+**Scope:** Full codebase security audit, architecture review, performance analysis
+**Tests:** 2,203 passed, 1 skipped, 0 failures
+
+| ID | Sev | Issue | Status |
+|----|-----|-------|--------|
+| R27-001 | MED | Webhook SSRF: `socket.gaierror` falls through to aiohttp resolve — DNS rebinding TOCTOU gap in `webhooks.py:235-237` | Open — P1 |
+| R27-002 | LOW | WebSocket heartbeat constants `WS_HEARTBEAT_INTERVAL`/`WS_HEARTBEAT_TIMEOUT` defined but not passed to `web.WebSocketResponse()` — zombie connections accumulate | Open — P1 |
+| R27-003 | MED | `_block_level_events` not initialized in `Blockchain.__init__()`, not persisted to SQLite — lost on restart, webhook subscribers miss BlockReward/EpochTransition events | Open — P2 |
+| R27-004 | LOW | `webhooks.py:240` creates new `aiohttp.ClientSession()` per event delivery — resource waste, connection pooling not leveraged | Open — P2 |
+
+**Architecture assessment:** Clean layered design (crypto → core → network → node). Mixin decomposition of blockchain.py well-executed. No circular dependencies. State trie rebuild O(n) per block is a future scalability concern.
+
+**Round 27 summary:** 4 found, 0 fixed yet, 4 open. No critical blockers. Project rated production-ready for target use case.
+
+## Round 28 — CEO Full Audit (8 findings)
+
+**Date:** 2026-03-31
+**Auditor:** CEO Agent (Security Auditor Opus)
+**Scope:** Full codebase security audit, test suite analysis (2,299 tests), coverage measurement (78%), tracker/docs review
+**Tests:** 2,299 test functions (~2,664 parametrized), 78% coverage
+**Subtasks:** TEC-890 to TEC-897
+
+| ID | Sev | Issue | Status |
+|----|-----|-------|--------|
+| R28-001 | MED | `_compute_fee_defaults` in `node.py:331` silently casts string/float fee params via `int()` — type safety bypass, overpay risk | Open — P1 (TEC-890) |
+| R28-002 | MED | State trie key injection via `token_id` colon in `state_ops.py:36` — defense-in-depth gap (currently blocked by hex regex) | **Fixed** — `_validate_token_id()` + ValueError in rebuild, None in proof (TEC-895) |
+| R28-003 | MED | `_wallet_locks` OrderedDict in `node.py:59` unbounded growth under concurrent raw TX submission — DoS via memory exhaustion | Open — P1 (TEC-891) |
+| R28-004 | LOW | ISSUE_TOKEN `token_id` not included in receipt events or Merkle — silent fork risk in legacy mode (state_root="" chains) | Open — P2 (TEC-897) |
+| R28-005 | LOW | REST `_txs_by_sender` in `rest_api.py:351` materializes full tx list for pagination total — memory spike for high-activity addresses | Open — P2 (TEC-896) |
+| R28-006 | LOW | P2P `_on_connect` in `p2p.py:978` dispatches HELLO_AUTH message before auth handshake completes — no handler currently registered | Open — P3 |
+| R28-007 | LOW | `get_token_holders`/`get_address_tokens` in `query.py:133-163` block event loop on large datasets — extends R26-006/007 with DoS analysis | Open — P1 (TEC-892) |
+| R28-008 | INFO | `SecureBytes` cannot zero source `bytes` from `keygen()` — known CPython limitation (R2-S11), requires local memory access | Accepted |
+
+**Additional findings:**
+- Version mismatch: `__init__.py` reports `0.2.0`, `config.py` reports `0.8.0` (TEC-896)
+- Untracked test file: `tests/test_fuzz_from_dict.py` (93 tests) — high-value security test (TEC-894)
+- pytest `-x` flag masks downstream failures in 2,600+ test suite (TEC-894)
+- Coverage gaps: `rest_api.py` 51%, `rpc.py` 56%, `persistence.py` 58% (TEC-893)
+
+**Round 28 summary:** 8 found (3 MED, 4 LOW, 1 INFO), 0 fixed yet, 7 open, 1 accepted. No critical/high issues. 8 subtasks created (TEC-890 to TEC-897).

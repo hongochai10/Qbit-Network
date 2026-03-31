@@ -6,19 +6,42 @@
 |----|----------|-------------|-------|----------|--------|
 | R26-001 | HIGH | RPC webhook methods missing from PROTECTED_METHODS — unauthenticated webhook registration | security-auditor | P0 | done |
 | R26-002 | MEDIUM | Dashboard static file scope too broad — serves entire dashboard/ dir | blockchain-dev | P1 | done |
-| R26-003 | MEDIUM | RPC list params positional unpacking bypasses validation | blockchain-dev | P1 | todo |
-| R26-004 | MEDIUM | TLS key non-atomic write in rpc.py _generate_self_signed | blockchain-dev | P1 | todo |
+| R26-003 | MEDIUM | RPC list params positional unpacking bypasses validation | blockchain-dev | P1 | done |
+| R26-004 | MEDIUM | TLS key non-atomic write in rpc.py _generate_self_signed | blockchain-dev | P1 | done |
 | R26-005 | LOW | _rpc_get_logs no event_type validation | blockchain-dev | P2 | todo |
 | R26-006 | LOW | get_token_holders O(n) scan, no pagination | perf-engineer | P2 | todo |
 | R26-007 | LOW | get_address_tokens O(n) scan, no pagination | perf-engineer | P2 | todo |
 | R26-008 | INFO | Duplicate TLS generation code paths (rpc.py vs tls_manager.py) | blockchain-dev | P3 | todo |
 | R26-009 | INFO | Info endpoint exposes webhook methods as public (depends R26-001) | — | P3 | done |
 
+## New Findings (Round 27 — CEO Audit 2026-03-30)
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R27-001 | MEDIUM | Webhook SSRF DNS fallthrough — gaierror falls through to aiohttp resolve (DNS rebinding) | security-engineer | P1 | todo |
+| R27-002 | LOW | WebSocket heartbeat constants not passed to WebSocketResponse — zombie connections | senior-backend-engineer | P1 | todo |
+| R27-003 | MEDIUM | _block_level_events not initialized in __init__(), lost on restart | senior-backend-engineer | P2 | todo |
+| R27-004 | LOW | Webhook creates new aiohttp.ClientSession per event delivery — resource waste | senior-backend-engineer | P2 | todo |
+
+## New Findings (Round 28 — CEO Audit 2026-03-31)
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R28-001 | MEDIUM | _compute_fee_defaults silently casts string/float fee params via int() — type safety bypass | security-engineer | P1 | todo (TEC-890) |
+| R28-002 | MEDIUM | State trie key injection via token_id colon — defense-in-depth gap | security-engineer | P2 | done (TEC-895) |
+| R28-003 | MEDIUM | _wallet_locks unbounded growth under concurrent raw TX — DoS memory exhaustion | senior-backend-engineer | P1 | todo (TEC-891) |
+| R28-004 | LOW | ISSUE_TOKEN token_id not in receipt/Merkle — silent fork risk in legacy mode | senior-backend-engineer | P2 | todo (TEC-897) |
+| R28-005 | LOW | REST _txs_by_sender materializes full list for pagination total — memory spike | founding-engineer | P2 | todo (TEC-896) |
+| R28-006 | LOW | P2P _on_connect dispatches HELLO_AUTH before auth completes | senior-backend-engineer | P3 | todo |
+| R28-007 | LOW | get_token_holders/get_address_tokens block event loop on large datasets (extends R26-006/007) | senior-backend-engineer | P1 | todo (TEC-892) |
+| R28-008 | INFO | SecureBytes cannot zero source bytes from keygen — CPython limitation | — | — | accepted |
+
 Accepted risks (no action required):
 - R25-004 (LOW): SQLite synchronous=NORMAL — self-corrects via peer re-sync
 - R25-006 (LOW): _pending_debits O(n) scan — known since R16-002
 - R25-008 (INFO): TLS uses classical SECP256R1 — transport-only
 - R25-009 (INFO): No TX timestamp age check at block validation — not exploitable
+- R28-008 (INFO): SecureBytes cannot zero immutable bytes from keygen — CPython limitation
 
 ## Closed Issues
 
@@ -52,7 +75,8 @@ See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (258+ issues across 26
 ## Project Summary (v0.8.0, 2026-03-30)
 
 - 22 closed issues (17 original + 5 R25 resolved)
-- 9 new R26 issues open (1 HIGH, 3 MEDIUM, 3 LOW, 2 INFO)
+- R26: 4 done, 3 open (R26-005/006/007), 2 INFO (1 done)
+- R27: 4 new findings (2 MEDIUM, 2 LOW)
 - 4 accepted risks (no action required)
-- 26 audit rounds completed
-- 2,179 tests passing, 78% code coverage
+- 27 audit rounds completed
+- 2,203 tests passing, 78% code coverage

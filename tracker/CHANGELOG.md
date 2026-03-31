@@ -1,5 +1,61 @@
 # Changelog
 
+## Post-v0.8.0: CEO Audit Round 28 (2026-03-31)
+
+### Security Fixes
+- **R28-002**: Defense-in-depth `token_id` validation in `state_ops.py` — `_validate_token_id()` rejects non-hex-32 IDs; `_rebuild_state_trie` raises `ValueError`, `get_token_state_proof` returns `None` (13 new tests)
+
+### Security Audit
+- **Round 28**: Full security audit — 8 findings (3 MEDIUM, 4 LOW, 1 INFO)
+  - R28-001 (MEDIUM): Fee param type safety — `int()` cast accepts string/float
+  - R28-002 (MEDIUM): State trie key injection defense-in-depth gap — **FIXED**
+  - R28-003 (MEDIUM): `_wallet_locks` unbounded growth DoS vector
+  - R28-004 (LOW): ISSUE_TOKEN token_id not in receipt events
+  - R28-005 (LOW): `_txs_by_sender` materializes full list for pagination
+  - R28-006 (LOW): P2P `_on_connect` dispatches before auth complete
+  - R28-007 (LOW): Token holder/address queries block event loop (extends R26-006/007)
+  - R28-008 (INFO): SecureBytes cannot zero source bytes (accepted — CPython limitation)
+
+### Tracker Updates
+- Updated AUDIT_LOG.md: Round 28 entry with 8 findings
+- Updated ISSUES.md: 8 new R28 findings with owner/priority/status
+- Created 8 Paperclip subtasks (TEC-890 to TEC-897)
+- Created comprehensive plan document on TEC-870
+
+### Test Analysis
+- Test suite: 2,299 functions (~2,664 parametrized cases)
+- Coverage: 78% overall
+- Identified coverage gaps: rest_api (51%), rpc (56%), persistence (58%)
+- Found untracked test_fuzz_from_dict.py (93 tests) — needs commit
+
+---
+
+## Post-v0.8.0: CEO Audit Round 26-27 (2026-03-30)
+
+### Security Audit
+- **Round 26**: 9 findings — 4 fixed (R26-001/002/003/004), 3 open (R26-005/006/007)
+  - R26-001 (HIGH): Webhook RPC methods added to PROTECTED_METHODS (`fe36941`)
+  - R26-002 (MEDIUM): Dashboard static file serving restricted to extension allowlist (`488ecce`)
+  - R26-003 (MEDIUM): RPC list params normalized to named kwargs (`fff66b9`)
+  - R26-004 (MEDIUM): TLS cert/key atomic writes (`b0515a8`)
+- **Round 27**: CEO comprehensive audit — 4 new findings (2 MEDIUM, 2 LOW)
+  - R27-001 (MEDIUM): Webhook SSRF DNS fallthrough — assigned to Security Engineer
+  - R27-002 (LOW): WebSocket heartbeat not enforced — assigned to Senior Backend Engineer
+  - R27-003 (MEDIUM): _block_level_events not persisted — assigned to Senior Backend Engineer
+  - R27-004 (LOW): Webhook ClientSession per-event — assigned to Senior Backend Engineer
+
+### Tracker Updates
+- Updated ISSUES.md: R26-003/004 marked done, 4 new R27 findings added
+- Updated AUDIT_LOG.md: Round 27 entry with full architecture assessment
+- Created 5 Paperclip subtasks (TEC-776 to TEC-780)
+- Created comprehensive plan document on TEC-772
+
+### Testing
+- Test suite: 2,203 passed, 1 skipped, 0 failures
+- No regressions from v0.8.0
+
+---
+
 ## Post-v0.8.0: CEO Audit Round 25 (2026-03-29)
 
 ### Security Audit
