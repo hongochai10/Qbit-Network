@@ -765,6 +765,31 @@ class TestHelpers:
         node._lock_for("addr4")  # should evict addr1
         assert len(node._wallet_locks) <= 3
 
+    def test_lock_for_rejects_when_all_held(self, tmp_dir, wallet):
+        """Lock pool raises ValueError when cap reached and all locks held (R28-003)."""
+        node = _make_node(tmp_dir, wallet)
+        node._MAX_WALLET_LOCKS = 2
+        lock1 = node._lock_for("addr1")
+        lock2 = node._lock_for("addr2")
+        # Simulate held locks by setting internal state
+        lock1._locked = True
+        lock2._locked = True
+        with pytest.raises(ValueError, match="wallet lock pool exhausted"):
+            node._lock_for("addr3")
+        assert len(node._wallet_locks) == 2  # did not grow beyond cap
+
+    def test_lock_for_evicts_before_insert(self, tmp_dir, wallet):
+        """New lock is only inserted after successful eviction (R28-003)."""
+        node = _make_node(tmp_dir, wallet)
+        node._MAX_WALLET_LOCKS = 2
+        node._lock_for("addr1")
+        node._lock_for("addr2")
+        # addr1 is unlocked, should be evicted to make room
+        node._lock_for("addr3")
+        assert len(node._wallet_locks) == 2
+        assert "addr1" not in node._wallet_locks
+        assert "addr3" in node._wallet_locks
+
     def test_store_shared_secret(self, node_with_wallet):
         """Shared secrets are stored and capped at _MAX_SHARED_SECRETS."""
         node = node_with_wallet
