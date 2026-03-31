@@ -18,6 +18,19 @@ from qbit_network.network.rest_api import RESTApi
 # Minimal mock node that exposes the same interface the REST API expects
 # ---------------------------------------------------------------------------
 
+class _MockP2P:
+    """Minimal P2P mock for REST API tests."""
+
+    def __init__(self):
+        self._peer_count = 0
+
+    def peer_count(self) -> int:
+        return self._peer_count
+
+    def best_peer_height(self) -> int:
+        return -1
+
+
 class MockNode:
     """Lightweight node substitute -- owns a real blockchain + wallets."""
 
@@ -33,6 +46,7 @@ class MockNode:
         self.validator_wallet = self.wallet
         self._wallet_locks: dict = {}
         self._shared_secrets = {}
+        self.p2p = _MockP2P()
 
         # Notarize a document so query tests have data
         tx = Transaction.notarize(
@@ -233,7 +247,14 @@ class TestPublicEndpoints(AsyncRESTTestCase):
         resp = await self.client.get("/api/v1/health")
         self.assertEqual(resp.status, 200)
         body = await resp.json()
-        self.assertEqual(body["data"]["status"], "ok")
+        data = body["data"]
+        self.assertEqual(data["status"], "ok")
+        self.assertIn("chain_height", data)
+        self.assertIn("peers", data)
+        self.assertIn("last_block_time", data)
+        self.assertIn("synced", data)
+        self.assertIn("tx_pool_size", data)
+        self.assertIsInstance(data["chain_height"], int)
         self.assertIsNone(body["error"])
 
     async def test_info(self):
@@ -1291,3 +1312,140 @@ class TestAuthMiddlewareEnforcement(AsyncRESTTestCase):
         resp = await self.client.get("/api/v1/fee")
         body = await resp.json()
         self.assertIn("TRANSFER", body["data"]["estimated_fees"])
+
+
+# ===================================================================
+# Health & Readiness endpoint tests
+# ===================================================================
+
+class TestHealthEndpointDetails(AsyncRESTTestCase):
+    """Detailed tests for the enhanced /health endpoint."""
+
+    async def test_health_returns_chain_height(self):
+        resp = await self.client.get("/api/v1/health")
+        body = await resp.json()
+        data = body["data"]
+        # MockNode produces at least one block in setUp
+        self.assertGreaterEqual(data["chain_height"], 1)
+
+    async def test_health_returns_last_block_time(self):
+        resp = await self.client.get("/api/v1/health")
+        body = await resp.json()
+        data = body["data"]
+        self.assertIsNotNone(data["last_block_time"])
+        self.assertIsInstance(data["last_block_time"], int)
+
+    async def test_health_returns_peer_count(self):
+        resp = await self.client.get("/api/v1/health")
+        body = await resp.json()
+        self.assertEqual(body["data"]["peers"], 0)
+
+    async def test_health_synced_when_no_peers(self):
+        """With no peers, best_peer_height is -1 so synced should be True."""
+        resp = await self.client.get("/api/v1/health")
+        body = await resp.json()
+        self.assertTrue(body["data"]["synced"])
+
+    async def test_health_tx_pool_size(self):
+        resp = await self.client.get("/api/v1/health")
+        body = await resp.json()
+        self.assertIsInstance(body["data"]["tx_pool_size"], int)
+
+
+class TestReadinessEndpoint(AsyncRESTTestCase):
+    """Tests for /health/ready (Kubernetes readiness probe)."""
+
+    async def test_readiness_returns_200_when_chain_exists(self):
+        """Node with chain height >= 0 and no peers reporting higher is ready."""
+        resp = await self.client.get("/api/v1/health/ready")
+        # MockNode has chain height >= 1, mock P2P has 0 peers but height >= 0 → ready
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertTrue(body["data"]["ready"])
+        self.assertIn("chain_height", body["data"])
+        self.assertIn("synced", body["data"])
+
+    async def test_readiness_is_public(self):
+        """Readiness endpoint should not require auth."""
+        resp = await self.client.get("/api/v1/health/ready")
+        self.assertNotEqual(resp.status, 401)
+
+
+# ===================================================================
+# Metrics endpoint tests
+# ===================================================================
+
+class TestMetricsEndpoint(AsyncRESTTestCase):
+    """Tests for /metrics (Prometheus text exposition)."""
+
+    async def test_metrics_without_registry(self):
+        """Without a metrics registry bound, returns 503."""
+        resp = await self.client.get("/api/v1/metrics")
+        self.assertEqual(resp.status, 503)
+
+    async def test_metrics_with_registry(self):
+        """With a metrics registry, returns Prometheus text format."""
+        from qbit_network.network.metrics import MetricsRegistry
+        node = self.app["_mock_node"]
+        node.metrics = MetricsRegistry()
+        node.metrics.bind_node(node)
+
+        resp = await self.client.get("/api/v1/metrics")
+        self.assertEqual(resp.status, 200)
+        text = await resp.text()
+        self.assertIn("qbit_chain_height", text)
+        self.assertIn("qbit_peers_connected", text)
+        self.assertIn("qbit_tx_pool_size", text)
+        self.assertIn("# TYPE", text)
+        self.assertIn("# HELP", text)
+
+    async def test_metrics_content_type(self):
+        """Prometheus expects text/plain content type."""
+        from qbit_network.network.metrics import MetricsRegistry
+        node = self.app["_mock_node"]
+        node.metrics = MetricsRegistry()
+        node.metrics.bind_node(node)
+
+        resp = await self.client.get("/api/v1/metrics")
+        self.assertIn("text/plain", resp.headers.get("Content-Type", ""))
+
+    async def test_metrics_counters(self):
+        """Counter metrics should be present in output."""
+        from qbit_network.network.metrics import MetricsRegistry
+        node = self.app["_mock_node"]
+        node.metrics = MetricsRegistry()
+        node.metrics.bind_node(node)
+        # Increment some counters
+        node.metrics.blocks_produced_total.inc()
+        node.metrics.tx_processed_total.inc(5)
+        node.metrics.rpc_requests_total.inc(method="getInfo")
+
+        resp = await self.client.get("/api/v1/metrics")
+        text = await resp.text()
+        self.assertIn("qbit_blocks_produced_total 1", text)
+        self.assertIn("qbit_tx_processed_total 5", text)
+        self.assertIn('qbit_rpc_requests_total{method="getInfo"} 1', text)
+
+    async def test_metrics_histogram(self):
+        """Histogram buckets should appear in output."""
+        from qbit_network.network.metrics import MetricsRegistry
+        node = self.app["_mock_node"]
+        node.metrics = MetricsRegistry()
+        node.metrics.bind_node(node)
+        node.metrics.rpc_request_duration.observe(0.05, method="transfer")
+
+        resp = await self.client.get("/api/v1/metrics")
+        text = await resp.text()
+        self.assertIn("qbit_rpc_request_duration_seconds_bucket", text)
+        self.assertIn("qbit_rpc_request_duration_seconds_sum", text)
+        self.assertIn("qbit_rpc_request_duration_seconds_count", text)
+
+    async def test_metrics_is_public(self):
+        """Metrics endpoint should not require auth."""
+        from qbit_network.network.metrics import MetricsRegistry
+        node = self.app["_mock_node"]
+        node.metrics = MetricsRegistry()
+        node.metrics.bind_node(node)
+
+        resp = await self.client.get("/api/v1/metrics")
+        self.assertNotEqual(resp.status, 401)

@@ -36,5 +36,8 @@ VOLUME /data
 
 EXPOSE 9000 8545
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8545/api/v1/health')" || exit 1
+
 ENTRYPOINT ["python3", "run_node.py"]
 CMD ["--data-dir", "/data"]

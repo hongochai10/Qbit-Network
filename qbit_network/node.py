@@ -19,6 +19,7 @@ from .network.rpc import RPCServer
 from .network.rest_api import RESTApi
 from .network.websocket import WebSocketManager
 from .network.webhooks import WebhookManager
+from .network.metrics import MetricsRegistry
 from .config import DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, BLOCK_INTERVAL, VERSION
 
 logger = logging.getLogger("qbit_network.node")
@@ -51,6 +52,7 @@ class FullNode:
                              tls_auto=tls_auto, tls_hostname=tls_hostname)
         self.ws_manager = WebSocketManager()
         self.webhook_manager = WebhookManager()
+        self.metrics = MetricsRegistry()
         self.bootstrap = bootstrap or []
         self._running = False
         self._block_task = None
@@ -112,6 +114,7 @@ class FullNode:
         self.p2p.on(MSG_STATUS, self._p2p_status)
 
     async def _p2p_new_block(self, peer, data):
+        self.metrics.p2p_messages_total.inc(type="new_block")
         try:
             block = Block.from_dict(data["block"])
             ok, err = self.blockchain.add_block(block)
@@ -128,6 +131,7 @@ class FullNode:
             logger.debug(f"bad block from {peer.addr}: {e}")
 
     async def _p2p_new_tx(self, peer, data):
+        self.metrics.p2p_messages_total.inc(type="new_tx")
         try:
             tx = Transaction.from_dict(data["tx"])
             ok, _ = self.blockchain.submit_tx(tx)
@@ -142,6 +146,7 @@ class FullNode:
             self.p2p.reputation.record(peer.addr, "invalid_tx")
 
     async def _p2p_get_blocks(self, peer, data):
+        self.metrics.p2p_messages_total.inc(type="get_blocks")
         try:
             start = max(0, int(data.get("from", 0)))
             count = min(int(data.get("count", 50)), 100)
@@ -1347,6 +1352,9 @@ class FullNode:
         self._register_p2p()
         self._register_rpc()
 
+        # Bind metrics to node (live gauges)
+        self.metrics.bind_node(self)
+
         # Mount REST API gateway as sub-app at /api/v1/
         self._rest_api = RESTApi(self, self.rpc.auth_token,
                                  cors_origins=self._cors_origins)
@@ -1419,6 +1427,8 @@ class FullNode:
                 w = self.validator_wallet
                 block = self.blockchain.produce_block(w.address, w.signing_sk)
                 if block:
+                    self.metrics.blocks_produced_total.inc()
+                    self.metrics.tx_processed_total.inc(len(block.transactions))
                     await self.p2p.broadcast(
                         MSG_NEW_BLOCK, {"block": block.to_dict()})
                     await self._ws_notify_block(block)

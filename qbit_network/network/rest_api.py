@@ -2,6 +2,7 @@
 import hmac
 import logging
 import re
+import time as _time
 from aiohttp import web
 
 logger = logging.getLogger("qbit_network.rest_api")
@@ -121,6 +122,8 @@ class RESTApi:
     _PUBLIC_ROUTES: set[str] = {
         "/info",
         "/health",
+        "/health/ready",
+        "/metrics",
         "/blocks",
         "/blocks/latest",
         "/blocks/hash/{hash}",
@@ -196,6 +199,8 @@ class RESTApi:
         # Public endpoints
         r.add_get("/info", self._info)
         r.add_get("/health", self._health)
+        r.add_get("/health/ready", self._readiness)
+        r.add_get("/metrics", self._metrics)
         r.add_get("/blocks", self._list_blocks)
         r.add_get("/blocks/latest", self._latest_block)
         r.add_get("/blocks/hash/{hash}", self._block_by_hash)
@@ -265,7 +270,60 @@ class RESTApi:
         return _ok(info)
 
     async def _health(self, request: web.Request) -> web.Response:
-        return _ok({"status": "ok"})
+        node = self._node
+        bc = node.blockchain
+        height = bc.height
+        peers = node.p2p.peer_count()
+
+        # Last block timestamp
+        last_block_time = None
+        if height >= 0:
+            last_block = bc.get_block(height)
+            if last_block:
+                last_block_time = getattr(last_block, "timestamp", None)
+
+        # Sync status: synced if no peers report a higher chain
+        best_peer = node.p2p.best_peer_height()
+        synced = best_peer <= height
+
+        return _ok({
+            "status": "ok",
+            "chain_height": height,
+            "peers": peers,
+            "last_block_time": last_block_time,
+            "synced": synced,
+            "tx_pool_size": len(bc.tx_pool),
+        })
+
+    async def _readiness(self, request: web.Request) -> web.Response:
+        """Kubernetes readiness probe — returns 200 only when synced with peers."""
+        node = self._node
+        height = node.blockchain.height
+        peers = node.p2p.peer_count()
+        best_peer = node.p2p.best_peer_height()
+        synced = best_peer <= height
+        ready = synced and (peers > 0 or height >= 0)
+        status_code = 200 if ready else 503
+        body = {
+            "ready": ready,
+            "chain_height": height,
+            "peers": peers,
+            "synced": synced,
+        }
+        return web.json_response(
+            {"data": body, "error": None}, status=status_code)
+
+    async def _metrics(self, request: web.Request) -> web.Response:
+        """Prometheus text exposition format."""
+        registry = getattr(self._node, "metrics", None)
+        if registry is None:
+            return web.Response(
+                status=503, text="# Metrics not available\n",
+                content_type="text/plain")
+        text = registry.generate_text()
+        resp = web.Response(text=text, content_type="text/plain")
+        resp.headers["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8"
+        return resp
 
     async def _list_blocks(self, request: web.Request) -> web.Response:
         pag = _parse_pagination(request)
