@@ -509,7 +509,7 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 | R28-001 | MED | `_compute_fee_defaults` in `node.py:331` silently casts string/float fee params via `int()` — type safety bypass, overpay risk | Open — P1 (TEC-890) |
 | R28-002 | MED | State trie key injection via `token_id` colon in `state_ops.py:36` — defense-in-depth gap (currently blocked by hex regex) | **Fixed** — `_validate_token_id()` + ValueError in rebuild, None in proof (TEC-895) |
 | R28-003 | MED | `_wallet_locks` OrderedDict in `node.py:59` unbounded growth under concurrent raw TX submission — DoS via memory exhaustion | Open — P1 (TEC-891) |
-| R28-004 | LOW | ISSUE_TOKEN `token_id` not included in receipt events or Merkle — silent fork risk in legacy mode (state_root="" chains) | Open — P2 (TEC-897) |
+| R28-004 | LOW | ISSUE_TOKEN `token_id` not included in receipt events or Merkle — silent fork risk in legacy mode (state_root="" chains) | **Fixed** — `token_id` already in TokenIssued event + Merkle proof; added explicit verification test (TEC-897) |
 | R28-005 | LOW | REST `_txs_by_sender` in `rest_api.py:351` materializes full tx list for pagination total — memory spike for high-activity addresses | Open — P2 (TEC-896) |
 | R28-006 | LOW | P2P `_on_connect` in `p2p.py:978` dispatches HELLO_AUTH message before auth handshake completes — no handler currently registered | Open — P3 |
 | R28-007 | LOW | `get_token_holders`/`get_address_tokens` in `query.py:133-163` block event loop on large datasets — extends R26-006/007 with DoS analysis | **Fixed** — secondary indices `_holders_by_token`/`_tokens_by_address` for O(1) lookup |

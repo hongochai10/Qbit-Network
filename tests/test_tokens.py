@@ -1187,6 +1187,38 @@ class TestTokenReceiptEvents:
         minted = [e for e in receipt.events if e["type"] == "TokenMinted"]
         assert minted[0]["total_minted"] == 3000
 
+    def test_issue_token_id_in_receipt_merkle_proof(self, funded_chain, wallet):
+        """R28-004: token_id must be included in receipt events AND
+        flow through to the receiptsRoot Merkle proof so that the
+        derived token ID is independently verifiable from receipt data."""
+        from qbit_network.core.receipt import verify_receipt_proof
+        bc = funded_chain
+        _, tx_id, token_id = issue_token(bc, wallet, "Mrk", "MRK", 8)
+        proof_data = bc.get_receipt_proof(tx_id)
+        assert proof_data is not None
+        # token_id is in the receipt events
+        receipt = proof_data["receipt"]
+        issued = [e for e in receipt["events"] if e["type"] == "TokenIssued"]
+        assert len(issued) == 1
+        assert issued[0]["token_id"] == token_id
+        # receipt hash verifies against receiptsRoot via Merkle proof
+        proof = [(bytes.fromhex(h), is_right) for h, is_right in proof_data["proof"]]
+        assert verify_receipt_proof(
+            receipt["receipt_hash"], proof, proof_data["receiptsRoot"]
+        )
+        # token_id is reproducible from receipt data alone
+        from qbit_network.crypto import sha3_256
+        r = bc.get_receipt(tx_id)
+        issuer = issued[0]["issuer"]
+        symbol = issued[0]["symbol"]
+        # Find the original tx to get nonce for reproduction
+        block = bc._get_block_by_index(r.block_index)
+        tx = [t for t in block.transactions if t.tx_id == tx_id][0]
+        reproduced = sha3_256(
+            (issuer + symbol + str(tx.nonce)).encode()
+        ).hex()[:32]
+        assert reproduced == token_id
+
 
 # ========================================================================
 # EDGE CASES AND ADVERSARIAL TESTS

@@ -11,7 +11,7 @@
   - R28-001 (MEDIUM): Fee param type safety — `int()` cast accepts string/float
   - R28-002 (MEDIUM): State trie key injection defense-in-depth gap — **FIXED**
   - R28-003 (MEDIUM): `_wallet_locks` unbounded growth DoS vector
-  - R28-004 (LOW): ISSUE_TOKEN token_id not in receipt events
+  - R28-004 (LOW): ISSUE_TOKEN token_id not in receipt events — **FIXED** (already present; added Merkle proof verification test)
   - R28-005 (LOW): `_txs_by_sender` materializes full list for pagination
   - R28-006 (LOW): P2P `_on_connect` dispatches before auth complete
   - R28-007 (LOW): Token holder/address queries block event loop (extends R26-006/007)
