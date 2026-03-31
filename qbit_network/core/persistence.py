@@ -346,6 +346,7 @@ class PersistenceMixin:
                 # Load holders for this token
                 for addr, amount in self._store.get_token_holders(tid):
                     self._token_balances[(tid, addr)] = amount
+                    self._update_token_index(tid, addr, amount)
 
         # Rebuild state trie from loaded balances and nonces (R19-SEC-001)
         self._rebuild_state_trie()

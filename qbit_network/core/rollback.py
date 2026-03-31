@@ -295,10 +295,11 @@ class RollbackMixin:
                 ).hex()[:32]
                 self._token_registry.pop(token_id, None)
                 self._token_by_symbol.pop(symbol, None)
-                # Clean up any balances for this token
+                # Clean up any balances and indices for this token
                 to_del = [k for k in self._token_balances if k[0] == token_id]
                 for k in to_del:
                     del self._token_balances[k]
+                    self._update_token_index(token_id, k[1], 0)
                 if self._store is not None:
                     self._store.delete_token(token_id, commit=False)
 
@@ -314,6 +315,7 @@ class RollbackMixin:
                     self._token_balances.pop(key, None)
                 else:
                     self._token_balances[key] = new_bal
+                self._update_token_index(tid, tx.recipient, max(0, new_bal))
                 if self._store is not None:
                     if tid in self._token_registry:
                         self._store.put_token(tid, self._token_registry[tid], commit=False)
@@ -335,8 +337,10 @@ class RollbackMixin:
                     self._token_balances.pop(dst_key, None)
                 else:
                     self._token_balances[dst_key] = new_dst
+                self._update_token_index(tid, tx.recipient, max(0, new_dst))
                 src_key = (tid, tx.sender)
                 self._token_balances[src_key] = self._token_balances.get(src_key, 0) + amount
+                self._update_token_index(tid, tx.sender, self._token_balances[src_key])
                 if self._store is not None:
                     self._store.put_token_balance(
                         tid, tx.recipient, max(0, new_dst), commit=False)

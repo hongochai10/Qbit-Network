@@ -142,12 +142,16 @@ class QueryMixin:
 
     def get_token_holders(self, token_id: str, page: int = 1,
                           limit: int = 100) -> list[dict]:
-        """Get holders of a token with pagination."""
+        """Get holders of a token with pagination (O(k) where k = holder count)."""
         page = max(1, page)
         limit = max(1, min(limit, 100))
+        addrs = self._holders_by_token.get(token_id)
+        if not addrs:
+            return []
         holders = []
-        for (tid, addr), amount in self._token_balances.items():
-            if tid == token_id and amount > 0:
+        for addr in addrs:
+            amount = self._token_balances.get((token_id, addr), 0)
+            if amount > 0:
                 holders.append({"address": addr, "amount": amount})
         holders.sort(key=lambda h: h["amount"], reverse=True)
         start = (page - 1) * limit
@@ -155,12 +159,16 @@ class QueryMixin:
 
     def get_address_tokens(self, address: str, page: int = 1,
                            limit: int = 100) -> list[dict]:
-        """Get all token balances for an address with pagination."""
+        """Get all token balances for an address with pagination (O(k) where k = token count)."""
         page = max(1, page)
         limit = max(1, min(limit, 100))
+        tids = self._tokens_by_address.get(address)
+        if not tids:
+            return []
         tokens = []
-        for (tid, addr), amount in self._token_balances.items():
-            if addr == address and amount > 0:
+        for tid in tids:
+            amount = self._token_balances.get((tid, address), 0)
+            if amount > 0:
                 reg = self._token_registry.get(tid, {})
                 tokens.append({
                     "token_id": tid,

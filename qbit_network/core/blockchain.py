@@ -142,6 +142,9 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         self._token_registry: dict[str, dict] = {}          # token_id -> metadata
         self._token_balances: dict[tuple[str, str], int] = {}  # (token_id, address) -> amount
         self._token_by_symbol: dict[str, str] = {}           # symbol -> token_id (uniqueness)
+        # Secondary indices for O(1) holder/token lookup (R28-007)
+        self._holders_by_token: dict[str, set[str]] = {}   # token_id -> {address, ...}
+        self._tokens_by_address: dict[str, set[str]] = {}  # address -> {token_id, ...}
 
         # State trie -- sorted key-value Merkle trie for state root in block header
         self._state_trie = StateTrie()
@@ -554,6 +557,23 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         else:
             self._append_block_inner_safe(block)
 
+    def _update_token_index(self, token_id: str, address: str, new_balance: int):
+        """Maintain _holders_by_token / _tokens_by_address after balance change."""
+        if new_balance > 0:
+            self._holders_by_token.setdefault(token_id, set()).add(address)
+            self._tokens_by_address.setdefault(address, set()).add(token_id)
+        else:
+            holders = self._holders_by_token.get(token_id)
+            if holders is not None:
+                holders.discard(address)
+                if not holders:
+                    del self._holders_by_token[token_id]
+            addr_tokens = self._tokens_by_address.get(address)
+            if addr_tokens is not None:
+                addr_tokens.discard(token_id)
+                if not addr_tokens:
+                    del self._tokens_by_address[address]
+
     def _append_block_inner_safe(self, block: Block):
         """Wrapper that rolls back partial state on failure (R23-001)."""
         try:
@@ -831,6 +851,7 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                     reg["total_minted"] += amount
                     key = (tid, tx.recipient)
                     self._token_balances[key] = self._token_balances.get(key, 0) + amount
+                    self._update_token_index(tid, tx.recipient, self._token_balances[key])
                     if self._store is not None:
                         self._store.put_token(tid, reg)
                         self._store.put_token_balance(tid, tx.recipient,
@@ -856,8 +877,10 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                     self._token_balances[src_key] = src_bal - amount
                     if self._token_balances[src_key] == 0:
                         del self._token_balances[src_key]
+                    self._update_token_index(tid, tx.sender, self._token_balances.get(src_key, 0))
                     dst_key = (tid, tx.recipient)
                     self._token_balances[dst_key] = self._token_balances.get(dst_key, 0) + amount
+                    self._update_token_index(tid, tx.recipient, self._token_balances[dst_key])
                     if self._store is not None:
                         self._store.put_token_balance(
                             tid, tx.sender, self._token_balances.get(src_key, 0))

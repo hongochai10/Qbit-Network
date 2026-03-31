@@ -464,8 +464,8 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 | R26-003 | MED | RPC `_exec` passes list params as `*args` — positional unpacking may bypass named-parameter validation in some methods | **Fixed** — normalized to named kwargs via inspect.signature (`fff66b9`) |
 | R26-004 | MED | `_generate_self_signed()` in `rpc.py` writes TLS key non-atomically — crash mid-write corrupts key file, node falls back to cleartext HTTP | **Fixed** — atomic writes via `_atomic_write` (`b0515a8`) |
 | R26-005 | LOW | `_rpc_get_logs` accepts arbitrary `event_type` without validation against known types — inconsistent with webhook registration which validates | Open — P2 |
-| R26-006 | LOW | `get_token_holders()` iterates full `_token_balances` dict O(n) — no pagination on REST endpoint | Open — P2 |
-| R26-007 | LOW | `get_address_tokens()` same O(n) scan without pagination — REST endpoint unpaginated | Open — P2 |
+| R26-006 | LOW | `get_token_holders()` iterates full `_token_balances` dict O(n) — no pagination on REST endpoint | **Fixed** — secondary indices `_holders_by_token` (R28-007) |
+| R26-007 | LOW | `get_address_tokens()` same O(n) scan without pagination — REST endpoint unpaginated | **Fixed** — secondary indices `_tokens_by_address` (R28-007) |
 | R26-008 | INFO | Duplicate TLS cert generation code in `rpc.py` vs `tls_manager.py` — maintenance risk | Open — P3 |
 | R26-009 | INFO | `/` info endpoint lists webhook methods as public (consequence of R26-001) — auto-fixed when R26-001 resolved | **Fixed** — auto-resolved by R26-001 fix |
 
@@ -512,7 +512,7 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 | R28-004 | LOW | ISSUE_TOKEN `token_id` not included in receipt events or Merkle — silent fork risk in legacy mode (state_root="" chains) | Open — P2 (TEC-897) |
 | R28-005 | LOW | REST `_txs_by_sender` in `rest_api.py:351` materializes full tx list for pagination total — memory spike for high-activity addresses | Open — P2 (TEC-896) |
 | R28-006 | LOW | P2P `_on_connect` in `p2p.py:978` dispatches HELLO_AUTH message before auth handshake completes — no handler currently registered | Open — P3 |
-| R28-007 | LOW | `get_token_holders`/`get_address_tokens` in `query.py:133-163` block event loop on large datasets — extends R26-006/007 with DoS analysis | Open — P1 (TEC-892) |
+| R28-007 | LOW | `get_token_holders`/`get_address_tokens` in `query.py:133-163` block event loop on large datasets — extends R26-006/007 with DoS analysis | **Fixed** — secondary indices `_holders_by_token`/`_tokens_by_address` for O(1) lookup |
 | R28-008 | INFO | `SecureBytes` cannot zero source `bytes` from `keygen()` — known CPython limitation (R2-S11), requires local memory access | Accepted |
 
 **Additional findings:**

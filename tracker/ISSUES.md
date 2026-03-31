@@ -9,8 +9,8 @@
 | R26-003 | MEDIUM | RPC list params positional unpacking bypasses validation | blockchain-dev | P1 | done |
 | R26-004 | MEDIUM | TLS key non-atomic write in rpc.py _generate_self_signed | blockchain-dev | P1 | done |
 | R26-005 | LOW | _rpc_get_logs no event_type validation | blockchain-dev | P2 | todo |
-| R26-006 | LOW | get_token_holders O(n) scan, no pagination | perf-engineer | P2 | todo |
-| R26-007 | LOW | get_address_tokens O(n) scan, no pagination | perf-engineer | P2 | todo |
+| R26-006 | LOW | get_token_holders O(n) scan, no pagination | perf-engineer | P2 | done (R28-007) |
+| R26-007 | LOW | get_address_tokens O(n) scan, no pagination | perf-engineer | P2 | done (R28-007) |
 | R26-008 | INFO | Duplicate TLS generation code paths (rpc.py vs tls_manager.py) | blockchain-dev | P3 | todo |
 | R26-009 | INFO | Info endpoint exposes webhook methods as public (depends R26-001) | — | P3 | done |
 
@@ -33,7 +33,7 @@
 | R28-004 | LOW | ISSUE_TOKEN token_id not in receipt/Merkle — silent fork risk in legacy mode | senior-backend-engineer | P2 | todo (TEC-897) |
 | R28-005 | LOW | REST _txs_by_sender materializes full list for pagination total — memory spike | founding-engineer | P2 | todo (TEC-896) |
 | R28-006 | LOW | P2P _on_connect dispatches HELLO_AUTH before auth completes | senior-backend-engineer | P3 | todo |
-| R28-007 | LOW | get_token_holders/get_address_tokens block event loop on large datasets (extends R26-006/007) | senior-backend-engineer | P1 | todo (TEC-892) |
+| R28-007 | LOW | get_token_holders/get_address_tokens block event loop on large datasets (extends R26-006/007) | senior-backend-engineer | P1 | done (TEC-892) |
 | R28-008 | INFO | SecureBytes cannot zero source bytes from keygen — CPython limitation | — | — | accepted |
 
 Accepted risks (no action required):

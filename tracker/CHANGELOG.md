@@ -3,6 +3,7 @@
 ## Post-v0.8.0: CEO Audit Round 28 (2026-03-31)
 
 ### Security Fixes
+- **R28-007**: Token secondary indices for O(1) holder/token lookup — replaces O(n) scan in `get_token_holders()`/`get_address_tokens()` with `_holders_by_token` and `_tokens_by_address` dicts; maintained during mint/transfer/rollback; also closes R26-006 and R26-007
 - **R28-002**: Defense-in-depth `token_id` validation in `state_ops.py` — `_validate_token_id()` rejects non-hex-32 IDs; `_rebuild_state_trie` raises `ValueError`, `get_token_state_proof` returns `None` (13 new tests)
 
 ### Security Audit
