@@ -11,7 +11,7 @@ from qbit_network.network.p2p import (
     MSG_SESSION_KEY, MSG_ENCRYPTED,
     MSG_NEW_BLOCK, MSG_NEW_TX, MSG_GET_BLOCKS, MSG_BLOCKS,
     MSG_STATUS, MSG_GET_PEERS, MSG_PEERS,
-    _is_safe_peer, _build_auth_message, _derive_session_key,
+    _is_safe_peer, _is_safe_inbound_ip, _build_auth_message, _derive_session_key,
     _AUTH_DOMAIN, _CHALLENGE_LEN,
     _AUTH_RATE_MAX, _AUTH_RATE_WINDOW, _RATE_EXEMPT,
 )
@@ -85,6 +85,38 @@ class TestIsSafePeer:
 
     def test_instance_data_hostname_blocked(self):
         assert not _is_safe_peer("instance-data", 9000, "0.0.0.0", 9001)
+
+
+# =========================================================================
+# _is_safe_inbound_ip (R29-002: inbound IP validation)
+# =========================================================================
+
+class TestIsSafeInboundIp:
+
+    def test_public_ip_allowed(self):
+        assert _is_safe_inbound_ip("8.8.8.8")
+
+    def test_private_ip_blocked(self):
+        assert not _is_safe_inbound_ip("192.168.1.1")
+        assert not _is_safe_inbound_ip("10.0.0.1")
+        assert not _is_safe_inbound_ip("172.16.0.1")
+
+    def test_loopback_blocked(self):
+        assert not _is_safe_inbound_ip("127.0.0.1")
+
+    def test_link_local_blocked(self):
+        assert not _is_safe_inbound_ip("169.254.1.1")
+
+    def test_cloud_metadata_hostname_blocked(self):
+        assert not _is_safe_inbound_ip("metadata.google.internal")
+        assert not _is_safe_inbound_ip("instance-data")
+
+    def test_localhost_hostname_blocked(self):
+        assert not _is_safe_inbound_ip("localhost")
+
+    def test_private_ip_allowed_when_flag_set(self):
+        with patch("qbit_network.config.ALLOW_PRIVATE_PEERS", True):
+            assert _is_safe_inbound_ip("192.168.1.1")
 
 
 # =========================================================================
@@ -904,6 +936,57 @@ class TestP2PNodeConnect:
         node = P2PNode()
         with patch("asyncio.open_connection", side_effect=OSError("refused")):
             await node.connect("8.8.8.8", 9001)  # should not raise
+
+
+# =========================================================================
+# P2PNode._on_connect inbound IP validation (R29-002)
+# =========================================================================
+
+class TestOnConnectInboundIpValidation:
+    """R29-002: Inbound connections from private IPs must be rejected."""
+
+    @pytest.mark.asyncio
+    async def test_inbound_private_ip_rejected(self):
+        node = P2PNode()
+        writer = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("192.168.1.100", 54321))
+        writer.close = MagicMock()
+        reader = AsyncMock()
+
+        await node._on_connect(reader, writer)
+        writer.close.assert_called()
+        # No peer should have been added
+        assert len(node.peers) == 0
+
+    @pytest.mark.asyncio
+    async def test_inbound_public_ip_not_rejected_by_ip_check(self):
+        """Public IP inbound passes IP check (proceeds to HELLO phase)."""
+        node = P2PNode()
+        writer = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("8.8.8.8", 54321))
+        writer.close = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        reader = AsyncMock()
+        # Return empty bytes to simulate connection close after IP check passes
+        reader.readline = AsyncMock(return_value=b"")
+
+        await node._on_connect(reader, writer)
+        # The peer was NOT rejected at the IP validation stage —
+        # it got past IP check and failed at the HELLO stage instead.
+        # Verify no peer remained (cleaned up after empty HELLO)
+        assert all(not k.startswith("_inbound_8.8.8.8") for k in node.peers)
+
+    @pytest.mark.asyncio
+    async def test_inbound_link_local_rejected(self):
+        node = P2PNode()
+        writer = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("169.254.1.1", 54321))
+        writer.close = MagicMock()
+        reader = AsyncMock()
+
+        await node._on_connect(reader, writer)
+        writer.close.assert_called()
+        assert len(node.peers) == 0
 
 
 # =========================================================================

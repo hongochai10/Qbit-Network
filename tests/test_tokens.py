@@ -1099,6 +1099,38 @@ class TestTokenQueries:
         assert len(page2) == 1
         assert page2[0]["amount"] == 1000
 
+    def test_get_token_holders_cache(self, funded_chain, wallet, wallet2):
+        """R29-001: Repeated calls use cache instead of re-scanning."""
+        bc = funded_chain
+        _, _, token_id = issue_token(bc, wallet, "Cache", "CACHE", 8)
+        mint_token(bc, wallet, wallet.address, token_id, 100)
+        mint_token(bc, wallet, wallet2.address, token_id, 50)
+
+        h1 = bc.get_token_holders(token_id)
+        h2 = bc.get_token_holders(token_id)
+        assert h1 == h2
+        # Verify cache entry exists
+        assert token_id in bc._holder_cache
+
+    def test_get_token_holders_max_scan_limit(self, funded_chain, wallet):
+        """R29-001: Holder scan is bounded by _TOKEN_HOLDER_MAX_SCAN."""
+        bc = funded_chain
+        _, _, token_id = issue_token(bc, wallet, "Scan", "SCAN", 8)
+        mint_token(bc, wallet, wallet.address, token_id, 100)
+
+        # Prime the cache by calling once
+        bc.get_token_holders(token_id)
+
+        # Temporarily lower the scan limit to test truncation
+        original = bc._TOKEN_HOLDER_MAX_SCAN
+        try:
+            bc._TOKEN_HOLDER_MAX_SCAN = 0
+            bc._holder_cache.pop(token_id, None)  # clear cached result
+            holders = bc.get_token_holders(token_id)
+            assert holders == []
+        finally:
+            bc._TOKEN_HOLDER_MAX_SCAN = original
+
     def test_get_address_tokens_pagination(self, funded_chain, wallet):
         """R26-007: get_address_tokens supports pagination."""
         bc = funded_chain

@@ -140,22 +140,52 @@ class QueryMixin:
         """Get token balance for an address."""
         return self._token_balances.get((token_id, address), 0)
 
+    _TOKEN_HOLDER_CACHE_TTL = 5  # seconds
+    _TOKEN_HOLDER_MAX_SCAN = 10_000
+
     def get_token_holders(self, token_id: str, page: int = 1,
                           limit: int = 100) -> list[dict]:
-        """Get holders of a token with pagination (O(k) where k = holder count)."""
+        """Get holders of a token with pagination.
+
+        Uses a short-lived cache to avoid repeated O(n) scans and enforces
+        a max scan limit to prevent DoS via tokens with huge holder sets.
+        """
         page = max(1, page)
         limit = max(1, min(limit, 100))
         addrs = self._holders_by_token.get(token_id)
         if not addrs:
             return []
-        holders = []
-        for addr in addrs:
-            amount = self._token_balances.get((token_id, addr), 0)
-            if amount > 0:
-                holders.append({"address": addr, "amount": amount})
-        holders.sort(key=lambda h: h["amount"], reverse=True)
+
+        # Check cache
+        cache = getattr(self, "_holder_cache", None)
+        if cache is None:
+            self._holder_cache: dict[str, tuple[float, list[dict], bool]] = {}
+            cache = self._holder_cache
+        now = time.monotonic()
+        cached = cache.get(token_id)
+        if cached and (now - cached[0]) < self._TOKEN_HOLDER_CACHE_TTL:
+            sorted_holders, truncated = cached[1], cached[2]
+        else:
+            # Materialise up to MAX_SCAN holders only
+            holders = []
+            scanned = 0
+            for addr in addrs:
+                if scanned >= self._TOKEN_HOLDER_MAX_SCAN:
+                    break
+                amount = self._token_balances.get((token_id, addr), 0)
+                if amount > 0:
+                    holders.append({"address": addr, "amount": amount})
+                scanned += 1
+            truncated = scanned >= self._TOKEN_HOLDER_MAX_SCAN and len(addrs) > scanned
+            holders.sort(key=lambda h: h["amount"], reverse=True)
+            sorted_holders = holders
+            cache[token_id] = (now, sorted_holders, truncated)
+
         start = (page - 1) * limit
-        return holders[start:start + limit]
+        result = sorted_holders[start:start + limit]
+        if truncated and result:
+            result[-1]["_truncated"] = True
+        return result
 
     def get_address_tokens(self, address: str, page: int = 1,
                            limit: int = 100) -> list[dict]:

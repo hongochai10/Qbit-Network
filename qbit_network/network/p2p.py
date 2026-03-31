@@ -60,6 +60,17 @@ def _is_safe_peer(host: str, port: int, own_host: str, own_port: int) -> bool:
         return False
     if host in ("127.0.0.1", "localhost", "::1", own_host) and port == own_port:
         return False
+    if not _is_safe_inbound_ip(host):
+        return False
+    return True
+
+
+def _is_safe_inbound_ip(host: str) -> bool:
+    """Check if an IP address is safe for connection (inbound or outbound).
+
+    Validates IP-level safety independent of port, used for inbound
+    connections where the remote listening port is not yet known.
+    """
     from ..config import ALLOW_PRIVATE_PEERS
     try:
         addr = ipaddress.ip_address(host)
@@ -926,6 +937,12 @@ class P2PNode:
         # Reject connections from banned peers (check by host IP)
         if self.reputation.is_banned(host):
             logger.debug(f"Rejected inbound connection from banned peer {host}")
+            writer.close()
+            return
+
+        # Reject inbound connections from private/reserved IPs (R29-002)
+        if not _is_safe_inbound_ip(host):
+            logger.debug(f"Rejected inbound connection from unsafe IP {host}")
             writer.close()
             return
 
