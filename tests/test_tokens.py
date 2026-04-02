@@ -1023,6 +1023,53 @@ class TestTokenQueries:
         assert len(page2) == 2
         assert len(page3) == 1
 
+    def test_list_tokens_deterministic_order(self, funded_chain, wallet):
+        """list_tokens returns tokens sorted by token_id regardless of insertion order (R31-004)."""
+        bc = funded_chain
+        _, _, tid_a = issue_token(bc, wallet, "Alpha", "AA", 8)
+        _, _, tid_b = issue_token(bc, wallet, "Beta", "BB", 8)
+        _, _, tid_c = issue_token(bc, wallet, "Gamma", "CC", 8)
+
+        tokens = bc.list_tokens()
+        returned_ids = [t["token_id"] for t in tokens]
+        assert returned_ids == sorted(returned_ids), "tokens must be sorted by token_id"
+
+        # Simulate rollback re-insertion in different order: remove and re-add
+        meta_a = bc._token_registry.pop(tid_a)
+        bc._token_registry[tid_a] = meta_a  # re-insert at end
+
+        tokens_after = bc.list_tokens()
+        returned_ids_after = [t["token_id"] for t in tokens_after]
+        assert returned_ids_after == sorted(returned_ids_after), (
+            "tokens must be sorted by token_id even after re-insertion"
+        )
+        assert returned_ids == returned_ids_after, (
+            "ordering must be identical before and after rollback re-insertion"
+        )
+
+    def test_list_tokens_pagination_deterministic(self, funded_chain, wallet):
+        """Pagination slices are consistent regardless of insertion order (R31-004)."""
+        bc = funded_chain
+        token_ids = []
+        for i in range(5):
+            sym = chr(65 + i) * 2
+            _, _, tid = issue_token(bc, wallet, f"Token{i}", sym, 8)
+            token_ids.append(tid)
+
+        page1 = bc.list_tokens(page=1, limit=2)
+        page2 = bc.list_tokens(page=2, limit=2)
+
+        # Shuffle insertion order by popping and re-adding first token
+        first_tid = token_ids[0]
+        meta = bc._token_registry.pop(first_tid)
+        bc._token_registry[first_tid] = meta
+
+        page1_after = bc.list_tokens(page=1, limit=2)
+        page2_after = bc.list_tokens(page=2, limit=2)
+
+        assert [t["token_id"] for t in page1] == [t["token_id"] for t in page1_after]
+        assert [t["token_id"] for t in page2] == [t["token_id"] for t in page2_after]
+
     def test_get_token_balance(self, funded_chain, wallet):
         bc = funded_chain
         _, _, token_id = issue_token(bc, wallet, "Coin", "COIN", 8)
@@ -1041,8 +1088,9 @@ class TestTokenQueries:
         mint_token(bc, wallet, wallet2.address, token_id, 3000)
         mint_token(bc, wallet, wallet3.address, token_id, 1000)
 
-        holders = bc.get_token_holders(token_id)
+        holders, total = bc.get_token_holders(token_id)
         assert len(holders) == 3
+        assert total == 3
         # Sorted by amount descending
         assert holders[0]["amount"] == 5000
         assert holders[1]["amount"] == 3000
@@ -1051,8 +1099,9 @@ class TestTokenQueries:
     def test_get_token_holders_empty(self, funded_chain, wallet):
         bc = funded_chain
         _, _, token_id = issue_token(bc, wallet, "Coin", "COIN", 8)
-        holders = bc.get_token_holders(token_id)
+        holders, total = bc.get_token_holders(token_id)
         assert holders == []
+        assert total == 0
 
     def test_get_address_tokens(self, funded_chain, wallet):
         bc = funded_chain
@@ -1092,44 +1141,37 @@ class TestTokenQueries:
         mint_token(bc, wallet, wallet2.address, token_id, 3000)
         mint_token(bc, wallet, wallet3.address, token_id, 1000)
 
-        page1 = bc.get_token_holders(token_id, page=1, limit=2)
+        page1, total1 = bc.get_token_holders(token_id, page=1, limit=2)
         assert len(page1) == 2
+        assert total1 == 3
         assert page1[0]["amount"] == 5000
-        page2 = bc.get_token_holders(token_id, page=2, limit=2)
+        page2, total2 = bc.get_token_holders(token_id, page=2, limit=2)
         assert len(page2) == 1
+        assert total2 == 3
         assert page2[0]["amount"] == 1000
 
-    def test_get_token_holders_cache(self, funded_chain, wallet, wallet2):
-        """R29-001: Repeated calls use cache instead of re-scanning."""
+    def test_get_token_holders_consistent(self, funded_chain, wallet, wallet2):
+        """R29-001: Repeated calls return consistent results."""
         bc = funded_chain
         _, _, token_id = issue_token(bc, wallet, "Cache", "CACHE", 8)
         mint_token(bc, wallet, wallet.address, token_id, 100)
         mint_token(bc, wallet, wallet2.address, token_id, 50)
 
-        h1 = bc.get_token_holders(token_id)
-        h2 = bc.get_token_holders(token_id)
+        h1, t1 = bc.get_token_holders(token_id)
+        h2, t2 = bc.get_token_holders(token_id)
         assert h1 == h2
-        # Verify cache entry exists
-        assert token_id in bc._holder_cache
+        assert t1 == t2 == 2
 
-    def test_get_token_holders_max_scan_limit(self, funded_chain, wallet):
-        """R29-001: Holder scan is bounded by _TOKEN_HOLDER_MAX_SCAN."""
+    def test_get_token_holders_limit_capped(self, funded_chain, wallet):
+        """R29-001: Limit is capped at _TOKEN_HOLDER_MAX_PAGE."""
         bc = funded_chain
-        _, _, token_id = issue_token(bc, wallet, "Scan", "SCAN", 8)
+        _, _, token_id = issue_token(bc, wallet, "Cap", "CAP", 8)
         mint_token(bc, wallet, wallet.address, token_id, 100)
 
-        # Prime the cache by calling once
-        bc.get_token_holders(token_id)
-
-        # Temporarily lower the scan limit to test truncation
-        original = bc._TOKEN_HOLDER_MAX_SCAN
-        try:
-            bc._TOKEN_HOLDER_MAX_SCAN = 0
-            bc._holder_cache.pop(token_id, None)  # clear cached result
-            holders = bc.get_token_holders(token_id)
-            assert holders == []
-        finally:
-            bc._TOKEN_HOLDER_MAX_SCAN = original
+        # Request absurdly large limit — should be capped
+        holders, total = bc.get_token_holders(token_id, page=1, limit=99999)
+        assert len(holders) <= bc._TOKEN_HOLDER_MAX_PAGE
+        assert total == 1
 
     def test_get_address_tokens_pagination(self, funded_chain, wallet):
         """R26-007: get_address_tokens supports pagination."""
@@ -1318,8 +1360,9 @@ class TestTokenEdgeCases:
         assert bc.get_token_balance(token_id, wallet2.address) == 4000
         assert bc._token_registry[token_id]["total_minted"] == 10000
 
-        holders = bc.get_token_holders(token_id)
+        holders, total = bc.get_token_holders(token_id)
         assert len(holders) == 2
+        assert total == 2
 
     def test_multiple_tokens_independent_balances(self, funded_chain, wallet, wallet2):
         """Two different tokens should have independent balances."""

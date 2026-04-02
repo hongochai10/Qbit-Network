@@ -131,8 +131,11 @@ class QueryMixin:
         return None
 
     def list_tokens(self, page: int = 1, limit: int = 50) -> list[dict]:
-        """List all tokens with pagination."""
-        tokens = list(self._token_registry.values())
+        """List all tokens with pagination (sorted by token_id for determinism)."""
+        tokens = [
+            {**meta, "token_id": tid}
+            for tid, meta in sorted(self._token_registry.items())
+        ]
         start = (page - 1) * limit
         return tokens[start:start + limit]
 
@@ -140,52 +143,43 @@ class QueryMixin:
         """Get token balance for an address."""
         return self._token_balances.get((token_id, address), 0)
 
-    _TOKEN_HOLDER_CACHE_TTL = 5  # seconds
-    _TOKEN_HOLDER_MAX_SCAN = 10_000
+    _TOKEN_HOLDER_MAX_PAGE = 100
 
     def get_token_holders(self, token_id: str, page: int = 1,
-                          limit: int = 100) -> list[dict]:
-        """Get holders of a token with pagination.
+                          limit: int = 100) -> tuple[list[dict], int]:
+        """Get holders of a token with cursor-based pagination.
 
-        Uses a short-lived cache to avoid repeated O(n) scans and enforces
-        a max scan limit to prevent DoS via tokens with huge holder sets.
+        When a SQLite store is available, delegates to SQL ORDER BY / LIMIT /
+        OFFSET so the full holder set is never materialised in Python.
+        For in-memory mode, iterates only the slice needed for the page.
+
+        Returns (holders, total_count).
         """
         page = max(1, page)
-        limit = max(1, min(limit, 100))
+        limit = max(1, min(limit, self._TOKEN_HOLDER_MAX_PAGE))
+
+        # Prefer SQL-level pagination when store is available (R29-001)
+        store = getattr(self, "_store", None)
+        if store is not None and hasattr(store, "get_token_holders_page"):
+            return store.get_token_holders_page(token_id, page=page, limit=limit)
+
+        # In-memory fallback: build only the requested page
         addrs = self._holders_by_token.get(token_id)
         if not addrs:
-            return []
+            return [], 0
 
-        # Check cache
-        cache = getattr(self, "_holder_cache", None)
-        if cache is None:
-            self._holder_cache: dict[str, tuple[float, list[dict], bool]] = {}
-            cache = self._holder_cache
-        now = time.monotonic()
-        cached = cache.get(token_id)
-        if cached and (now - cached[0]) < self._TOKEN_HOLDER_CACHE_TTL:
-            sorted_holders, truncated = cached[1], cached[2]
-        else:
-            # Materialise up to MAX_SCAN holders only
-            holders = []
-            scanned = 0
-            for addr in addrs:
-                if scanned >= self._TOKEN_HOLDER_MAX_SCAN:
-                    break
-                amount = self._token_balances.get((token_id, addr), 0)
-                if amount > 0:
-                    holders.append({"address": addr, "amount": amount})
-                scanned += 1
-            truncated = scanned >= self._TOKEN_HOLDER_MAX_SCAN and len(addrs) > scanned
-            holders.sort(key=lambda h: h["amount"], reverse=True)
-            sorted_holders = holders
-            cache[token_id] = (now, sorted_holders, truncated)
+        # Collect holders with positive balance (full scan unavoidable in memory)
+        holders = []
+        for addr in addrs:
+            amount = self._token_balances.get((token_id, addr), 0)
+            if amount > 0:
+                holders.append({"address": addr, "amount": amount})
 
+        total = len(holders)
+        # Sort and slice only the requested page
+        holders.sort(key=lambda h: (-h["amount"], h["address"]))
         start = (page - 1) * limit
-        result = sorted_holders[start:start + limit]
-        if truncated and result:
-            result[-1]["_truncated"] = True
-        return result
+        return holders[start:start + limit], total
 
     def get_address_tokens(self, address: str, page: int = 1,
                            limit: int = 100) -> list[dict]:

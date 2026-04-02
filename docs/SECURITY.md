@@ -46,7 +46,7 @@
 
 ## Audit History
 
-18 rounds of security audit, 202+ issues found:
+31 rounds of security audit, 290+ issues found:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -69,8 +69,46 @@
 | 16 | v0.5.0 Sprint 4 Financial layer security (TRANSFER, fees, rewards, supply) | 5 |
 | 17 | v0.6.0 EIP-1559 + auth bypass (CRITICAL auth bypass, unbonding persistence) | 2 |
 | 18 | v0.7.0 State proofs, receipts, webhooks, SDK (SSRF, injection, memory) | 5 |
+| 19 | Combined 5-agent audit (state proofs, receipts, persistence, perf) | 13 |
+| 20 | Pre-phase-2 audit (webhook DNS rebinding, slashing pruning) | 4 |
+| 21 | v0.8.0 release audit (token rollback, pool admission, P2P codec) | 11 |
+| 22 | v0.8.0 final verification (docs consistency) | 2 |
+| 23 | PQC deep-dive + issue hunt (partial block application, race conditions) | 7 |
+| 24 | Financial layer security (CRITICAL epoch reward supply inflation) | 1 |
+| 25 | CEO full audit (WebSocket auth, REST auth, PoA clock, CORS) | 9 |
+| 26 | CEO full audit (webhook auth, dashboard scope, TLS writes, token queries) | 9 |
+| 27 | CEO comprehensive audit (SSRF DNS, WebSocket heartbeat, block events) | 4 |
+| 28 | CEO full audit (fee types, state trie injection, wallet locks, token indices) | 8 |
+| 29 | CEO comprehensive audit (inbound P2P IP bypass, token holder DoS) | 5 |
+| 30 | CEO comprehensive audit (amount bounds, fee bypass, state proof enumeration) | 9 |
+| 31 | CEO comprehensive audit (REST param injection, pagination, tracker reconciliation) | 7 |
 
 See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
+
+### REST API & Tracker Reconciliation (Round 31)
+
+- **[MEDIUM] REST evidence param injection**: `_submit_evidence` passes raw request body as `**kwargs` — allows injection of unexpected parameters.
+- **[MEDIUM] REST pagination validation**: `_get_token_holders`/`_get_address_tokens` use bare `int()` cast without validation — 500 error on bad input with path leak.
+- **[LOW] Block baseFee validation**: `from_dict` does not validate `baseFee` type/range — peer can crash handler with bad type.
+- **[LOW] Token list ordering**: ~~`list_tokens` returns dict insertion order~~ — **fixed**: sorted by `token_id` before pagination (R31-004).
+- **[LOW] Webhook event materialization**: `_deliver_block_webhooks` materializes all events before filtering — unnecessary memory allocation.
+- **[INFO] Dynamic fee activation**: `DYNAMIC_FEE_ACTIVATION_HEIGHT` default 2^63 effectively disables dynamic fees — needs env var activation.
+- **Tracker reconciliation**: 5 issues (R26-005, R29-002, R30-002, R30-005, R30-007) confirmed fixed in code and marked done.
+
+### Amount Bounds & State Proof Security (Round 30)
+
+- **[MEDIUM] Unbounded amounts**: TRANSFER/STAKE/MINT amount not capped — pool DoS via big integers in `_pending_debits`.
+- **[MEDIUM] P2P fee bypass**: P2P-received transactions bypass fee param upper bound (2^63 cap in node.py only). Fixed in `Transaction.from_dict()`.
+- **[MEDIUM] State proof enumeration**: State proof endpoint accepts arbitrary trie key — unauthenticated token balance probing (extends R29-003).
+- **[LOW] Auth attempts unbounded**: `_auth_attempts` dict grows without limit under IP rotation. Fixed with LRU cap.
+- **[LOW] State tree O(n) index**: `get_proof()` uses `list.index` instead of `bisect`. Fixed.
+
+### Inbound P2P & Token Holder DoS (Round 29)
+
+- **[MEDIUM] Token holder DoS**: `get_token_holders()` materializes full holder list before pagination — DoS via unauthenticated public endpoint.
+- **[MEDIUM] Inbound P2P IP bypass**: Inbound P2P connections bypass `_is_safe_peer()` validation — private IPs accepted. Fixed with `_is_safe_inbound_ip()`.
+- **[LOW] State proof arbitrary key**: `qv_getStateProofAt` accepts arbitrary trie key — unauthenticated token balance enumeration.
+- **[LOW] P2P readline incompatibility**: Inbound P2P first message uses `readline()` — incompatible with binary wire format.
 
 ### State Proofs, Receipts, Webhooks, SDK Security (Round 18)
 

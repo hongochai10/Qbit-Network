@@ -8,7 +8,7 @@
 | R26-002 | MEDIUM | Dashboard static file scope too broad — serves entire dashboard/ dir | blockchain-dev | P1 | done |
 | R26-003 | MEDIUM | RPC list params positional unpacking bypasses validation | blockchain-dev | P1 | done |
 | R26-004 | MEDIUM | TLS key non-atomic write in rpc.py _generate_self_signed | blockchain-dev | P1 | done |
-| R26-005 | LOW | _rpc_get_logs no event_type validation | blockchain-dev | P2 | todo |
+| R26-005 | LOW | _rpc_get_logs no event_type validation | blockchain-dev | P2 | done (node.py:1099-1104) |
 | R26-006 | LOW | get_token_holders O(n) scan, no pagination | perf-engineer | P2 | done (R28-007) |
 | R26-007 | LOW | get_address_tokens O(n) scan, no pagination | perf-engineer | P2 | done (R28-007) |
 | R26-008 | INFO | Duplicate TLS generation code paths (rpc.py vs tls_manager.py) | blockchain-dev | P3 | todo |
@@ -41,10 +41,36 @@
 | ID | Severity | Description | Owner | Priority | Status |
 |----|----------|-------------|-------|----------|--------|
 | R29-001 | MEDIUM | get_token_holders() materializes full holder list before pagination — DoS via public endpoint | security-engineer | P1 | todo (TEC-925) |
-| R29-002 | MEDIUM | Inbound P2P connections bypass _is_safe_peer() — private IPs accepted | security-engineer | P1 | todo (TEC-925) |
+| R29-002 | MEDIUM | Inbound P2P connections bypass _is_safe_peer() — private IPs accepted | security-engineer | P1 | done (p2p.py:951 _is_safe_inbound_ip) |
 | R29-003 | LOW | qv_getStateProofAt accepts arbitrary trie key — unauthenticated token balance probing | security-engineer | P2 | todo (TEC-925) |
 | R29-004 | LOW | Inbound P2P first message uses readline() — incompatible with binary wire format | senior-backend-engineer | P3 | todo |
 | R29-005 | INFO | Version string mismatch __init__.py (0.2.0) vs config.py (0.8.0) | qa-engineer | P2 | todo (TEC-928) |
+
+## New Findings (Round 30 — CEO Audit 2026-04-02)
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R30-001 | MEDIUM | Unbounded TRANSFER/STAKE/MINT amount — pool DoS via big integers in _pending_debits | security-engineer | P1 | todo (TEC-1110) |
+| R30-002 | MEDIUM | P2P-received transactions bypass fee param upper bound (2^63 cap in node.py only) | security-engineer | P1 | done (Transaction.from_dict:397-402) |
+| R30-003 | MEDIUM | State proof endpoint arbitrary trie key enumeration — token balance probing (extends R29-003) | security-engineer | P1 | todo (TEC-1111) |
+| R30-004 | LOW | TRANSFER amount validation inconsistency between validate_payload and from_dict | security-engineer | P2 | todo (TEC-1110) |
+| R30-005 | LOW | `_auth_attempts` dict unbounded growth under IP rotation attack | founding-engineer | P2 | done (p2p.py:870-871 LRU cap) |
+| R30-006 | LOW | REST `/pool` exposes tx type distribution without auth | founding-engineer | P3 | todo |
+| R30-007 | LOW | `state_tree.get_proof()` uses O(n) list.index instead of bisect | founding-engineer | P2 | done (state_tree.py:93 bisect) |
+| R30-008 | INFO | Receipt events contain unsanitized user data — webhook XSS risk for consumers | — | — | accepted |
+| R30-009 | INFO | WebSocket auth bypass path when no token configured — not exploitable | — | — | accepted |
+
+## New Findings (Round 31 — CEO Comprehensive Audit 2026-04-02)
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R31-001 | MEDIUM | REST `_submit_evidence` passes raw body as **kwargs — param injection | security-engineer | P1 | todo (TEC-1129) |
+| R31-002 | MEDIUM | REST `_get_token_holders`/`_get_address_tokens` missing pagination validation | senior-backend-engineer | P1 | todo (TEC-1130) |
+| R31-003 | LOW | Block `from_dict` does not validate `baseFee` type or range | senior-backend-engineer | P2 | todo (TEC-1135) |
+| R31-004 | LOW | `list_tokens` returns unstable ordering across nodes | senior-backend-engineer | P2 | **done** (TEC-1136) |
+| R31-005 | LOW | `_deliver_block_webhooks` materializes all events before filtering | — | P3 | todo |
+| R31-006 | LOW | WebSocket auth bypass when no token configured | — | — | accepted |
+| R31-007 | INFO | `DYNAMIC_FEE_ACTIVATION_HEIGHT` default 2^63 effectively disables dynamic fees | senior-backend-engineer | P2 | todo (TEC-1137) |
 
 Accepted risks (no action required):
 - R25-004 (LOW): SQLite synchronous=NORMAL — self-corrects via peer re-sync
@@ -80,16 +106,18 @@ Accepted risks (no action required):
 | R25-005 | Security | Wallet files saved without encryption | Added directory permissions and plaintext warning (`bb21a88`) | 2026-03-29 |
 | R25-007 | Security | CORS wildcard allows cross-origin probing | Default restrictive CORS, added --cors-origin flag (`3a64749`) | 2026-03-29 |
 
-See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (275+ issues across 29 rounds).
+See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (290+ issues across 31 rounds).
 
-## Project Summary (v0.8.0, 2026-03-31)
+## Project Summary (v0.8.0, 2026-04-02)
 
 - 22 closed issues (17 original + 5 R25 resolved)
-- R26: 4 done, 2 open (R26-005/008), 1 INFO done
+- R26: 5 done (R26-005 reconciled), 1 open (R26-008), 1 INFO done
 - R27: 4 fixed (R27-001/002/003/004), 0 open
-- R28: 4 fixed (R28-001/002/003/004/007), 3 open (R28-005/006/008 accepted)
-- R29: 5 new findings (2 MED, 2 LOW, 1 INFO), all open
-- 5 accepted risks (no action required)
-- 29 audit rounds completed
-- 2,706 tests passing
-- 7 open issues total (1 MED, 4 LOW, 2 INFO) — 0 critical/high
+- R28: 5 fixed (R28-001/002/003/004/007), 2 open (R28-005/006), 1 accepted (R28-008)
+- R29: 3 open (R29-001/003/004), 1 done (R29-002 reconciled), 1 open INFO (R29-005)
+- R30: 3 done (R30-002/005/007 reconciled), 4 open (R30-001/003/004/006), 2 accepted (R30-008/009)
+- R31: 7 findings (2 MED, 4 LOW, 1 INFO), 6 open, 1 accepted (R31-006)
+- 8 accepted risks (no action required)
+- 31 audit rounds completed
+- 2,998 tests collected, 2,996 passing (78% coverage)
+- 17 open issues total (5 MED, 9 LOW, 3 INFO) — 0 critical/high
