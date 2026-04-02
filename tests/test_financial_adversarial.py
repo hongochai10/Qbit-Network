@@ -571,6 +571,155 @@ class TestPendingDebits:
         expected = MIN_STAKE + TX_FEES["STAKE"]
         assert pending == expected
 
+    def test_pending_debits_include_issue_token_fee(self, funded_chain, wallet):
+        """Pending debits should include ISSUE_TOKEN QBIT fee."""
+        bc = funded_chain
+        tx = Transaction.issue_token(
+            wallet.address, "TestCoin", "TST", decimals=8, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, _ = bc.submit_tx(tx)
+        assert ok
+
+        pending = bc._pending_debits(wallet.address)
+        assert pending == TX_FEES["ISSUE_TOKEN"]
+
+    def test_pending_debits_include_mint_token_fee(self, funded_chain, wallet, wallet_b):
+        """Pending debits should include MINT_TOKEN QBIT fee."""
+        bc = funded_chain
+        # Issue a token first and mine it
+        issue_tx = Transaction.issue_token(
+            wallet.address, "MintCoin", "MNT", decimals=8, nonce=0)
+        issue_tx.sign(wallet.signing_sk, wallet.signing_pk)
+        submit_and_mine(bc, wallet, issue_tx)
+
+        from qbit_network.crypto import sha3_256
+        token_id = sha3_256(
+            (wallet.address + "MNT" + "0").encode()).hex()[:32]
+
+        # Submit MINT_TOKEN (not mined yet)
+        mint_tx = Transaction.mint_token(
+            wallet.address, wallet_b.address, token_id, 1000, nonce=1)
+        mint_tx.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, _ = bc.submit_tx(mint_tx)
+        assert ok
+
+        pending = bc._pending_debits(wallet.address)
+        assert pending == TX_FEES["MINT_TOKEN"]
+
+    def test_pending_debits_include_transfer_token_fee(self, funded_chain, wallet, wallet_b):
+        """Pending debits should include TRANSFER_TOKEN QBIT fee."""
+        bc = funded_chain
+        # Issue + mint tokens to wallet
+        issue_tx = Transaction.issue_token(
+            wallet.address, "XferCoin", "XFR", decimals=8, nonce=0)
+        issue_tx.sign(wallet.signing_sk, wallet.signing_pk)
+        submit_and_mine(bc, wallet, issue_tx)
+
+        from qbit_network.crypto import sha3_256
+        token_id = sha3_256(
+            (wallet.address + "XFR" + "0").encode()).hex()[:32]
+
+        mint_tx = Transaction.mint_token(
+            wallet.address, wallet.address, token_id, 10000, nonce=1)
+        mint_tx.sign(wallet.signing_sk, wallet.signing_pk)
+        submit_and_mine(bc, wallet, mint_tx)
+
+        # Submit TRANSFER_TOKEN (not mined)
+        xfer_tx = Transaction.transfer_token(
+            wallet.address, wallet_b.address, token_id, 100, nonce=2)
+        xfer_tx.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, _ = bc.submit_tx(xfer_tx)
+        assert ok
+
+        pending = bc._pending_debits(wallet.address)
+        assert pending == TX_FEES["TRANSFER_TOKEN"]
+
+    def test_multi_token_ops_fee_exhaustion(self, funded_chain, wallet, wallet_b):
+        """Multiple token ops from same sender rejected when cumulative QBIT fees exceed balance.
+
+        R32-F02: Pool should reject token ops when cumulative fees exceed sender QBIT balance.
+        """
+        bc = funded_chain
+        issue_fee = TX_FEES["ISSUE_TOKEN"]  # 0.5 QBIT each
+
+        # Fund wallet_b with exactly enough for 2 ISSUE_TOKEN fees + small margin
+        fund_amount = issue_fee * 2 + 1
+        transfer_fee = TX_FEES["TRANSFER"]
+        fund_wallet(bc, wallet, wallet_b.address, fund_amount, nonce=0)
+
+        bal = bc.get_balance(wallet_b.address)
+        assert bal == fund_amount
+
+        # First ISSUE_TOKEN should succeed
+        tx1 = Transaction.issue_token(
+            wallet_b.address, "CoinA", "AAA", decimals=8, nonce=0)
+        tx1.sign(wallet_b.signing_sk, wallet_b.signing_pk)
+        ok1, _ = bc.submit_tx(tx1)
+        assert ok1, "first ISSUE_TOKEN should be admitted"
+
+        # Second ISSUE_TOKEN should succeed (barely: balance covers 2 fees + 1)
+        tx2 = Transaction.issue_token(
+            wallet_b.address, "CoinB", "BBB", decimals=8, nonce=1)
+        tx2.sign(wallet_b.signing_sk, wallet_b.signing_pk)
+        ok2, _ = bc.submit_tx(tx2)
+        assert ok2, "second ISSUE_TOKEN should be admitted"
+
+        # Third ISSUE_TOKEN MUST be rejected — cumulative fees exceed balance
+        tx3 = Transaction.issue_token(
+            wallet_b.address, "CoinC", "CCC", decimals=8, nonce=2)
+        tx3.sign(wallet_b.signing_sk, wallet_b.signing_pk)
+        ok3, msg3 = bc.submit_tx(tx3)
+        assert not ok3, "third ISSUE_TOKEN must be rejected (fee exhaustion)"
+        assert "insufficient balance" in msg3
+
+    def test_mixed_token_ops_cumulative_fee_rejection(self, funded_chain, wallet, wallet_b):
+        """Mixed token ops (ISSUE + MINT + TRANSFER_TOKEN) cumulative fees checked."""
+        bc = funded_chain
+
+        # Issue + mint tokens via wallet (genesis-funded)
+        issue_tx = Transaction.issue_token(
+            wallet.address, "MixCoin", "MIX", decimals=8, nonce=0)
+        issue_tx.sign(wallet.signing_sk, wallet.signing_pk)
+        submit_and_mine(bc, wallet, issue_tx)
+
+        from qbit_network.crypto import sha3_256
+        token_id = sha3_256(
+            (wallet.address + "MIX" + "0").encode()).hex()[:32]
+
+        # Mint tokens to wallet_b
+        mint_tx = Transaction.mint_token(
+            wallet.address, wallet_b.address, token_id, 100_000, nonce=1)
+        mint_tx.sign(wallet.signing_sk, wallet.signing_pk)
+        submit_and_mine(bc, wallet, mint_tx)
+
+        # Fund wallet_b with enough for ISSUE_TOKEN fee + TRANSFER_TOKEN fee, but NOT a third op
+        issue_fee = TX_FEES["ISSUE_TOKEN"]       # 500_000_000
+        xfer_token_fee = TX_FEES["TRANSFER_TOKEN"]  # 1_000_000
+        fund_amount = issue_fee + xfer_token_fee + 1
+        fund_wallet(bc, wallet, wallet_b.address, fund_amount, nonce=2)
+
+        # wallet_b: submit ISSUE_TOKEN (fee 0.5 QBIT)
+        tx1 = Transaction.issue_token(
+            wallet_b.address, "Extra", "EXT", decimals=8, nonce=0)
+        tx1.sign(wallet_b.signing_sk, wallet_b.signing_pk)
+        ok1, _ = bc.submit_tx(tx1)
+        assert ok1
+
+        # wallet_b: submit TRANSFER_TOKEN (fee 0.001 QBIT)
+        tx2 = Transaction.transfer_token(
+            wallet_b.address, wallet.address, token_id, 50, nonce=1)
+        tx2.sign(wallet_b.signing_sk, wallet_b.signing_pk)
+        ok2, _ = bc.submit_tx(tx2)
+        assert ok2
+
+        # wallet_b: any additional fee-bearing tx MUST be rejected
+        tx3 = Transaction.issue_token(
+            wallet_b.address, "Fail", "FIL", decimals=8, nonce=2)
+        tx3.sign(wallet_b.signing_sk, wallet_b.signing_pk)
+        ok3, msg3 = bc.submit_tx(tx3)
+        assert not ok3, "third op must be rejected (cumulative fees exhaust balance)"
+        assert "insufficient balance" in msg3
+
 
 # ========== 19. Genesis Balance ==========
 
