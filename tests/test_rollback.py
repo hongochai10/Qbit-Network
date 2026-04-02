@@ -900,3 +900,90 @@ class TestTransferRollbackConservation:
 
         for addr, bal in bc._balances.items():
             assert bal >= 0, f"Negative balance for {addr}: {bal}"
+
+
+# ===========================================================================
+# R36-L04: _rebuild_state_trie must not crash on temporary negative balances
+# ===========================================================================
+
+class TestRebuildStateTrieNegativeBalance:
+    """Regression test for R36-L04.
+
+    During multi-block rollback, _rollback_debit allows temporary negative
+    balances.  _rebuild_state_trie is called per-block and must tolerate
+    negative balances without raising OverflowError.
+    """
+
+    def test_multiblock_rollback_no_crash_on_negative_balance(self):
+        """3-block reorg with cross-block transfers — negative intermediates."""
+        bc, w = _setup_chain()
+        alice = Wallet.generate()
+        bob = Wallet.generate()
+        fee = TX_FEES.get(TxType.TRANSFER.value, 0)
+        amt = 500 * QUBIT_PER_QBIT
+
+        # Block 1: validator -> Alice (amt + fee so Alice can pay fee on next tx)
+        tx1 = Transaction.transfer(w.address, alice.address, amt + fee,
+                                   nonce=_next_nonce(bc, w.address))
+        tx1.sign(w.signing_sk, w.signing_pk)
+        submit_and_mine(bc, w, tx1)
+
+        # Block 2: Alice -> Bob (Alice sends amt, pays fee from the extra)
+        tx2 = Transaction.transfer(alice.address, bob.address, amt,
+                                   nonce=_next_nonce(bc, alice.address))
+        tx2.sign(alice.signing_sk, alice.signing_pk)
+        submit_and_mine(bc, w, tx2)
+
+        # Block 3: Bob -> validator (Bob sends amt, fee deducted from received)
+        tx3 = Transaction.transfer(bob.address, w.address, amt - fee,
+                                   nonce=_next_nonce(bc, bob.address))
+        tx3.sign(bob.signing_sk, bob.signing_pk)
+        submit_and_mine(bc, w, tx3)
+
+        assert bc.height == 3
+
+        # Force no snapshots so _rebuild_state_trie is called during rollback
+        bc._state_snapshots.clear()
+
+        # This must not raise OverflowError (the R36-L04 bug)
+        bc._rollback_to(1)
+
+        assert bc.height == 0
+        # After full rollback to genesis, all balances must be non-negative
+        for addr, bal in bc._balances.items():
+            assert bal >= 0, f"Negative balance for {addr}: {bal}"
+
+    def test_state_trie_correct_after_multiblock_rollback(self):
+        """State trie root must match a fresh rebuild after rollback completes."""
+        bc, w = _setup_chain()
+        alice = Wallet.generate()
+        bob = Wallet.generate()
+        fee = TX_FEES.get(TxType.TRANSFER.value, 0)
+        amt = 200 * QUBIT_PER_QBIT
+
+        root_at_genesis = bc._state_trie.root()
+
+        # Mine 3 blocks with cross-block transfers
+        tx1 = Transaction.transfer(w.address, alice.address, amt + fee,
+                                   nonce=_next_nonce(bc, w.address))
+        tx1.sign(w.signing_sk, w.signing_pk)
+        submit_and_mine(bc, w, tx1)
+
+        tx2 = Transaction.transfer(alice.address, bob.address, amt,
+                                   nonce=_next_nonce(bc, alice.address))
+        tx2.sign(alice.signing_sk, alice.signing_pk)
+        submit_and_mine(bc, w, tx2)
+
+        tx3 = Transaction.transfer(bob.address, w.address, amt - fee,
+                                   nonce=_next_nonce(bc, bob.address))
+        tx3.sign(bob.signing_sk, bob.signing_pk)
+        submit_and_mine(bc, w, tx3)
+
+        bc._state_snapshots.clear()
+        bc._rollback_to(1)
+
+        # Rebuild trie from scratch and compare
+        bc._rebuild_state_trie()
+        root_after_rollback = bc._state_trie.root()
+
+        assert root_after_rollback == root_at_genesis

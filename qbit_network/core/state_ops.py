@@ -30,6 +30,11 @@ class StateTrieMixin:
         # Clear and rebuild -- simple and correct for QBit's scale.
         trie._entries.clear()
         for addr, bal in self._balances.items():
+            # During multi-block rollback, _rollback_debit allows temporary
+            # negative balances that resolve once the originating block is
+            # also rolled back.  Skip them to avoid OverflowError (R36-L04).
+            if bal < 0:
+                continue
             trie.set(f"balance:{addr}", bal.to_bytes(8, 'big'))
         for addr, nonce in self._sender_nonce.items():
             # Nonces are always >= 0 in normal operation.
