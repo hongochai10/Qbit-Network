@@ -600,3 +600,7 @@ class TestEvidenceReplayOnReload:
         assert bc2._total_stake.get(w2.address, 0) == slashed_stake
         assert not bc2.consensus.is_validator(w2.address), (
             "R33-H01: slashed validator still in consensus after reload")
+        # R33-H01: epoch validators must not contain slashed validator
+        epoch_addrs = [addr for addr, _ in bc2._epoch_validators]
+        assert w2.address not in epoch_addrs, (
+            "R33-H01: slashed validator still in _epoch_validators after reload")

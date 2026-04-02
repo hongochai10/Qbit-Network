@@ -320,13 +320,25 @@ class PersistenceMixin:
                 self._slashed_validators.add(event["validator"])
                 self._processed_evidence.add(event["validator"])
 
-            # R33-H01: Remove slashed validators from consensus when stake < MIN_STAKE.
+            # R33-H01: Remove slashed validators from consensus when stake < MIN_STAKE
+            # and update _epoch_validators to reflect slashing reductions.
             # During live operation _process_evidence_tx handles this, but on reload
             # we must reconcile consensus.validators with the authoritative SQLite stakes.
             for vaddr in list(self._slashed_validators):
                 remaining = self._total_stake.get(vaddr, 0)
                 if remaining < MIN_STAKE:
                     self.consensus.remove_validator(vaddr)
+                    # Remove from epoch validators list (mirrors _process_evidence_tx)
+                    self._epoch_validators = [
+                        (addr, stake) for addr, stake in self._epoch_validators
+                        if addr != vaddr
+                    ]
+                elif self._epoch_validators:
+                    # Update stake amount in epoch validators list
+                    self._epoch_validators = [
+                        (addr, remaining) if addr == vaddr else (addr, stake)
+                        for addr, stake in self._epoch_validators
+                    ]
 
             # Load balances from SQLite
             for addr, amount in self._store.get_all_balances():
