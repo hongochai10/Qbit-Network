@@ -95,10 +95,12 @@ class TestTransactionFromDictFuzz:
         del d["payload"]
         _assert_rejects(Transaction.from_dict, d, "missing payload")
 
-    def test_missing_chain_id(self):
+    def test_missing_chain_id_backward_compat(self):
+        """Missing chainId defaults to empty string for backward compatibility (R36-M01)."""
         d = _valid_tx_dict()
         del d["chainId"]
-        _assert_rejects(Transaction.from_dict, d, "missing chainId")
+        tx = Transaction.from_dict(d)
+        assert tx.chain_id == ""
 
     # --- Wrong types for required fields ---
 
@@ -576,8 +578,8 @@ _TX_FUZZ_VALUES = [
     object(),
 ]
 
-_TX_REQUIRED_FIELDS = ["type", "from", "timestamp", "payload", "chainId"]
-_TX_OPTIONAL_FIELDS = ["to", "nonce", "maxFeePerWeight", "maxPriorityFee",
+_TX_REQUIRED_FIELDS = ["type", "from", "timestamp", "payload"]
+_TX_OPTIONAL_FIELDS = ["to", "nonce", "chainId", "maxFeePerWeight", "maxPriorityFee",
                        "signature", "sender_pubkey"]
 
 class TestTransactionFieldFuzz:

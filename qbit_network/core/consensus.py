@@ -4,7 +4,7 @@ import time
 from typing import Callable
 from ..crypto import MLDSA, sha3_256
 from ..config import (MAX_BLOCK_DRIFT, MAX_BLOCK_SIZE, MAX_TX_PER_BLOCK,
-                      MAX_TX_PAYLOAD_SIZE, BLOCK_INTERVAL,
+                      MAX_TX_PAYLOAD_SIZE, BLOCK_INTERVAL, CHAIN_ID,
                       DYNAMIC_FEE_ACTIVATION_HEIGHT, INITIAL_BASE_FEE,
                       MAX_BLOCK_WEIGHT, TX_WEIGHTS, MAX_SELF_TX_WEIGHT_RATIO)
 from .fees import compute_base_fee, effective_block_weight, tx_weight
@@ -215,6 +215,11 @@ class ProofOfAuthority:
         for tx in block.transactions:
             if not tx.verify():
                 return False, f"invalid tx signature: {tx.tx_id[:16]}..."
+
+            # Chain ID validation — reject cross-chain replay (R36-M01)
+            if tx.chain_id and tx.chain_id != CHAIN_ID:
+                return False, (f"wrong chain_id in tx {tx.tx_id[:16]}...: "
+                               f"expected {CHAIN_ID}, got {tx.chain_id}")
 
             if tx.tx_id in seen_ids:
                 return False, f"duplicate tx in block: {tx.tx_id[:16]}..."

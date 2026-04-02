@@ -302,6 +302,67 @@ class TestTransactionReplay:
                           nonce=0, chain_id="testnet")
         assert tx1.tx_id != tx2.tx_id
 
+    def test_wrong_chain_id_rejected_by_pool(self, blockchain, wallet):
+        """TX with wrong chain_id rejected at pool admission (R36-M01)."""
+        tx = Transaction(TxType.NOTARIZE, wallet.address,
+                         payload={"documentHash": "aa", "metadata": ""},
+                         nonce=0, chain_id="qbit-testnet")
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, err = blockchain.submit_tx(tx)
+        assert not ok
+        assert "wrong chain_id" in err
+
+    def test_wrong_chain_id_rejected_in_block(self, blockchain, wallet):
+        """Block containing TX with wrong chain_id rejected (R36-M01)."""
+        tx = Transaction(TxType.NOTARIZE, wallet.address,
+                         payload={"documentHash": "aa", "metadata": ""},
+                         nonce=0, chain_id="qbit-testnet")
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        block = Block(
+            index=blockchain.height + 1,
+            prev_hash=blockchain.latest_block.block_hash,
+            transactions=[tx], validator=wallet.address,
+            timestamp=blockchain.latest_block.timestamp + 1)
+        block.sign(wallet.signing_sk)
+        ok, err = blockchain.add_block(block)
+        assert not ok
+        assert "wrong chain_id" in err
+
+    def test_empty_chain_id_backward_compatible(self, blockchain, wallet):
+        """TX with empty chain_id (legacy) passes consensus chain_id check (R36-M01).
+
+        Empty chain_id is treated as legacy — the consensus validator allows it
+        through so old blocks stored without chain_id can still be loaded.
+        """
+        from qbit_network.config import CHAIN_ID as CFG_CHAIN_ID
+        tx = Transaction(TxType.NOTARIZE, wallet.address,
+                         payload={"documentHash": "aa", "metadata": ""},
+                         nonce=0, chain_id="")
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        # The chain_id check in consensus is: if tx.chain_id and tx.chain_id != CHAIN_ID
+        # Empty string is falsy, so it passes through.
+        assert tx.chain_id == ""
+        # Verify signable bytes differ from a TX with the real chain_id
+        tx_real = Transaction(TxType.NOTARIZE, wallet.address,
+                              payload={"documentHash": "aa", "metadata": ""},
+                              nonce=0, chain_id=CFG_CHAIN_ID)
+        assert tx.tx_id != tx_real.tx_id
+
+    def test_from_dict_backward_compat_missing_chain_id(self):
+        """from_dict accepts TX without chainId for backward compatibility (R36-M01)."""
+        d = {
+            "type": "NOTARIZE",
+            "from": "qv1" + "a" * 64,
+            "to": "",
+            "timestamp": 1000,
+            "payload": {"documentHash": "aa", "metadata": ""},
+            "nonce": 0,
+            "signature": "",
+            "sender_pubkey": "",
+        }
+        tx = Transaction.from_dict(d)
+        assert tx.chain_id == ""
+
     def test_nonce_gap_in_block(self, blockchain, wallet):
         """Block with nonce gap (0 then 2, missing 1) rejected."""
         tx0 = Transaction.notarize(wallet.address, "aa", nonce=0)

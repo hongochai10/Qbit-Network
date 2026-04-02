@@ -397,9 +397,7 @@ class Transaction:
             raise ValueError("signature/sender_pubkey must be valid hex")
         if spk and len(spk) != 1952:  # ML-DSA-65 public key size
             raise ValueError(f"sender_pubkey wrong size: {len(spk)}")
-        chain_id = data.get("chainId")
-        if chain_id is None:
-            raise ValueError("chainId is required")
+        chain_id = data.get("chainId", "")
         if not isinstance(chain_id, str):
             raise ValueError("chainId must be string")
         mfpw = data.get("maxFeePerWeight", 0)
