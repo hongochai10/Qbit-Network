@@ -129,6 +129,102 @@ class TestChainIntegrity:
         assert not ok
         assert "at least one" in err
 
+    def test_tampered_state_root_rejected(self, blockchain, wallet):
+        """RS-2: Block with forged state_root is rejected."""
+        # Produce two valid blocks
+        tx1 = Transaction.notarize(wallet.address, "aa" * 32, nonce=0)
+        tx1.sign(wallet.signing_sk, wallet.signing_pk)
+        block1, _ = submit_and_mine(blockchain, wallet, tx1)
+        assert block1.state_root  # should have a valid state_root
+
+        tx2 = Transaction.notarize(wallet.address, "bb" * 32, nonce=1)
+        tx2.sign(wallet.signing_sk, wallet.signing_pk)
+        block2, _ = submit_and_mine(blockchain, wallet, tx2)
+        assert block2.state_root
+
+        # Tamper block2: replace state_root with a fake value, re-sign
+        block2.state_root = "ff" * 32
+        block2._cached_header = None
+        block2._cached_hash = None
+        block2.sign(wallet.signing_sk)
+
+        # Build a fresh blockchain to receive the tampered block
+        bc2 = _make_blockchain_with_validator(wallet)
+        # Replay block 1 (valid)
+        ok, _ = bc2.add_block(block1)
+        assert ok
+        # Attempt block 2 (tampered state_root) — must be rejected
+        ok, err = bc2.add_block(block2)
+        assert not ok
+        assert "state_root mismatch" in err
+
+    def test_empty_state_root_rejected(self, blockchain, wallet):
+        """RS-2: Block with empty state_root is rejected (prevents bypass)."""
+        tx1 = Transaction.notarize(wallet.address, "aa" * 32, nonce=0)
+        tx1.sign(wallet.signing_sk, wallet.signing_pk)
+        block1, _ = submit_and_mine(blockchain, wallet, tx1)
+
+        tx2 = Transaction.notarize(wallet.address, "cc" * 32, nonce=1)
+        tx2.sign(wallet.signing_sk, wallet.signing_pk)
+        block2, _ = submit_and_mine(blockchain, wallet, tx2)
+
+        # Strip state_root to bypass validation, re-sign
+        block2.state_root = ""
+        block2._cached_header = None
+        block2._cached_hash = None
+        block2.sign(wallet.signing_sk)
+
+        # Build a fresh blockchain to receive the stripped block
+        bc2 = _make_blockchain_with_validator(wallet)
+        ok, _ = bc2.add_block(block1)
+        assert ok
+        # Block with empty state_root must be rejected
+        ok, err = bc2.add_block(block2)
+        assert not ok
+        assert "missing state_root" in err
+
+    def test_state_root_mismatch_no_double_height_decrement(self, blockchain, wallet):
+        """R34-H01: Rejected block with bad stateRoot must not double-decrement height.
+
+        Byzantine validator sends a block with valid structure but wrong
+        state_root. The receiving node must reject it AND keep its chain
+        height correct (not off by -1).
+        """
+        tx1 = Transaction.notarize(wallet.address, "aa" * 32, nonce=0)
+        tx1.sign(wallet.signing_sk, wallet.signing_pk)
+        block1, _ = submit_and_mine(blockchain, wallet, tx1)
+
+        tx2 = Transaction.notarize(wallet.address, "bb" * 32, nonce=1)
+        tx2.sign(wallet.signing_sk, wallet.signing_pk)
+        block2, _ = submit_and_mine(blockchain, wallet, tx2)
+
+        # Tamper block2: replace state_root with a fake value, re-sign
+        block2.state_root = "ff" * 32
+        block2._cached_header = None
+        block2._cached_hash = None
+        block2.sign(wallet.signing_sk)
+
+        # Build a fresh blockchain, replay block 1, then attempt tampered block 2
+        bc2 = _make_blockchain_with_validator(wallet)
+        ok, _ = bc2.add_block(block1)
+        assert ok
+        height_before = bc2.height
+
+        # Attempt tampered block — must be rejected
+        ok, err = bc2.add_block(block2)
+        assert not ok
+        assert "state_root mismatch" in err
+
+        # R34-H01: height must remain unchanged after rejection
+        assert bc2.height == height_before, (
+            f"Height changed from {height_before} to {bc2.height} after "
+            f"rejected block — double decrement bug (R34-H01)"
+        )
+
+        # latest_block must still point to block1 (not the rejected block)
+        assert bc2.latest_block is not None
+        assert bc2.latest_block.index == height_before
+
 
 # ===========================================================================
 # Double-spend and replay attacks
@@ -491,23 +587,27 @@ class TestForkAttacks:
             nonces[w.address] = n + 1
         assert bc.height == 2
 
-        # Build 3-block fork from genesis
-        fork_blocks = []
-        fork_parent = bc.chain[0].block_hash
+        # Build 3-block fork from genesis using a separate blockchain
+        # so fork blocks carry valid state_root (RS-2 strict validation)
+        bc_fork = Blockchain()
+        bc_fork.consensus.add_validator(v1.address, v1.signing_pk)
+        bc_fork.consensus.add_validator(v2.address, v2.signing_pk)
+        bc_fork.init_chain(v1.address, v1.signing_sk)
+
         fork_nonces = {}
-        for i in range(1, 4):
-            expected = bc.consensus.select_validator(
-                i, parent_hash=fork_parent)
+        for _ in range(3):
+            expected = bc_fork.consensus.select_validator(
+                len(bc_fork.chain),
+                parent_hash=bc_fork.latest_block.block_hash)
             w = v1 if expected == v1.address else v2
             n = fork_nonces.get(w.address, 0)
             tx = Transaction.notarize(w.address, f"ff{n:062x}", nonce=n)
             tx.sign(w.signing_sk, w.signing_pk)
-            fb = Block(index=i, prev_hash=fork_parent, transactions=[tx],
-                       validator=expected, timestamp=bc.chain[0].timestamp + i)
-            fb.sign(w.signing_sk)
-            fork_parent = fb.block_hash
-            fork_blocks.append(fb)
+            bc_fork.submit_tx(tx)
+            bc_fork.produce_block(expected, w.signing_sk)
             fork_nonces[w.address] = n + 1
+
+        fork_blocks = [bc_fork.get_block(i) for i in range(1, 4)]
 
         ok, msg = bc.try_reorg(fork_blocks)
         assert ok, msg

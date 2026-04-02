@@ -431,6 +431,11 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
             ok, err = self.consensus.validate_block(block, parent)
             if not ok:
                 return False, err
+            # RS-2: Received blocks MUST carry a state_root for strict validation.
+            # Blocks with empty state_root bypass state integrity checks entirely,
+            # allowing Byzantine validators to submit corrupted state undetected.
+            if block.index > 0 and not block.state_root:
+                return False, "missing state_root: received blocks must include state_root"
             try:
                 self._append_block(block)
             except ValueError as exc:
@@ -485,6 +490,13 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         parent = self._latest_block
         applied = []
         for fb in fork_blocks:
+            # RS-2: fork blocks must also carry state_root
+            if fb.index > 0 and not fb.state_root:
+                if applied:
+                    self._rollback_to(fork_start)
+                for orig_block in saved_chain:
+                    self._append_block(orig_block)
+                return False, f"fork block #{fb.index} missing state_root"
             ok, err = self.consensus.validate_block(fb, parent)
             if not ok:
                 # Rollback any partially-applied fork blocks FIRST
@@ -583,8 +595,10 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
             # On failure, undo all changes to prevent corrupted state.
             displaced: list = []
             self._rollback_block(block, displaced)
-            # Restore height and latest block
-            self._height -= 1
+            # _rollback_block already decrements self._height (R34-H01 fix:
+            # removed duplicate self._height -= 1 that caused double decrement).
+            # Clean up chain_list / store since _rollback_block does not remove
+            # the block from storage.
             if self._chain_list is not None and self._chain_list and self._chain_list[-1] is block:
                 self._chain_list.pop()
             if self._store is not None:
@@ -608,6 +622,25 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         self._height = idx
         self._latest_block = block
         self._block_by_hash[block.block_hash] = idx
+
+        # R32-F04: Process epoch transition and unbondings BEFORE block TXs
+        # so that epoch reward distribution uses pre-TX balances, preventing
+        # front-running via validator self-transfer in epoch-boundary blocks.
+        _block_level_events: list[dict] = []
+
+        # Collect matured stakers BEFORE processing removes them from _unbonding
+        matured_stakers = {e["staker"] for e in self._unbonding
+                          if e["release_block"] <= idx}
+
+        # Process mature unbondings (release_block <= current block index)
+        self._process_mature_unbondings(idx)
+
+        # Epoch transition: snapshot validators at epoch boundaries
+        epoch_before = self._current_epoch
+        self._check_epoch_transition(idx)
+        if self._current_epoch > epoch_before:
+            _block_level_events.append(
+                build_event("EpochTransition", epoch=self._current_epoch))
 
         # Receipt accumulator: tx_idx -> (fee_paid, events)
         _receipt_data: list[tuple[int, str, int, list[dict]]] = []
@@ -916,7 +949,6 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
 
         # Apply block reward (MINT is implicit -- not a user tx)
         # Only active when chain has minted supply (financial layer active)
-        _block_level_events: list[dict] = []
         if idx > 0 and self._financial_active:
             reward = self._calc_block_reward(idx)
             if reward > 0:
@@ -928,21 +960,6 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                 self._epoch_rewards[block.validator] = (
                     self._epoch_rewards.get(block.validator, 0) + reward
                 )
-
-        # Collect matured stakers BEFORE processing removes them from _unbonding
-        matured_stakers = {e["staker"] for e in self._unbonding
-                          if e["release_block"] <= idx}
-
-        # Process mature unbondings (release_block <= current block index)
-        self._process_mature_unbondings(idx)
-
-        # Epoch transition: snapshot validators at epoch boundaries
-        # (must happen before persist so epoch reward distributions are included)
-        epoch_before = self._current_epoch
-        self._check_epoch_transition(idx)
-        if self._current_epoch > epoch_before:
-            _block_level_events.append(
-                build_event("EpochTransition", epoch=self._current_epoch))
 
         # Store block-level events (not tied to any specific TX)
         self._block_level_events[idx] = _block_level_events
