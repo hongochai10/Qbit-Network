@@ -1931,9 +1931,47 @@ class TestLightClientEndpoints(AsyncRESTTestCase):
         self.assertIn(resp.status, (200, 404))
 
     async def test_state_proof_by_key_invalid_block(self):
+        node = self.app["_mock_node"]
         resp = await self.client.get(
-            "/api/v1/proofs/state/somekey?block=abc")
+            f"/api/v1/proofs/state/balance:{node.wallet.address}?block=abc")
         self.assertEqual(resp.status, 400)
+
+    # -- R30-003: State proof key prefix restriction tests --
+
+    async def test_state_proof_nonce_prefix_allowed(self):
+        """nonce: prefix is public — should not return 403."""
+        node = self.app["_mock_node"]
+        resp = await self.client.get(
+            f"/api/v1/proofs/state/nonce:{node.wallet.address}")
+        self.assertIn(resp.status, (200, 404))
+
+    async def test_state_proof_token_prefix_denied_without_auth(self):
+        """token: prefix requires auth — returns 403 without Bearer token."""
+        resp = await self.client.get(
+            "/api/v1/proofs/state/token:abc:balance:qv1someaddr")
+        self.assertEqual(resp.status, 403)
+        body = await resp.json()
+        self.assertIn("authentication required", body["error"]["message"])
+
+    async def test_state_proof_token_prefix_allowed_with_auth(self):
+        """token: prefix is accessible with valid auth token."""
+        resp = await self.client.get(
+            "/api/v1/proofs/state/token:abc:balance:qv1someaddr",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"})
+        # Should pass prefix check; 200 or 404 depending on state trie
+        self.assertIn(resp.status, (200, 404))
+
+    async def test_state_proof_arbitrary_key_denied(self):
+        """Arbitrary key prefixes (not balance:/nonce:/token:) are denied."""
+        resp = await self.client.get("/api/v1/proofs/state/validator:somekey")
+        self.assertEqual(resp.status, 403)
+        body = await resp.json()
+        self.assertIn("not allowed", body["error"]["message"])
+
+    async def test_state_proof_empty_key_prefix_denied(self):
+        """Keys without a recognized prefix are denied."""
+        resp = await self.client.get("/api/v1/proofs/state/randomkey123")
+        self.assertEqual(resp.status, 403)
 
     async def test_receipt_proof(self):
         resp = await self.client.get("/api/v1/proofs/receipt/aabbccdd")
@@ -2255,24 +2293,73 @@ class TestErrorPathsViaPatching(AsyncRESTTestCase):
         node = self.app["_mock_node"]
         node._rpc_submit_evidence = AsyncMock(
             return_value={"tx_id": "ev-123"})
+        valid_body = {
+            "wallet_address": "w1", "validator_address": "v1",
+            "block_index": 5, "block_a_hash": "ha", "block_b_hash": "hb",
+            "block_a_sig": "sa", "block_b_sig": "sb",
+            "block_a_header": "hda", "block_b_header": "hdb",
+        }
         resp = await self.client.post(
             "/api/v1/evidence",
             headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
-            json={"validator": "v1", "evidence_type": "double_sign"},
+            json=valid_body,
         )
         self.assertEqual(resp.status, 201)
+        node._rpc_submit_evidence.assert_called_once_with(
+            wallet_address="w1", validator_address="v1",
+            block_index=5, block_a_hash="ha", block_b_hash="hb",
+            block_a_sig="sa", block_b_sig="sb",
+            block_a_header="hda", block_b_header="hdb",
+            max_fee_per_weight=None, max_priority_fee=None,
+        )
 
     async def test_submit_evidence_internal_error(self):
         from unittest.mock import AsyncMock
         node = self.app["_mock_node"]
         node._rpc_submit_evidence = AsyncMock(
             side_effect=Exception("evidence error"))
+        valid_body = {
+            "wallet_address": "w1", "validator_address": "v1",
+            "block_index": 5, "block_a_hash": "ha", "block_b_hash": "hb",
+            "block_a_sig": "sa", "block_b_sig": "sb",
+            "block_a_header": "hda", "block_b_header": "hdb",
+        }
         resp = await self.client.post(
             "/api/v1/evidence",
             headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
-            json={"validator": "v1", "evidence_type": "double_sign"},
+            json=valid_body,
         )
         self.assertEqual(resp.status, 500)
+
+    async def test_submit_evidence_rejects_unknown_fields(self):
+        """R31-001: unknown fields in evidence body are rejected with 400."""
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": "w1", "validator_address": "v1",
+                "block_index": 5, "block_a_hash": "ha", "block_b_hash": "hb",
+                "block_a_sig": "sa", "block_b_sig": "sb",
+                "block_a_header": "hda", "block_b_header": "hdb",
+                "__proto__": "injected", "evil_param": True,
+            },
+        )
+        self.assertEqual(resp.status, 400)
+        data = await resp.json()
+        self.assertIn("unknown fields", data["error"]["message"])
+
+    async def test_submit_evidence_missing_wallet_address(self):
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "validator_address": "v1", "block_index": 5,
+                "block_a_hash": "ha", "block_b_hash": "hb",
+                "block_a_sig": "sa", "block_b_sig": "sb",
+                "block_a_header": "hda", "block_b_header": "hdb",
+            },
+        )
+        self.assertEqual(resp.status, 400)
 
     async def test_submit_tx_value_error(self):
         from unittest.mock import AsyncMock

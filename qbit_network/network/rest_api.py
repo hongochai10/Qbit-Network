@@ -656,8 +656,55 @@ class RESTApi:
             return _err(400, "invalid JSON body")
         if not isinstance(body, dict):
             return _err(400, "body must be JSON object")
+
+        _ALLOWED = {
+            "wallet_address", "validator_address", "block_index",
+            "block_a_hash", "block_b_hash", "block_a_sig", "block_b_sig",
+            "block_a_header", "block_b_header",
+            "max_fee_per_weight", "max_priority_fee",
+        }
+        unknown = set(body.keys()) - _ALLOWED
+        if unknown:
+            return _err(400, f"unknown fields: {sorted(unknown)}")
+
+        wallet_address = body.get("wallet_address", "")
+        validator_address = body.get("validator_address", "")
+        block_index = body.get("block_index", 0)
+        block_a_hash = body.get("block_a_hash", "")
+        block_b_hash = body.get("block_b_hash", "")
+        block_a_sig = body.get("block_a_sig", "")
+        block_b_sig = body.get("block_b_sig", "")
+        block_a_header = body.get("block_a_header", "")
+        block_b_header = body.get("block_b_header", "")
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
+
+        if not isinstance(wallet_address, str) or not wallet_address:
+            return _err(400, "wallet_address is required and must be a string")
+        if not isinstance(validator_address, str) or not validator_address:
+            return _err(400, "validator_address is required and must be a string")
+        if not isinstance(block_index, int) or block_index < 0:
+            return _err(400, "block_index must be a non-negative integer")
+        for fname, fval in [("block_a_hash", block_a_hash), ("block_b_hash", block_b_hash),
+                            ("block_a_sig", block_a_sig), ("block_b_sig", block_b_sig),
+                            ("block_a_header", block_a_header), ("block_b_header", block_b_header)]:
+            if not isinstance(fval, str) or not fval:
+                return _err(400, f"{fname} must be a non-empty string")
+
         try:
-            result = await self._node._rpc_submit_evidence(**body)
+            result = await self._node._rpc_submit_evidence(
+                wallet_address=wallet_address,
+                validator_address=validator_address,
+                block_index=block_index,
+                block_a_hash=block_a_hash,
+                block_b_hash=block_b_hash,
+                block_a_sig=block_a_sig,
+                block_b_sig=block_b_sig,
+                block_a_header=block_a_header,
+                block_b_header=block_b_header,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee,
+            )
             return _ok(result, status=201)
         except ValueError as e:
             return _err(400, str(e))
@@ -1075,9 +1122,9 @@ class RESTApi:
             return _err(404, "token not found", status=404)
         page = int(request.query.get("page", 1))
         limit = int(request.query.get("limit", 100))
-        holders = bc.get_token_holders(token_id, page=page, limit=limit)
+        holders, total = bc.get_token_holders(token_id, page=page, limit=limit)
         return _ok({"token_id": token_id, "holders": holders,
-                     "total": len(holders), "page": page, "limit": limit})
+                     "total": total, "page": page, "limit": limit})
 
     async def _get_address_tokens(self, request: web.Request) -> web.Response:
         addr = request.match_info.get("addr", "")
@@ -1197,10 +1244,25 @@ class RESTApi:
             return _err(404, "block not found", status=404)
         return _ok(block.to_header_dict())
 
+    # Key prefixes allowed without authentication for state proofs
+    _PUBLIC_PROOF_PREFIXES = ("balance:", "nonce:")
+    # Key prefixes that require authentication
+    _AUTHED_PROOF_PREFIXES = ("token:",)
+
     async def _state_proof_by_key(self, request: web.Request) -> web.Response:
         key = request.match_info.get("key", "")
         if not key:
             return _err(400, "key is required")
+        # Restrict key prefixes: only balance:/nonce: are public;
+        # token:* requires auth; all others are denied.
+        is_public = any(key.startswith(p) for p in self._PUBLIC_PROOF_PREFIXES)
+        is_authed_prefix = any(key.startswith(p) for p in self._AUTHED_PROOF_PREFIXES)
+        if not is_public:
+            if is_authed_prefix:
+                if not self._check_auth(request):
+                    return _err(403, "authentication required for token state proofs", status=403)
+            else:
+                return _err(403, "state proof key prefix not allowed", status=403)
         block_str = request.query.get("block")
         block_index = None
         if block_str is not None:
