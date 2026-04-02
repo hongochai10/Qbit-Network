@@ -328,25 +328,28 @@ class TestTransactionReplay:
         assert not ok
         assert "wrong chain_id" in err
 
-    def test_empty_chain_id_backward_compatible(self, blockchain, wallet):
-        """TX with empty chain_id (legacy) passes consensus chain_id check (R36-M01).
+    def test_empty_chain_id_rejected_in_block(self, blockchain, wallet):
+        """TX with empty chain_id is now rejected by consensus (R36-M01 strict).
 
-        Empty chain_id is treated as legacy — the consensus validator allows it
-        through so old blocks stored without chain_id can still be loaded.
+        Previously empty chain_id was allowed for backward compatibility,
+        but this created a bypass for cross-chain replay. Now all TXs in
+        received blocks must have the correct chain_id.
+        Old blocks loaded from SQLite bypass validate_block entirely.
         """
-        from qbit_network.config import CHAIN_ID as CFG_CHAIN_ID
         tx = Transaction(TxType.NOTARIZE, wallet.address,
                          payload={"documentHash": "aa", "metadata": ""},
                          nonce=0, chain_id="")
         tx.sign(wallet.signing_sk, wallet.signing_pk)
-        # The chain_id check in consensus is: if tx.chain_id and tx.chain_id != CHAIN_ID
-        # Empty string is falsy, so it passes through.
         assert tx.chain_id == ""
-        # Verify signable bytes differ from a TX with the real chain_id
-        tx_real = Transaction(TxType.NOTARIZE, wallet.address,
-                              payload={"documentHash": "aa", "metadata": ""},
-                              nonce=0, chain_id=CFG_CHAIN_ID)
-        assert tx.tx_id != tx_real.tx_id
+        block = Block(
+            index=blockchain.height + 1,
+            prev_hash=blockchain.latest_block.block_hash,
+            transactions=[tx], validator=wallet.address,
+            timestamp=blockchain.latest_block.timestamp + 1)
+        block.sign(wallet.signing_sk)
+        ok, err = blockchain.add_block(block)
+        assert not ok
+        assert "wrong chain_id" in err
 
     def test_from_dict_backward_compat_missing_chain_id(self):
         """from_dict accepts TX without chainId for backward compatibility (R36-M01)."""

@@ -217,9 +217,10 @@ class ProofOfAuthority:
                 return False, f"invalid tx signature: {tx.tx_id[:16]}..."
 
             # Chain ID validation — reject cross-chain replay (R36-M01)
-            if tx.chain_id and tx.chain_id != CHAIN_ID:
+            # Strict check: empty chain_id is also invalid (no bypass).
+            if tx.chain_id != CHAIN_ID:
                 return False, (f"wrong chain_id in tx {tx.tx_id[:16]}...: "
-                               f"expected {CHAIN_ID}, got {tx.chain_id}")
+                               f"expected {CHAIN_ID}, got {tx.chain_id!r}")
 
             if tx.tx_id in seen_ids:
                 return False, f"duplicate tx in block: {tx.tx_id[:16]}..."
