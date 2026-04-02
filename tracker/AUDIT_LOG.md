@@ -2,15 +2,18 @@
 
 ## Summary
 
-- **Total rounds**: 29 (including all v0.8.0 sprints)
-- **Total issues found**: 275+
-- **Total fixed**: 257+
-- **Accepted risks / open**: 2 (R21-010 informational, R23-002 latent/safe)
-- **R26 status**: 4 done (R26-001/002/003/004), 3 open (R26-005/006/007), 2 INFO (1 done)
-- **R27 findings**: 2 MEDIUM, 2 LOW — webhook SSRF, block events (R27-002/004 fixed)
-- **R28 findings**: 3 MEDIUM, 4 LOW, 1 INFO — fee type safety, wallet locks DoS, trie key defense (R28-003 fixed)
-- **R29 findings**: 2 MEDIUM, 2 LOW, 1 INFO — token holder DoS, inbound P2P IP bypass, state proof key probing
-- **Latest**: Round 29 CEO audit — 2026-03-31
+- **Total rounds**: 33 (including all v0.8.0 sprints)
+- **Total issues found**: 300+
+- **Total fixed**: 258+
+- **Open issues**: 32 (4 HIGH, 14 MED, 18 LOW, 3 INFO)
+- **Accepted risks**: 2 (R21-010 informational, R23-002 latent/safe)
+- **R28 findings**: 3 MEDIUM, 4 LOW, 1 INFO — R28-001/002/003/004/007 fixed, R28-005/006 open
+- **R29 findings**: 2 MEDIUM, 2 LOW, 1 INFO — R29-001/002/003/004/005 open
+- **R30 findings**: 3 MEDIUM, 4 LOW, 2 INFO — unbounded amounts, P2P fee bypass, state proof enumeration
+- **R31 findings**: 2 MEDIUM, 4 LOW, 1 INFO — REST param injection, pagination, fee config
+- **R32 findings**: 4 MEDIUM, 4 LOW — epoch reward front-run, token fee accounting, SQLite safety, state root
+- **R33 findings**: 4 HIGH, 6 MEDIUM, 5 LOW — EVIDENCE replay, TRANSFER rollback, liboqs version, stateRoot policy, reputation decay, height decrement, state snapshots, get_block trust
+- **Latest**: Round 33 CEO audit + security auditor review — 2026-04-02
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -567,3 +570,215 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 | TEC-929 | DevOps: Prometheus metrics + health check | devops-engineer | MEDIUM |
 
 **Round 29 summary:** 5 found (2 MED, 2 LOW, 1 INFO), 3 prior items corrected to fixed. 10 total open issues across all rounds. No critical/high blockers. 5 subtasks created (TEC-925 to TEC-929) under parent TEC-899.
+
+---
+
+## Round 30 — CEO Comprehensive Audit (2026-04-02)
+
+**Scope:** Full codebase review of all 40+ Python source files + security audit + test suite validation
+**Method:** 3-agent parallel audit (codebase explorer, security auditor, test runner)
+**Test results:** 2,894 tests passed, 0 failures, 85% coverage
+
+### Findings
+
+| # | Sev | Issue | File | Fix |
+|---|-----|-------|------|-----|
+| R30-001 | MED | Unbounded TRANSFER/STAKE/MINT amount — pool DoS via big integers | transaction.py:222 | Add `amount > MAX_SUPPLY` check in validate_payload |
+| R30-002 | MED | P2P transactions bypass fee param upper bound (2^63 cap) | transaction.py:383 | Add upper bound in from_dict() |
+| R30-003 | MED | State proof endpoint arbitrary trie key enumeration (extends R29-003) | rest_api.py:261, node.py:1048 | Restrict to `balance:`/`nonce:` prefixes for public |
+| R30-004 | LOW | TRANSFER amount validation inconsistency between payload and from_dict | transaction.py:222 vs :369 | Defense-in-depth: add type checks in from_dict |
+| R30-005 | LOW | `_auth_attempts` dict unbounded under IP rotation attack | p2p.py:857 | Cap at 10K entries with LRU eviction |
+| R30-006 | LOW | REST `/pool` exposes tx type distribution without auth | rest_api.py:479 | Move by_type behind auth |
+| R30-007 | LOW | `state_tree.get_proof()` uses O(n) list.index instead of bisect | state_tree.py:91 | Replace with bisect.bisect_left |
+| R30-008 | INFO | Receipt events contain unsanitized user data (webhook XSS risk) | receipt_ops.py | Document as untrusted input |
+| R30-009 | INFO | WebSocket auth bypass path when no token configured | websocket.py:168 | Not exploitable — auto-generated token prevents |
+
+### Positive findings
+
+- PQC implementation correct (ML-DSA-65, ML-KEM-768 via liboqs)
+- Financial integrity solid (_credit/_debit, epoch rewards, rollback)
+- SSRF protection effective (connect-time DNS resolver)
+- Auth/crypto patterns strong (HMAC-SHA256, mutual ML-DSA auth)
+- Consensus safety enforced (validate_block on all paths)
+- 100% coverage on all crypto modules
+
+### Subtasks created
+
+| Task | Title | Assignee | Priority |
+|------|-------|----------|----------|
+| TEC-1110 | Fix R30-001/R30-002: Amount/fee upper bounds | security-engineer | HIGH |
+| TEC-1111 | Fix R30-003/R29-003: State proof key restriction | security-engineer | HIGH |
+| TEC-1112 | Fix R29-001/R29-002: Token holder pagination + P2P IP bypass | senior-backend-engineer | HIGH |
+| TEC-1113 | Fix R30-005/R28-005/R26-005/R30-007: Memory bounds + validation | founding-engineer | MEDIUM |
+| TEC-1114 | Expand test coverage: P2P/node/websocket to 85%+ | qa-engineer | MEDIUM |
+
+**Round 30 summary:** 9 found (3 MED, 4 LOW, 2 INFO). No CRITICAL or HIGH. All findings are input validation gaps — fixable in 2 sprints. 5 subtasks created (TEC-1110 to TEC-1114) under parent TEC-1083. Total open issues across all rounds: ~17 (0 critical/high).
+
+---
+
+## Round 31 — CEO Comprehensive Audit (2026-04-02)
+
+**Scope:** Full codebase audit (40 source files, ~13,847 lines), test suite verification (3,175 tests), tracker reconciliation, documentation review.
+
+**Methodology:** Parallel agent audit (security-auditor + test-runner + docs-explorer) with CEO synthesis.
+
+### Tracker Reconciliation
+
+5 issues previously marked "todo" found to be already fixed in code:
+
+| Issue | Evidence |
+|-------|----------|
+| R26-005 | `node.py:1099-1104` validates event_type |
+| R29-002 | `p2p.py:951` has `_is_safe_inbound_ip()` check |
+| R30-002 | `Transaction.from_dict()` lines 397-402 validates fee cap |
+| R30-005 | `p2p.py:870-871` has LRU cap on `_auth_attempts` |
+| R30-007 | `state_tree.py:93` uses `bisect.bisect_left` |
+
+### Findings
+
+| # | Sev | Issue | File | Fix |
+|---|-----|-------|------|-----|
+| R31-001 | MED | REST `_submit_evidence` passes raw body as **kwargs — param injection | rest_api.py:659 | Explicitly extract fields, remove **body splat |
+| R31-002 | MED | REST `_get_token_holders`/`_get_address_tokens` bare int() — 500 on bad input | rest_api.py:1076 | Use `_parse_pagination()` or try/except |
+| R31-003 | LOW | Block `from_dict` does not validate `baseFee` type/range | block.py:127 | Add isinstance+range check |
+| R31-004 | LOW | `list_tokens` returns unstable ordering across nodes | query.py:133 | Sort by deterministic key before pagination |
+| R31-005 | LOW | `_deliver_block_webhooks` materializes all events before filtering | node.py:1287 | Lazy iteration or filter-on-collect |
+| R31-006 | LOW | WebSocket auth bypass when no token configured | websocket.py:167 | Accepted — log WARNING at startup |
+| R31-007 | INFO | `DYNAMIC_FEE_ACTIVATION_HEIGHT` default 2^63 effectively disabled | config.py:106 | Add env var QBIT_DYNAMIC_FEE_ACTIVATION |
+
+### Test Suite Verification
+
+| Metric | Value |
+|--------|-------|
+| Tests collected | 3,175 |
+| Passed | 3,174 |
+| Failed | 0 |
+| Skipped | 1 |
+| Overall coverage | 91% |
+| Lowest: rest_api.py | 51% |
+| Lowest: rpc.py | 56% |
+| Lowest: persistence.py | 58% |
+
+### Subtasks Created
+
+| Task | Title | Assignee | Priority |
+|------|-------|----------|----------|
+| TEC-1129 | Fix REST evidence param injection (R31-001) | security-engineer | HIGH |
+| TEC-1130 | Fix REST pagination validation (R31-002) | senior-backend-engineer | HIGH |
+| TEC-1131 | Fix flaky test_p2p MLKEM import | qa-engineer | HIGH |
+| TEC-1132 | Reconcile trackers + update docs R29-R31 | technical-writer | HIGH |
+| TEC-1133 | REST API test coverage 51% → 80%+ | qa-engineer | HIGH |
+| TEC-1134 | CI/CD pipeline with pytest gate | devops-engineer | HIGH |
+| TEC-1135 | Block baseFee validation (R31-003) | senior-backend-engineer | MEDIUM |
+| TEC-1136 | Token list ordering (R31-004) | senior-backend-engineer | MEDIUM |
+| TEC-1137 | Dynamic fee CLI activation (R31-007) | senior-backend-engineer | MEDIUM |
+
+**Round 31 summary:** 7 found (2 MED, 4 LOW, 1 INFO), 6 open, 1 accepted (R31-006). 5 stale tracker entries reconciled to done. No CRITICAL or HIGH. 9 subtasks created (TEC-1129 to TEC-1137) under parent TEC-1122. Test baseline updated: 1,781 → 3,174. Coverage: 78% → 91%. Total open issues across all rounds: 17 (5 MED, 9 LOW, 3 INFO) — 0 critical/high.
+
+## Round 32 — CEO Full Audit (2026-04-02)
+
+**Scope:** Full codebase review (40+ Python source files, ~14,000 lines). Cross-referenced against 31 prior rounds.
+**Method:** Parallel agent dispatch (security-auditor, explorer, test-runner) + CEO synthesis.
+**Trigger:** TEC-1172 — Comprehensive project audit and improvement plan.
+
+| ID | Sev | Issue | Location | Recommendation |
+|----|-----|-------|----------|----------------|
+| R32-F01 | MED | SQLite connection not thread-safe across async context — reload can race with concurrent reads | store.py:143 | Connection-per-thread model or connection pool; ensure `_load_from_sqlite` not called while serving |
+| R32-F02 | MED | Token operation QBIT fees (ISSUE/MINT/TRANSFER_TOKEN) missing from `_pending_debits` — pool admits txs that fail at block production | ledger.py:91-112 | Add all fee-bearing TX types to `_pending_debits` |
+| R32-F03 | MED | No post-load integrity verification — state root not compared after SQLite reload | persistence.py:141 | Recompute state root after load, compare against latest block's stored root |
+| R32-F04 | MED | Epoch reward front-running — validator self-transfer in epoch-boundary block reduces delegator rewards | staking.py:219 | Snapshot validator balance before epoch-boundary TXs are applied |
+| R32-F05 | LOW | Evidence rollback does not restore slashed stake — permanent stake loss after reorg | rollback.py:277 | Record pre-slash stakes in event, restore during rollback |
+| R32-F06 | LOW | `_ChainProxy.__iter__` O(n) SQLite queries — performance bottleneck on large chains | blockchain.py:70 | Direct SQLite query for `_find_validator_pk_in_chain` instead of full iteration |
+| R32-F07 | LOW | `_drain_pool` does not clean stale nonce entries after mined TXs | blockchain.py:536 | Validate remaining pool entries' nonces after drain, remove invalid |
+| R32-F08 | LOW | RPC batch processing sequential — DoS via slow batch queries | rpc.py:293 | Use `asyncio.gather` for read-only methods in batches |
+
+### Test Suite Verification (Round 32)
+
+| Metric | Value |
+|--------|-------|
+| Tests collected | 3,200 |
+| Passed | 3,199 |
+| Failed | 0 |
+| Skipped | 1 (dynamic fee activation guard) |
+| Warnings | 3 (unawaited coroutines in P2P/REST teardown) |
+| Overall coverage | 91% |
+| Duration | ~90 seconds |
+
+### Thin Coverage Areas
+
+| Area | Tests | Target |
+|------|-------|--------|
+| Block module (test_block.py) | 22 | 40+ |
+| Dynamic fee config | 6 | 25+ |
+| SQLite verify-on-load | 6 | 15+ |
+
+### Subtasks Created (Round 32)
+
+| Task | Title | Assignee | Priority |
+|------|-------|----------|----------|
+| TEC-1174 | Fix epoch reward front-running (R32-F04) | security-engineer | HIGH |
+| TEC-1175 | Add token fees to _pending_debits (R32-F02) | senior-backend-engineer | HIGH |
+| TEC-1176 | Post-load state root verification (R32-F03) | database-architect | HIGH |
+| TEC-1177 | Complete v0.9.0 DID specification | architect | CRITICAL |
+| TEC-1178 | Commit test_persistence.py + expand test coverage | qa-engineer | HIGH |
+
+**Round 32 summary:** 8 found (4 MED, 4 LOW), 8 open, 0 accepted. No CRITICAL or HIGH severity. 5 subtasks created (TEC-1174 to TEC-1178) under parent TEC-1172. Test baseline updated: 3,174 → 3,200 (+26 tests). Coverage stable at 91%. Total open issues across all rounds: 25 (9 MED, 13 LOW, 3 INFO) — 0 critical/high.
+
+## Round 33 — CEO Comprehensive Audit (2026-04-02)
+
+**Scope:** Full codebase audit (40+ Python source files, ~14,000 lines). 3-agent parallel dispatch (security-auditor, researcher, test-runner) + CEO synthesis.
+**Trigger:** TEC-1180 — Blockchain PQC comprehensive audit.
+**Tests:** 3,263 collected, 3,262 passed, 1 skipped, 0 failures. 91% coverage.
+
+### Findings
+
+| ID | Sev | Issue | File | Recommendation |
+|----|-----|-------|------|----------------|
+| R33-H01 | HIGH | SQLite reload skips EVIDENCE TX replay — slashed validators regain full stake on restart | persistence.py:261-289 | Replay EVIDENCE txs during load, or prefer SQLite stakes over TX-replayed stakes |
+| R33-H02 | HIGH | TRANSFER rollback uses min(amount,bal) — QBIT created from nothing on reorg | rollback.py:142-149 | Rollback journal or full state rebuild from remaining chain |
+| R33-M01 | MED | _pending_debits double-count risk for token TXs + O(n) pool scan | ledger.py:91-112 | Pre-computed pending fee cache (extends R32-F02, R25-006) |
+| R33-M02 | MED | _find_validator_pk_in_chain O(n) chain scan during rollback | rollback.py:53-66 | Validator history index for O(1) lookup (extends R32-F06) |
+| R33-M03 | MED | REST _submit_evidence kwargs splat — param injection (confirming R31-001) | rest_api.py | Explicitly extract fields (TEC-1181) |
+| R33-M04 | MED | SQLite connection shared across async context (confirming R32-F01) | store.py:143 | Connection-per-thread or check_same_thread=False (TEC-1188) |
+| R33-L01 | LOW | _drain_pool stale nonce entries (confirming R32-F07) | blockchain.py:536 | Re-validate remaining pool entries after block |
+| R33-L02 | LOW | Version string mismatch (confirming R29-005) | __init__.py vs config.py | TEC-1186 |
+| R33-L03 | LOW | _last_epoch_distributions grows unbounded | blockchain.py:139 | Prune beyond MAX_REORG_DEPTH |
+| R33-L04 | LOW | _events_by_type list grows unbounded | blockchain.py:155 | Cap to recent window, serve old from SQLite |
+| R33-L05 | LOW | Receipt index rebuild O(blocks * receipts) on load | persistence.py:329-338 | Single SQLite query for all receipts |
+| R33-L06 | LOW | _ChainProxy.__iter__ O(n) SQLite queries (confirming R32-F06) | blockchain.py:70 | Direct SQLite query |
+
+### Research Scientist Findings
+
+| ID | Sev | Issue | Recommendation |
+|----|-----|-------|----------------|
+| RS-1 | HIGH | liboqs version mismatch: Dockerfile 0.12.0 vs README 0.15.0 | Pin both to 0.15.0, startup check — **RESOLVED**: all files pinned to 0.15.0 |
+| RS-2 | HIGH | stateRoot verification: warn-but-accept on mismatch | Reject blocks with wrong state_root |
+| RS-3 | MED | No algorithm agility in wire format | Add algo version field |
+| RS-4 | MED | No state sync protocol for new nodes | Implement in v0.10.0 |
+| RS-5 | MED | No transaction TTL/expiry | Add validUntilBlock field |
+
+### Subtasks Created
+
+| Task | Title | Assignee | Priority |
+|------|-------|----------|----------|
+| TEC-1181 | REST param injection + state proof restriction | security-engineer | CRITICAL |
+| TEC-1183 | Token fees _pending_debits + pagination | senior-backend-engineer | HIGH |
+| TEC-1184 | Unbounded amount + validation | security-engineer | HIGH |
+| TEC-1185 | CI/CD pipeline + Docker | devops-engineer | HIGH |
+| TEC-1186 | REST API test coverage 51% → 80%+ | qa-engineer | HIGH |
+| TEC-1187 | Documentation sync for R32/R33 | technical-writer | HIGH |
+| TEC-1188 | Post-load state root + SQLite safety | database-architect | HIGH |
+| TEC-1189 | Epoch reward front-running | security-engineer | HIGH |
+| TEC-1190 | Prometheus + health check + logging | infrastructure-engineer | MEDIUM |
+| TEC-1191 | liboqs version mismatch (RS-1) | devops-engineer | HIGH |
+| TEC-1192 | Enforce stateRoot verification (RS-2) | security-engineer | HIGH |
+| TEC-1193 | Slashing not replayed on load (R33-H01) | security-engineer | CRITICAL |
+| TEC-1194 | TRANSFER rollback balance conservation (R33-H02) | senior-backend-engineer | CRITICAL |
+
+**Round 33 summary:** 12 findings (2 HIGH, 4 MED, 6 LOW) from security auditor + 5 findings from researcher. 2 HIGH severity issues are new and require immediate attention. 13 subtasks created (TEC-1181 to TEC-1194) under parent TEC-1180. Test baseline: 3,263 collected, 3,262 passing. Coverage: 91%. Total open issues across all rounds: ~37 (2 HIGH, 13 MED, 19 LOW, 3 INFO).
+
+### R33 Post-Audit Fixes
+
+| ID | Fix | TEC | Tests |
+|----|-----|-----|-------|
+| R33-M04 (ISSUES) | Removed duplicate `self._height -= 1` in `_append_block_inner_safe` — `_rollback_block` already decrements height | TEC-1222 | Regression test `test_state_root_mismatch_no_double_height_decrement` added; 3329 tests pass |

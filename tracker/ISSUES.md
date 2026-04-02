@@ -18,7 +18,7 @@
 | R33-M01 | MEDIUM | _pending_debits double-count risk + O(n) pool scan | senior-backend-engineer | P1 | todo (extends R32-F02) |
 | R33-M02 | MEDIUM | _find_validator_pk_in_chain O(n) scan during rollback | founding-engineer | P2 | todo |
 | R33-M03 | MEDIUM | Reputation score decay toward 0 instead of DEFAULT_SCORE — idle peers unfairly penalized | senior-backend-engineer | P1 | todo (TEC-1208) |
-| R33-M04 | MEDIUM | Double height decrement in _append_block_inner_safe failure path — chain height corruption | senior-backend-engineer | P1 | todo (TEC-1209) |
+| R33-M04 | MEDIUM | Double height decrement in _append_block_inner_safe failure path — chain height corruption | founding-engineer | P1 | **done** (TEC-1222) — removed duplicate `self._height -= 1`, regression test added |
 | R33-M05 | MEDIUM | _state_snapshots memory growth unbounded — OOM risk on long-running chains | senior-backend-engineer | P1 | todo (TEC-1210) |
 | R33-M06 | MEDIUM | Runtime get_block() trusts SQLite data without block hash verification | senior-backend-engineer | P2 | todo |
 
