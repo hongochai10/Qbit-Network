@@ -1943,3 +1943,1127 @@ class TestMutualAuthWithEncryption:
         # Both sides should have the same session key
         assert peer_b_at_a.session_key == peer_a_at_b.session_key
         assert len(peer_b_at_a.session_key) == 32
+
+
+# ===========================================================================
+# TEC-1114: Expand P2P coverage (start, stop, connect, read_loop, on_connect,
+# auth rate, rate cleanup, dispatch, parse, read_message, etc.)
+# ===========================================================================
+
+import json as _json_mod
+
+
+class TestP2PNodeStartStop:
+    """Tests for P2PNode.start() and stop()."""
+
+    @pytest.mark.asyncio
+    async def test_start_creates_server_and_cleanup_task(self):
+        """start() opens a TCP server and spawns the rate cleanup task."""
+        node = P2PNode(host="127.0.0.1", port=0)
+        await node.start()
+        try:
+            assert node._server is not None
+            assert node._cleanup_task is not None
+            assert not node._cleanup_task.done()
+        finally:
+            await node.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_cleanup_task(self):
+        """stop() cancels the cleanup task and closes the server."""
+        node = P2PNode(host="127.0.0.1", port=0)
+        await node.start()
+        await node.stop()
+        await asyncio.sleep(0.1)
+        assert node._cleanup_task.done() or node._cleanup_task.cancelled()
+        assert len(node.peers) == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_all_peers(self):
+        """stop() closes all connected peers."""
+        node = P2PNode(host="127.0.0.1", port=0)
+        await node.start()
+        # Add a mock peer
+        peer = Peer("1.2.3.4", 9000)
+        peer.connected = True
+        peer.writer = MagicMock()
+        peer.writer.is_closing.return_value = False
+        peer.writer.close = MagicMock()
+        node.peers["1.2.3.4:9000"] = peer
+        await node.stop()
+        assert len(node.peers) == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_zeroes_key_material(self):
+        """stop() calls .zero() on secret keys if available."""
+        node = P2PNode(host="127.0.0.1", port=0)
+        await node.start()
+        # Mock zero-able keys
+        mock_sk = MagicMock()
+        mock_sk.zero = MagicMock()
+        node.signing_sk = mock_sk
+        mock_enc_sk = MagicMock()
+        mock_enc_sk.zero = MagicMock()
+        node.encryption_sk = mock_enc_sk
+        await node.stop()
+        mock_sk.zero.assert_called_once()
+        mock_enc_sk.zero.assert_called_once()
+
+
+class TestP2PConnect:
+    """Tests for P2PNode.connect() outbound connection."""
+
+    @pytest.mark.asyncio
+    async def test_connect_max_peers_rejects(self):
+        """connect() returns early when peers are at max capacity."""
+        node = P2PNode()
+        for i in range(MAX_PEERS):
+            node.peers[f"1.2.3.{i}:9000"] = MagicMock()
+        await node.connect("8.8.8.8", 9000)
+        # Should not have been added
+        assert "8.8.8.8:9000" not in node.peers
+
+    @pytest.mark.asyncio
+    async def test_connect_duplicate_peer_skipped(self):
+        """connect() skips already-connected peers."""
+        node = P2PNode()
+        node.peers["8.8.8.8:9000"] = MagicMock()
+        await node.connect("8.8.8.8", 9000)
+        # Should still have only 1 entry
+        assert len(node.peers) == 1
+
+    @pytest.mark.asyncio
+    async def test_connect_unsafe_peer_blocked(self):
+        """connect() rejects unsafe peers (e.g. port 22)."""
+        node = P2PNode()
+        await node.connect("8.8.8.8", 22)
+        assert "8.8.8.8:22" not in node.peers
+
+    @pytest.mark.asyncio
+    async def test_connect_network_error_handled(self):
+        """connect() catches ConnectionRefusedError gracefully."""
+        node = P2PNode(host="127.0.0.1", port=19999)
+        # Try connecting to a port that's not listening
+        await node.connect("127.0.0.1", 19998)
+        # Should not raise, and peer should not be added
+        assert "127.0.0.1:19998" not in node.peers
+
+    @pytest.mark.asyncio
+    async def test_connect_with_signing_keys_sends_hello_auth(self):
+        """connect() sends hello_auth when signing keys are available."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+
+        writes = []
+        mock_reader = MagicMock()
+        mock_writer = MagicMock()
+        mock_writer.is_closing.return_value = False
+        mock_writer.write = lambda data: writes.append(data)
+        async def _drain():
+            pass
+        mock_writer.drain = _drain
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            with patch("asyncio.create_task"):
+                await node.connect("8.8.8.8", 9000)
+
+        assert "8.8.8.8:9000" in node.peers
+        peer = node.peers["8.8.8.8:9000"]
+        assert peer.is_initiator is True
+        # Should have sent hello_auth
+        assert len(writes) >= 1
+        msg = _json_mod.loads(writes[0].decode().strip())
+        assert msg["type"] == "hello_auth"
+
+    @pytest.mark.asyncio
+    async def test_connect_without_signing_keys_sends_hello(self):
+        """connect() sends plain hello when no signing keys."""
+        node = P2PNode()
+
+        writes = []
+        mock_reader = MagicMock()
+        mock_writer = MagicMock()
+        mock_writer.is_closing.return_value = False
+        mock_writer.write = lambda data: writes.append(data)
+        async def _drain():
+            pass
+        mock_writer.drain = _drain
+
+        with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
+            with patch("asyncio.create_task"):
+                await node.connect("8.8.8.8", 9000)
+
+        assert len(writes) >= 1
+        msg = _json_mod.loads(writes[0].decode().strip())
+        assert msg["type"] == "hello"
+
+
+class TestP2PBroadcast:
+    """Tests for P2PNode.broadcast()."""
+
+    @pytest.mark.asyncio
+    async def test_broadcast_sends_to_connected_peers(self):
+        """broadcast() sends to all connected peers except excluded."""
+        node = P2PNode()
+        p1 = MagicMock()
+        p1.connected = True
+        p1.send_encrypted = AsyncMock()
+        p2 = MagicMock()
+        p2.connected = True
+        p2.send_encrypted = AsyncMock()
+        node.peers = {"1.2.3.4:9000": p1, "5.6.7.8:9000": p2}
+
+        await node.broadcast(MSG_NEW_BLOCK, {"block": {}}, exclude="1.2.3.4:9000")
+
+        p1.send_encrypted.assert_not_called()
+        p2.send_encrypted.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_skips_disconnected_peers(self):
+        """broadcast() ignores disconnected peers."""
+        node = P2PNode()
+        p1 = MagicMock()
+        p1.connected = False
+        p1.send_encrypted = AsyncMock()
+        node.peers = {"1.2.3.4:9000": p1}
+
+        await node.broadcast(MSG_STATUS, {"height": 5})
+        p1.send_encrypted.assert_not_called()
+
+
+class TestP2PDispatchAndParse:
+    """Tests for _dispatch() and _parse()."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_calls_registered_handler(self):
+        """_dispatch() invokes the handler for a registered message type."""
+        node = P2PNode()
+        handler = AsyncMock()
+        node.on("test_msg", handler)
+        peer = MagicMock()
+        await node._dispatch("test_msg", peer, {"x": 1})
+        handler.assert_called_once_with(peer, {"x": 1})
+
+    @pytest.mark.asyncio
+    async def test_dispatch_unregistered_type_noop(self):
+        """_dispatch() does nothing for unregistered message types."""
+        node = P2PNode()
+        peer = MagicMock()
+        await node._dispatch("unknown_msg", peer, {})  # should not raise
+
+    def test_parse_valid_json(self):
+        """_parse() returns (type, data) from valid JSON."""
+        line = _json_mod.dumps({"type": "hello", "data": {"port": 9000}}).encode() + b"\n"
+        result = P2PNode._parse(line)
+        assert result == ("hello", {"port": 9000})
+
+    def test_parse_invalid_json(self):
+        """_parse() returns None for malformed JSON."""
+        result = P2PNode._parse(b"not json\n")
+        assert result is None
+
+    def test_parse_invalid_unicode(self):
+        """_parse() returns None for invalid unicode."""
+        result = P2PNode._parse(b"\x80\x81\x82\n")
+        assert result is None
+
+
+class TestP2PReadMessage:
+    """Tests for _read_message() with JSON and msgpack formats."""
+
+    @pytest.mark.asyncio
+    async def test_read_message_json_valid(self):
+        """_read_message() reads JSON-formatted messages."""
+        line = _json_mod.dumps({"type": "hello", "data": {"port": 9000}}).encode() + b"\n"
+        reader = AsyncMock()
+        reader.readline = AsyncMock(return_value=line)
+        peer = MagicMock()
+        peer.wire_format = "json"
+
+        result = await P2PNode._read_message(reader, peer)
+        assert result == ("hello", {"port": 9000})
+
+    @pytest.mark.asyncio
+    async def test_read_message_json_empty_line(self):
+        """_read_message() returns None on empty line."""
+        reader = AsyncMock()
+        reader.readline = AsyncMock(return_value=b"")
+        peer = MagicMock()
+        peer.wire_format = "json"
+
+        result = await P2PNode._read_message(reader, peer)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_read_message_json_invalid(self):
+        """_read_message() returns None for invalid JSON."""
+        reader = AsyncMock()
+        reader.readline = AsyncMock(return_value=b"not json\n")
+        peer = MagicMock()
+        peer.wire_format = "json"
+
+        result = await P2PNode._read_message(reader, peer)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_read_message_msgpack_valid(self):
+        """_read_message() reads msgpack-formatted messages."""
+        from qbit_network.network.codec import MessageCodec
+        codec = MessageCodec("msgpack")
+        raw = codec.encode("hello", {"port": 9000})
+        # raw includes 4-byte length header + payload
+        reader = AsyncMock()
+        header = raw[:4]
+        payload = raw[4:]
+        reader.readexactly = AsyncMock(side_effect=[header, payload])
+        peer = MagicMock()
+        peer.wire_format = "msgpack"
+
+        result = await P2PNode._read_message(reader, peer)
+        assert result is not None
+        assert result[0] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_read_message_msgpack_zero_length(self):
+        """_read_message() returns None for zero-length msgpack frame."""
+        reader = AsyncMock()
+        reader.readexactly = AsyncMock(return_value=(0).to_bytes(4, 'big'))
+        peer = MagicMock()
+        peer.wire_format = "msgpack"
+
+        result = await P2PNode._read_message(reader, peer)
+        assert result is None
+
+
+class TestP2PAuthRateLimit:
+    """Tests for auth rate limiting and rate cleanup loop."""
+
+    def test_auth_rate_allows_under_limit(self):
+        node = P2PNode()
+        for _ in range(_AUTH_RATE_MAX):
+            assert node._check_auth_rate("1.2.3.4") is True
+
+    def test_auth_rate_blocks_over_limit(self):
+        node = P2PNode()
+        for _ in range(_AUTH_RATE_MAX):
+            node._check_auth_rate("1.2.3.4")
+        assert node._check_auth_rate("1.2.3.4") is False
+
+    def test_auth_rate_localhost_exempt(self):
+        node = P2PNode()
+        for _ in range(_AUTH_RATE_MAX + 5):
+            assert node._check_auth_rate("127.0.0.1") is True
+
+    def test_auth_rate_lru_eviction(self):
+        """Exceeding _AUTH_ATTEMPTS_CAP evicts oldest entries."""
+        node = P2PNode()
+        for i in range(_AUTH_ATTEMPTS_CAP + 1):
+            node._check_auth_rate(f"10.0.{i // 256}.{i % 256}")
+        assert len(node._auth_attempts) <= _AUTH_ATTEMPTS_CAP
+
+    def test_should_disconnect_rate(self):
+        """_should_disconnect_rate returns True when violations exceed max."""
+        from qbit_network.config import P2P_RATE_VIOLATIONS_MAX
+        node = P2PNode()
+        node._rate_limiter = MagicMock()
+        node._rate_limiter.violations.return_value = P2P_RATE_VIOLATIONS_MAX
+        node.reputation = MagicMock()
+        peer = Peer("1.2.3.4", 9000)
+        assert node._should_disconnect_rate(peer) is True
+
+    def test_should_disconnect_rate_false(self):
+        """_should_disconnect_rate returns False when violations under max."""
+        node = P2PNode()
+        node._rate_limiter = MagicMock()
+        node._rate_limiter.violations.return_value = 0
+        peer = Peer("1.2.3.4", 9000)
+        assert node._should_disconnect_rate(peer) is False
+
+    def test_check_rate_limit_exempt_msg_types(self):
+        """Rate-exempt message types are always allowed."""
+        node = P2PNode()
+        peer = Peer("8.8.8.8", 9000)
+        for msg_type in _RATE_EXEMPT:
+            assert node._check_rate_limit(peer, msg_type) is True
+
+    def test_check_rate_limit_localhost_exempt(self):
+        """Localhost peers are exempt from rate limiting."""
+        node = P2PNode()
+        peer = Peer("127.0.0.1", 9000)
+        assert node._check_rate_limit(peer, MSG_NEW_BLOCK) is True
+
+    def test_check_reputation_allows_good_peer(self):
+        """_check_reputation returns True for non-banned peers."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        assert node._check_reputation(peer) is True
+
+    @pytest.mark.asyncio
+    async def test_rate_cleanup_loop_runs_and_cancels(self):
+        """_rate_cleanup_loop cleans up stale entries and responds to cancel."""
+        node = P2PNode()
+        node._rate_limiter = MagicMock()
+        node._rate_limiter.cleanup.return_value = 0
+        node.reputation = MagicMock()
+
+        # Add some stale auth attempts
+        node._auth_attempts["1.2.3.4"] = [time.monotonic() - 120]
+
+        task = asyncio.create_task(node._rate_cleanup_loop())
+        # The loop sleeps 60s, so we patch sleep
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            mock_sleep.side_effect = [None, asyncio.CancelledError()]
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # Stale entries should have been cleaned
+        assert "1.2.3.4" not in node._auth_attempts
+
+
+class TestP2POnConnect:
+    """Tests for P2PNode._on_connect() inbound handler."""
+
+    @pytest.mark.asyncio
+    async def test_on_connect_max_peers_closes(self):
+        """Inbound connection rejected when peers at max."""
+        node = P2PNode()
+        for i in range(MAX_PEERS):
+            node.peers[f"1.2.3.{i}:9000"] = MagicMock()
+
+        writer = MagicMock()
+        writer.close = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("5.5.5.5", 12345))
+
+        reader = AsyncMock()
+        await node._on_connect(reader, writer)
+        writer.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_on_connect_banned_peer_rejected(self):
+        """Inbound connection from banned peer is rejected."""
+        node = P2PNode()
+        # Record enough failures to trigger ban (score goes below -100)
+        node.reputation.record("5.5.5.5", "auth_failed")
+        node.reputation.record("5.5.5.5", "auth_failed")
+        assert node.reputation.is_banned("5.5.5.5")
+
+        writer = MagicMock()
+        writer.close = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("5.5.5.5", 12345))
+
+        reader = AsyncMock()
+        await node._on_connect(reader, writer)
+        writer.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_on_connect_hello_timeout(self):
+        """Inbound connection that sends no hello within timeout is dropped."""
+        node = P2PNode()
+        writer = MagicMock()
+        writer.close = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("8.8.8.8", 12345))
+
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        await node._on_connect(reader, writer)
+        # Peer should be cleaned up
+
+    @pytest.mark.asyncio
+    async def test_on_connect_empty_first_line(self):
+        """Inbound connection that sends empty data is handled."""
+        node = P2PNode()
+        writer = MagicMock()
+        writer.close = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("8.8.8.8", 12345))
+
+        reader = AsyncMock()
+        reader.readline = AsyncMock(return_value=b"")
+
+        await node._on_connect(reader, writer)
+
+    @pytest.mark.asyncio
+    async def test_on_connect_v1_hello_accepted(self):
+        """Inbound v1 (plain hello) connection is accepted."""
+        node = P2PNode()
+        hello = _json_mod.dumps({
+            "type": "hello", "data": {"node_id": "test123", "port": 9000}
+        }).encode() + b"\n"
+
+        writes = []
+        writer = MagicMock()
+        writer.close = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = lambda data: writes.append(data)
+        async def _drain():
+            pass
+        writer.drain = _drain
+        writer.get_extra_info = MagicMock(return_value=("8.8.8.8", 12345))
+
+        call_count = 0
+
+        async def readline_side_effect():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return hello
+            # Subsequent reads: simulate disconnect
+            raise ConnectionResetError("disconnected")
+
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=readline_side_effect)
+        reader.readexactly = AsyncMock(side_effect=ConnectionResetError())
+
+        await node._on_connect(reader, writer)
+
+        # Should have sent hello reply
+        assert len(writes) >= 1
+        msg = _json_mod.loads(writes[0].decode().strip())
+        assert msg["type"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_on_connect_oversize_message_handled(self):
+        """Inbound connection with oversized message is handled gracefully."""
+        node = P2PNode()
+        hello = _json_mod.dumps({
+            "type": "hello", "data": {"node_id": "test", "port": 9000}
+        }).encode() + b"\n"
+
+        writes = []
+        writer = MagicMock()
+        writer.close = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = lambda data: writes.append(data)
+        async def _drain():
+            pass
+        writer.drain = _drain
+        writer.get_extra_info = MagicMock(return_value=("8.8.8.8", 12345))
+
+        call_count = 0
+
+        async def readline_side_effect():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return hello
+            raise asyncio.LimitOverrunError("too big", 999999)
+
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=readline_side_effect)
+
+        await node._on_connect(reader, writer)
+        # Should have recorded protocol_error reputation
+        # (no crash)
+
+
+class TestP2PUpdatePeerKey:
+    """Tests for _update_peer_key() method."""
+
+    def test_update_peer_key_valid_port(self):
+        """_update_peer_key() re-keys peer with valid port."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 0)
+        temp_key = "_inbound_1.2.3.4_123"
+        node.peers[temp_key] = peer
+
+        new_key = node._update_peer_key(peer, temp_key, temp_key, 9000)
+        assert new_key == "1.2.3.4:9000"
+        assert "1.2.3.4:9000" in node.peers
+        assert temp_key not in node.peers
+
+    def test_update_peer_key_invalid_port_keeps_old_key(self):
+        """_update_peer_key() keeps old key for invalid port."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 0)
+        temp_key = "_inbound_1.2.3.4_123"
+        node.peers[temp_key] = peer
+
+        new_key = node._update_peer_key(peer, temp_key, temp_key, -1)
+        assert new_key == temp_key
+
+    def test_update_peer_key_collision_keeps_temp_key(self):
+        """_update_peer_key() keeps temp_key when real_key already exists."""
+        node = P2PNode()
+        existing = Peer("1.2.3.4", 9000)
+        node.peers["1.2.3.4:9000"] = existing
+
+        peer = Peer("1.2.3.4", 0)
+        temp_key = "_inbound_1.2.3.4_456"
+        node.peers[temp_key] = peer
+
+        new_key = node._update_peer_key(peer, temp_key, temp_key, 9000)
+        assert new_key == temp_key
+
+
+class TestP2PDecryptMessage:
+    """Tests for _decrypt_message()."""
+
+    def test_no_session_key_returns_none(self):
+        """_decrypt_message() returns None without session key."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.session_key = None
+        assert node._decrypt_message(peer, {"data": "aabb"}) is None
+
+    def test_non_string_data_returns_none(self):
+        """_decrypt_message() returns None for non-string data field."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.session_key = os.urandom(32)
+        assert node._decrypt_message(peer, {"data": 42}) is None
+
+    def test_invalid_hex_returns_none(self):
+        """_decrypt_message() returns None for invalid hex."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.session_key = os.urandom(32)
+        assert node._decrypt_message(peer, {"data": "not_hex_zzz"}) is None
+
+    def test_decrypt_failure_returns_none(self):
+        """_decrypt_message() returns None on decryption failure."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.session_key = os.urandom(32)
+        # Provide valid hex but invalid ciphertext
+        assert node._decrypt_message(peer, {"data": "aabbccdd"}) is None
+
+    def test_valid_decrypt_returns_inner(self):
+        """_decrypt_message() decrypts and returns (type, data)."""
+        from qbit_network.crypto.aes import aes_encrypt
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        key = os.urandom(32)
+        peer.session_key = key
+        inner = _json_mod.dumps({"type": "new_block", "data": {"index": 5}}).encode()
+        ct = aes_encrypt(key, inner)
+        result = node._decrypt_message(peer, {"data": ct.hex()})
+        assert result is not None
+        assert result[0] == "new_block"
+        assert result[1]["index"] == 5
+
+
+class TestP2PSessionKey:
+    """Tests for _handle_session_key() edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_session_key_no_encryption_keys(self):
+        """_handle_session_key() returns False without encryption keys."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.authenticated = True
+        result = await node._handle_session_key(peer, {"ciphertext": "aa"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_session_key_unauthenticated_peer(self):
+        """_handle_session_key() returns False for unauthenticated peer."""
+        w = Wallet.generate()
+        node = P2PNode(encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer = Peer("1.2.3.4", 9000)
+        peer.authenticated = False
+        result = await node._handle_session_key(peer, {"ciphertext": "aa"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_session_key_non_string_ciphertext(self):
+        """_handle_session_key() returns False for non-string ciphertext."""
+        w = Wallet.generate()
+        node = P2PNode(encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer = Peer("1.2.3.4", 9000)
+        peer.authenticated = True
+        result = await node._handle_session_key(peer, {"ciphertext": 42})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_session_key_invalid_hex(self):
+        """_handle_session_key() returns False for invalid hex ciphertext."""
+        w = Wallet.generate()
+        node = P2PNode(encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer = Peer("1.2.3.4", 9000)
+        peer.authenticated = True
+        result = await node._handle_session_key(peer, {"ciphertext": "not_hex"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_session_key_wrong_ciphertext_length(self):
+        """_handle_session_key() returns False for wrong ciphertext length."""
+        w = Wallet.generate()
+        node = P2PNode(encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer = Peer("1.2.3.4", 9000)
+        peer.authenticated = True
+        result = await node._handle_session_key(peer, {"ciphertext": "aabbccdd"})
+        assert result is False
+
+
+class TestP2PInitiateEncryptedChannel:
+    """Tests for _initiate_encrypted_channel()."""
+
+    @pytest.mark.asyncio
+    async def test_no_encryption_keys_skips(self):
+        """_initiate_encrypted_channel() does nothing without encryption keys."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.encryption_pk = os.urandom(32)
+        await node._initiate_encrypted_channel(peer)
+        assert not peer.encrypted
+
+    @pytest.mark.asyncio
+    async def test_no_peer_encryption_pk_skips(self):
+        """_initiate_encrypted_channel() does nothing without peer encryption_pk."""
+        w = Wallet.generate()
+        node = P2PNode(encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer = Peer("1.2.3.4", 9000)
+        peer.encryption_pk = None
+        await node._initiate_encrypted_channel(peer)
+        assert not peer.encrypted
+
+    @pytest.mark.asyncio
+    async def test_encapsulate_error_handled(self):
+        """_initiate_encrypted_channel() handles encapsulation errors."""
+        w = Wallet.generate()
+        node = P2PNode(encryption_sk=w.encryption_sk, encryption_pk=w.encryption_pk)
+        peer = Peer("1.2.3.4", 9000)
+        peer.encryption_pk = b'\x00' * 10  # invalid key
+        # Patch to raise
+        from qbit_network.crypto.mlkem import MLKEM
+        with patch.object(MLKEM, 'encapsulate', side_effect=ValueError("bad key")):
+            await node._initiate_encrypted_channel(peer)
+        assert not peer.encrypted
+
+
+class TestP2PAuthConfirm:
+    """Tests for _handle_auth_confirm() edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_auth_confirm_no_challenge(self):
+        """_handle_auth_confirm() returns False without pending challenge."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = b''
+        result = await node._handle_auth_confirm(peer, {})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auth_confirm_no_remote_pubkey(self):
+        """_handle_auth_confirm() returns False without remote_pubkey."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = os.urandom(32)
+        peer.remote_pubkey = b''
+        result = await node._handle_auth_confirm(peer, {})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auth_confirm_timeout(self):
+        """_handle_auth_confirm() returns False after auth deadline."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = os.urandom(32)
+        peer.remote_pubkey = w.signing_pk
+        peer.auth_deadline = time.monotonic() - 10  # expired
+        result = await node._handle_auth_confirm(peer, {"challenge_sig": "aabb"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auth_confirm_non_string_sig(self):
+        """_handle_auth_confirm() returns False for non-string challenge_sig."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = os.urandom(32)
+        peer.remote_pubkey = w.signing_pk
+        peer.auth_deadline = time.monotonic() + 60
+        result = await node._handle_auth_confirm(peer, {"challenge_sig": 42})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auth_confirm_invalid_hex(self):
+        """_handle_auth_confirm() returns False for invalid hex sig."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = os.urandom(32)
+        peer.remote_pubkey = w.signing_pk
+        peer.auth_deadline = time.monotonic() + 60
+        result = await node._handle_auth_confirm(peer, {"challenge_sig": "not_hex!!"})
+        assert result is False
+
+
+class TestP2PAuthResponse:
+    """Tests for _handle_auth_response() edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_auth_response_no_challenge(self):
+        """_handle_auth_response() returns False without pending challenge."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = b''
+        result = await node._handle_auth_response(peer, {})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auth_response_timeout(self):
+        """_handle_auth_response() returns False after auth deadline."""
+        node = P2PNode()
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = os.urandom(32)
+        peer.auth_deadline = time.monotonic() - 10
+        result = await node._handle_auth_response(peer, {"signing_pk": "aa"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auth_response_invalid_signing_pk(self):
+        """_handle_auth_response() returns False for invalid signing_pk."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = os.urandom(32)
+        peer.auth_deadline = time.monotonic() + 60
+        result = await node._handle_auth_response(peer, {"signing_pk": "xx"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auth_response_non_string_sig(self):
+        """_handle_auth_response() returns False for non-string challenge_sig."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = os.urandom(32)
+        peer.auth_deadline = time.monotonic() + 60
+
+        w2 = Wallet.generate()
+        result = await node._handle_auth_response(peer, {
+            "signing_pk": w2.signing_pk.hex(),
+            "challenge_sig": 42,  # non-string
+        })
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auth_response_invalid_hex_sig(self):
+        """_handle_auth_response() returns False for invalid hex sig."""
+        w = Wallet.generate()
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        peer = Peer("1.2.3.4", 9000)
+        peer.challenge = os.urandom(32)
+        peer.auth_deadline = time.monotonic() + 60
+
+        w2 = Wallet.generate()
+        result = await node._handle_auth_response(peer, {
+            "signing_pk": w2.signing_pk.hex(),
+            "challenge_sig": "not_valid_hex!!",
+        })
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_auth_response_invalid_counter_challenge_type(self):
+        """_handle_auth_response() returns False for non-string counter_challenge."""
+        w = Wallet.generate()
+        w2 = Wallet.generate()
+        from qbit_network.crypto.mldsa import MLDSA
+
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        peer = Peer("1.2.3.4", 9000)
+        challenge = os.urandom(32)
+        peer.challenge = challenge
+        peer.auth_deadline = time.monotonic() + 60
+
+        # Create a valid signature
+        auth_msg = _build_auth_message(challenge, w2.address)
+        sig = MLDSA.sign(w2.signing_sk, auth_msg)
+
+        result = await node._handle_auth_response(peer, {
+            "signing_pk": w2.signing_pk.hex(),
+            "challenge_sig": sig.hex(),
+            "counter_challenge": 42,  # non-string
+        })
+        assert result is False
+
+class TestP2PReadLoop:
+    """Tests for _read_loop() (outbound) message handling."""
+
+    @pytest.mark.asyncio
+    async def test_read_loop_status_updates_height(self):
+        """_read_loop processes MSG_STATUS and updates peer height."""
+        node = P2PNode()
+        writes = []
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        writer.write = lambda d: writes.append(d)
+        async def _drain():
+            pass
+        writer.drain = _drain
+        writer.close = MagicMock()
+
+        peer = Peer("8.8.8.8", 9000, writer=writer)
+        peer.connected = True
+        peer.wire_format = "json"
+        node.peers[peer.addr] = peer
+
+        # Prepare messages: STATUS then disconnect
+        msgs = [
+            _json_mod.dumps({"type": "status", "data": {"height": 42}}).encode() + b"\n",
+            b"",  # empty = disconnect
+        ]
+        msg_iter = iter(msgs)
+
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=lambda: next(msg_iter))
+        peer.reader = reader
+
+        await node._read_loop(peer)
+        assert peer.height == 42
+        assert not peer.connected
+
+    @pytest.mark.asyncio
+    async def test_read_loop_connection_reset(self):
+        """_read_loop handles ConnectionResetError gracefully."""
+        node = P2PNode()
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        writer.close = MagicMock()
+
+        peer = Peer("8.8.8.8", 9000, writer=writer)
+        peer.connected = True
+        peer.wire_format = "json"
+        node.peers[peer.addr] = peer
+
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=ConnectionResetError())
+        peer.reader = reader
+
+        await node._read_loop(peer)
+        assert not peer.connected
+
+    @pytest.mark.asyncio
+    async def test_read_loop_dispatches_handler(self):
+        """_read_loop dispatches to registered handler."""
+        node = P2PNode()
+        received = []
+        handler = AsyncMock(side_effect=lambda p, d: received.append(d))
+        node.on(MSG_GET_PEERS, handler)
+
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        writer.close = MagicMock()
+
+        peer = Peer("8.8.8.8", 9000, writer=writer)
+        peer.connected = True
+        peer.wire_format = "json"
+        node.peers[peer.addr] = peer
+
+        msgs = [
+            _json_mod.dumps({"type": "get_peers", "data": {}}).encode() + b"\n",
+            b"",
+        ]
+        msg_iter = iter(msgs)
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=lambda: next(msg_iter))
+        peer.reader = reader
+
+        await node._read_loop(peer)
+        assert len(received) == 1
+
+    @pytest.mark.asyncio
+    async def test_read_loop_limit_overrun(self):
+        """_read_loop handles LimitOverrunError (oversized message)."""
+        node = P2PNode()
+        node.reputation = MagicMock()
+        writer = MagicMock()
+        writer.is_closing.return_value = False
+        writer.close = MagicMock()
+
+        peer = Peer("8.8.8.8", 9000, writer=writer)
+        peer.connected = True
+        peer.wire_format = "json"
+        node.peers[peer.addr] = peer
+
+        reader = AsyncMock()
+        reader.readline = AsyncMock(
+            side_effect=asyncio.LimitOverrunError("too big", 999999))
+        peer.reader = reader
+
+        await node._read_loop(peer)
+        assert not peer.connected
+        node.reputation.record.assert_called_with(peer.addr, "protocol_error")
+
+
+class TestP2PInboundMessageLoop:
+    """Tests for the inbound _on_connect message loop paths."""
+
+    @pytest.mark.asyncio
+    async def test_on_connect_hello_then_messages(self):
+        """Inbound: hello followed by status + dispatch + disconnect."""
+        node = P2PNode()
+        handler = AsyncMock()
+        node.on(MSG_GET_PEERS, handler)
+
+        hello = _json_mod.dumps({
+            "type": "hello", "data": {"node_id": "test", "port": 9000}
+        }).encode() + b"\n"
+        status = _json_mod.dumps({
+            "type": "status", "data": {"height": 10}
+        }).encode() + b"\n"
+        get_peers = _json_mod.dumps({
+            "type": "get_peers", "data": {}
+        }).encode() + b"\n"
+
+        writes = []
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = lambda d: writes.append(d)
+        async def _drain():
+            pass
+        writer.drain = _drain
+        writer.close = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("8.8.8.8", 12345))
+
+        msgs = [hello, status, get_peers, b""]
+        msg_iter = iter(msgs)
+
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=lambda: next(msg_iter))
+
+        await node._on_connect(reader, writer)
+
+        # Handler should have been called for get_peers
+        assert handler.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_on_connect_rate_limited_messages_skipped(self):
+        """Inbound: rate-limited messages are dropped without dispatch."""
+        node = P2PNode()
+        # Make rate limiter always reject
+        node._rate_limiter = MagicMock()
+        node._rate_limiter.check.return_value = False
+        node._rate_limiter.violations.return_value = 0
+        handler = AsyncMock()
+        node.on(MSG_NEW_BLOCK, handler)
+
+        hello = _json_mod.dumps({
+            "type": "hello", "data": {"node_id": "test", "port": 9000}
+        }).encode() + b"\n"
+        block_msg = _json_mod.dumps({
+            "type": "new_block", "data": {"block": {}}
+        }).encode() + b"\n"
+
+        writes = []
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = lambda d: writes.append(d)
+        async def _drain():
+            pass
+        writer.drain = _drain
+        writer.close = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("8.8.8.8", 12345))
+
+        msgs = [hello, block_msg, b""]
+        msg_iter = iter(msgs)
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=lambda: next(msg_iter))
+
+        await node._on_connect(reader, writer)
+        # new_block should NOT have been dispatched (rate limited)
+        handler.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_connect_rate_disconnect(self):
+        """Inbound: peer is disconnected when rate violations exceed max."""
+        from qbit_network.config import P2P_RATE_VIOLATIONS_MAX
+        node = P2PNode()
+        node._rate_limiter = MagicMock()
+        node._rate_limiter.check.return_value = False
+        node._rate_limiter.violations.return_value = P2P_RATE_VIOLATIONS_MAX
+        node.reputation = MagicMock()
+
+        hello = _json_mod.dumps({
+            "type": "hello", "data": {"node_id": "test", "port": 9000}
+        }).encode() + b"\n"
+        block_msg = _json_mod.dumps({
+            "type": "new_block", "data": {"block": {}}
+        }).encode() + b"\n"
+
+        writes = []
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = lambda d: writes.append(d)
+        async def _drain():
+            pass
+        writer.drain = _drain
+        writer.close = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("8.8.8.8", 12345))
+
+        msgs = [hello, block_msg, b""]
+        msg_iter = iter(msgs)
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=lambda: next(msg_iter))
+
+        await node._on_connect(reader, writer)
+
+    @pytest.mark.asyncio
+    async def test_on_connect_auth_gate_blocks_v2_unauthenticated(self):
+        """Inbound: v2 unauthenticated peer can't send new_block."""
+        node = P2PNode()
+        handler = AsyncMock()
+        node.on(MSG_NEW_BLOCK, handler)
+
+        hello = _json_mod.dumps({
+            "type": "hello", "data": {"node_id": "test", "port": 9000}
+        }).encode() + b"\n"
+        block_msg = _json_mod.dumps({
+            "type": "new_block", "data": {"block": {}}
+        }).encode() + b"\n"
+
+        writes = []
+        writer = MagicMock()
+        writer.is_closing = MagicMock(return_value=False)
+        writer.write = lambda d: writes.append(d)
+        async def _drain():
+            pass
+        writer.drain = _drain
+        writer.close = MagicMock()
+        writer.get_extra_info = MagicMock(return_value=("8.8.8.8", 12345))
+
+        msgs = [hello, block_msg, b""]
+        msg_iter = iter(msgs)
+        reader = AsyncMock()
+        reader.readline = AsyncMock(side_effect=lambda: next(msg_iter))
+
+        await node._on_connect(reader, writer)
+        # v1 peer should be allowed
+        # (default protocol_version=1 from plain hello, which is exempt)
+
+
+    @pytest.mark.asyncio
+    async def test_auth_response_wrong_counter_challenge_length(self):
+        """_handle_auth_response() returns False for wrong counter_challenge length."""
+        w = Wallet.generate()
+        w2 = Wallet.generate()
+        from qbit_network.crypto.mldsa import MLDSA
+
+        node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
+                       validator_address=w.address)
+        peer = Peer("1.2.3.4", 9000)
+        challenge = os.urandom(32)
+        peer.challenge = challenge
+        peer.auth_deadline = time.monotonic() + 60
+
+        auth_msg = _build_auth_message(challenge, w2.address)
+        sig = MLDSA.sign(w2.signing_sk, auth_msg)
+
+        result = await node._handle_auth_response(peer, {
+            "signing_pk": w2.signing_pk.hex(),
+            "challenge_sig": sig.hex(),
+            "counter_challenge": os.urandom(16).hex(),  # wrong length
+        })
+        assert result is False

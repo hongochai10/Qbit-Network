@@ -1050,3 +1050,287 @@ async def test_ws_heartbeat_stale_connection_auto_closes():
             assert mgr.connected_count() == 0
     finally:
         await server.close()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket coverage expansion tests (TEC-1114)
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketStatsLoop:
+    """Tests for _stats_loop and start_stats_loop/stop methods."""
+
+    def setup_method(self):
+        self.mgr = WebSocketManager()
+
+    def _mock_ws(self, closed=False):
+        ws = MagicMock()
+        ws.closed = closed
+        ws.send_str = AsyncMock()
+        ws.send_json = AsyncMock()
+        ws.close = AsyncMock()
+        return ws
+
+    @pytest.mark.asyncio
+    async def test_start_stats_loop_creates_task(self):
+        """start_stats_loop creates a background task."""
+        await self.mgr.start_stats_loop()
+        assert self.mgr._stats_task is not None
+        assert not self.mgr._stats_task.done()
+        self.mgr._stats_task.cancel()
+        try:
+            await self.mgr._stats_task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_stats_loop_broadcasts_when_subscribers_exist(self):
+        """_stats_loop broadcasts chain_stats when subscribers and _get_stats_fn exist."""
+        ws = self._mock_ws()
+        self.mgr._all_clients.add(ws)
+        self.mgr.add_subscriber(ws, "chain_stats")
+        self.mgr._get_stats_fn = lambda: {"height": 5, "peers": 2}
+
+        # Run the loop briefly
+        task = asyncio.create_task(self.mgr._stats_loop())
+        await asyncio.sleep(5.5)  # wait for one stats broadcast (every 5s)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # ws.send_str should have been called at least once (broadcast sends via send_str)
+        assert ws.send_str.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_stats_loop_skips_when_no_subscribers(self):
+        """_stats_loop is a no-op when chain_stats has no subscribers."""
+        call_count = 0
+
+        def mock_stats():
+            nonlocal call_count
+            call_count += 1
+            return {"height": 0}
+
+        self.mgr._get_stats_fn = mock_stats
+
+        task = asyncio.create_task(self.mgr._stats_loop())
+        await asyncio.sleep(5.5)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # stats fn should NOT have been called since no subscribers
+        assert call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_stats_loop_skips_when_no_stats_fn(self):
+        """_stats_loop skips broadcast when _get_stats_fn is None."""
+        ws = self._mock_ws()
+        self.mgr._all_clients.add(ws)
+        self.mgr.add_subscriber(ws, "chain_stats")
+        # _get_stats_fn is None by default
+
+        task = asyncio.create_task(self.mgr._stats_loop())
+        await asyncio.sleep(5.5)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert not ws.send_str.called
+
+    @pytest.mark.asyncio
+    async def test_stats_loop_handles_stats_fn_error(self):
+        """_stats_loop continues even if _get_stats_fn raises."""
+        ws = self._mock_ws()
+        self.mgr._all_clients.add(ws)
+        self.mgr.add_subscriber(ws, "chain_stats")
+        self.mgr._get_stats_fn = MagicMock(side_effect=RuntimeError("oops"))
+
+        task = asyncio.create_task(self.mgr._stats_loop())
+        await asyncio.sleep(5.5)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # Should not raise and loop should continue
+        assert self.mgr._get_stats_fn.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_stats_task(self):
+        """stop() cancels the running stats task."""
+        await self.mgr.start_stats_loop()
+        assert self.mgr._stats_task is not None
+        await self.mgr.stop()
+        # Allow cancellation to propagate
+        await asyncio.sleep(0.1)
+        # After stop, stats task should be cancelled or done
+        assert self.mgr._stats_task.done() or self.mgr._stats_task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_all_clients(self):
+        """stop() closes all connected WS clients."""
+        ws1 = self._mock_ws()
+        ws2 = self._mock_ws()
+        self.mgr._all_clients.add(ws1)
+        self.mgr._all_clients.add(ws2)
+        self.mgr.add_subscriber(ws1, "new_block")
+
+        await self.mgr.stop()
+
+        assert self.mgr.connected_count() == 0
+        assert len(self.mgr._subscribers["new_block"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_handles_close_error(self):
+        """stop() handles exceptions when closing clients."""
+        ws = self._mock_ws()
+        ws.close = AsyncMock(side_effect=Exception("close error"))
+        self.mgr._all_clients.add(ws)
+
+        # Should not raise
+        await self.mgr.stop()
+        assert self.mgr.connected_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_without_stats_task(self):
+        """stop() works even if stats loop was never started."""
+        await self.mgr.stop()  # should not raise
+
+
+class TestWebSocketBroadcastTimeout:
+    """Tests for broadcast timeout handling."""
+
+    def setup_method(self):
+        self.mgr = WebSocketManager()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_timeout_removes_slow_client(self):
+        """A client that times out on send_str is removed and closed."""
+        ws = MagicMock()
+        ws.closed = False
+        ws.send_str = AsyncMock(side_effect=asyncio.TimeoutError())
+        ws.close = AsyncMock()
+        self.mgr._all_clients.add(ws)
+        self.mgr.add_subscriber(ws, "new_block")
+
+        await self.mgr.broadcast("new_block", {"index": 1})
+
+        assert ws not in self.mgr._all_clients
+        ws.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_broadcast_timeout_close_also_errors(self):
+        """If closing a timed-out client also raises, it's handled gracefully."""
+        ws = MagicMock()
+        ws.closed = False
+        ws.send_str = AsyncMock(side_effect=asyncio.TimeoutError())
+        ws.close = AsyncMock(side_effect=Exception("close failed"))
+        self.mgr._all_clients.add(ws)
+        self.mgr.add_subscriber(ws, "new_block")
+
+        # Should not raise
+        await self.mgr.broadcast("new_block", {"index": 1})
+        assert ws not in self.mgr._all_clients
+
+
+@pytest.mark.asyncio
+async def test_ws_unsubscribe_missing_channel_field():
+    """An unsubscribe message without 'channel' gets an error response."""
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            await ws.send_json({"type": "unsubscribe"})
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "error"
+            assert "channel" in resp["message"]
+            await ws.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_unsubscribe_invalid_channel():
+    """Unsubscribe from an unknown channel returns error."""
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            await ws.send_json({"type": "unsubscribe", "channel": "bogus_xyz"})
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "error"
+            assert "unknown channel" in resp["message"]
+            await ws.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_subscribe_numeric_channel():
+    """Subscribe with a numeric channel (non-string) returns error."""
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            await ws.send_json({"type": "subscribe", "channel": 42})
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "error"
+            assert "channel" in resp["message"]
+            await ws.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_unsubscribe_numeric_channel():
+    """Unsubscribe with a numeric channel (non-string) returns error."""
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            await ws.send_json({"type": "unsubscribe", "channel": 42})
+            resp = json.loads((await ws.receive()).data)
+            assert resp["type"] == "error"
+            assert "channel" in resp["message"]
+            await ws.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_ws_rate_limit_exceeded():
+    """Exceeding the rate limit returns error message."""
+    server, mgr = await _make_ws_server()
+    try:
+        async with aiohttp.ClientSession() as session:
+            ws = await session.ws_connect(server.make_url("/ws"))
+            # Send WS_RATE_LIMIT + 1 messages rapidly
+            for _ in range(WS_RATE_LIMIT + 1):
+                await ws.send_json({"type": "ping"})
+
+            # Collect responses — the last one(s) should be rate limit errors
+            responses = []
+            for _ in range(WS_RATE_LIMIT + 1):
+                try:
+                    msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+                    if msg.data:
+                        responses.append(json.loads(msg.data))
+                except asyncio.TimeoutError:
+                    break
+
+            # At least one response should be a rate limit error
+            rate_errors = [r for r in responses if r.get("type") == "error"
+                          and "rate limit" in r.get("message", "")]
+            assert len(rate_errors) >= 1
+
+            await ws.close()
+    finally:
+        await server.close()

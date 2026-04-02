@@ -20,7 +20,7 @@ from qbit_network.core.block import Block
 from qbit_network.core.transaction import Transaction, TxType
 from qbit_network.core.wallet import Wallet
 from qbit_network.node import FullNode, _MAX_SHARED_SECRETS
-from qbit_network.network.p2p import MSG_NEW_BLOCK, MSG_NEW_TX, MSG_BLOCKS, MSG_GET_BLOCKS
+from qbit_network.network.p2p import MSG_NEW_BLOCK, MSG_NEW_TX, MSG_BLOCKS, MSG_GET_BLOCKS, MSG_STATUS
 
 
 # ---------------------------------------------------------------------------
@@ -1230,3 +1230,647 @@ class TestDynamicFeeRPCParams:
             dynfee_node._compute_fee_defaults(True, 1)
         with pytest.raises(ValueError, match="must be an integer"):
             dynfee_node._compute_fee_defaults(1, False)
+
+
+# ===========================================================================
+# TEC-1114: Expand node.py coverage
+# ===========================================================================
+
+
+class TestRPCTokenMintTransfer:
+    """Tests for token mint and transfer RPC methods."""
+
+    @pytest.mark.asyncio
+    async def test_mint_token(self, node_with_wallet, wallet):
+        """Minting custom tokens via RPC."""
+        node = node_with_wallet
+        # Issue first
+        issue_result = await node._rpc_issue_token(
+            wallet_address=wallet.address, name="Gold", symbol="GLD",
+            decimals=8, max_supply=10000)
+        node.blockchain.produce_block(wallet.address, wallet.signing_sk)
+        tid = issue_result["token_id"]
+        result = await node._rpc_mint_token(
+            wallet_address=wallet.address,
+            token_id=tid,
+            recipient=wallet.address,
+            amount=1000,
+        )
+        assert "tx_id" in result
+        assert result["token_id"] == tid
+        assert result["amount"] == 1000
+
+    @pytest.mark.asyncio
+    async def test_mint_token_bad_recipient(self, node_with_wallet, wallet):
+        """Minting with invalid recipient raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="non-empty string"):
+            await node._rpc_mint_token(
+                wallet_address=wallet.address,
+                token_id="T1",
+                recipient="",
+                amount=100,
+            )
+
+    @pytest.mark.asyncio
+    async def test_mint_token_bad_amount(self, node_with_wallet, wallet):
+        """Minting with non-positive amount raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="positive integer"):
+            await node._rpc_mint_token(
+                wallet_address=wallet.address,
+                token_id="T1",
+                recipient=wallet.address,
+                amount=0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_transfer_token(self, node_with_wallet, wallet):
+        """Transferring tokens after minting."""
+        node = node_with_wallet
+        # Issue
+        issue_result = await node._rpc_issue_token(
+            wallet_address=wallet.address, name="Silver", symbol="SLV",
+            decimals=8, max_supply=10000)
+        node.blockchain.produce_block(wallet.address, wallet.signing_sk)
+        tid = issue_result["token_id"]
+        await node._rpc_mint_token(
+            wallet_address=wallet.address,
+            token_id=tid,
+            recipient=wallet.address,
+            amount=500,
+        )
+        # Produce block to confirm mint
+        node.blockchain.produce_block(wallet.address, wallet.signing_sk)
+
+        # Create recipient
+        bob = Wallet.generate()
+        node.wallets[bob.address] = bob
+
+        result = await node._rpc_transfer_token(
+            wallet_address=wallet.address,
+            token_id=tid,
+            recipient=bob.address,
+            amount=100,
+        )
+        assert "tx_id" in result
+        assert result["amount"] == 100
+
+    @pytest.mark.asyncio
+    async def test_transfer_token_bad_inputs(self, node_with_wallet, wallet):
+        """Transfer token with bad inputs raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="wallet_address"):
+            await node._rpc_transfer_token(
+                wallet_address="", token_id="X", recipient="a", amount=1)
+        with pytest.raises(ValueError, match="token_id"):
+            await node._rpc_transfer_token(
+                wallet_address=wallet.address, token_id="",
+                recipient="a", amount=1)
+        with pytest.raises(ValueError, match="recipient"):
+            await node._rpc_transfer_token(
+                wallet_address=wallet.address, token_id="X",
+                recipient="", amount=1)
+        with pytest.raises(ValueError, match="positive integer"):
+            await node._rpc_transfer_token(
+                wallet_address=wallet.address, token_id="X",
+                recipient="a", amount=-1)
+
+
+class TestRPCIssueToken:
+    """Tests for issue_token RPC method."""
+
+    @pytest.mark.asyncio
+    async def test_issue_token_full(self, node_with_wallet, wallet):
+        """Issue a new token with full params."""
+        node = node_with_wallet
+        result = await node._rpc_issue_token(
+            wallet_address=wallet.address,
+            name="Copper", symbol="COP", decimals=2,
+            max_supply=1_000_000,
+        )
+        assert "tx_id" in result
+        assert "token_id" in result
+        assert result["symbol"] == "COP"
+
+    @pytest.mark.asyncio
+    async def test_issue_token_bad_name(self, node_with_wallet, wallet):
+        """Issue token with empty name raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="name"):
+            await node._rpc_issue_token(
+                wallet_address=wallet.address,
+                name="", symbol="X", max_supply=100,
+            )
+
+    @pytest.mark.asyncio
+    async def test_issue_token_bad_symbol(self, node_with_wallet, wallet):
+        """Issue token with empty symbol raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="symbol"):
+            await node._rpc_issue_token(
+                wallet_address=wallet.address,
+                name="T", symbol="", max_supply=100,
+            )
+
+    @pytest.mark.asyncio
+    async def test_issue_token_bad_wallet(self, node_with_wallet, wallet):
+        """Issue token with empty wallet raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="wallet_address"):
+            await node._rpc_issue_token(
+                wallet_address="", name="T", symbol="X", max_supply=100,
+            )
+
+
+class TestRPCDelegateUnstake:
+    """Tests for delegate and unstake RPC paths."""
+
+    @pytest.mark.asyncio
+    async def test_delegate_success(self, node_with_wallet, wallet):
+        """Delegate stake to validator."""
+        node = node_with_wallet
+        result = await node._rpc_delegate(
+            wallet_address=wallet.address,
+            validator_address=wallet.address,
+            amount=10,
+        )
+        assert "tx_id" in result
+
+    @pytest.mark.asyncio
+    async def test_delegate_bad_validator(self, node_with_wallet, wallet):
+        """Delegate with empty validator_address raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="non-empty string"):
+            await node._rpc_delegate(
+                wallet_address=wallet.address,
+                validator_address="",
+                amount=10,
+            )
+
+    @pytest.mark.asyncio
+    async def test_delegate_bad_amount(self, node_with_wallet, wallet):
+        """Delegate with zero amount raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="positive integer"):
+            await node._rpc_delegate(
+                wallet_address=wallet.address,
+                validator_address=wallet.address,
+                amount=0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_unstake_success(self, node_with_wallet, wallet):
+        """Unstake from validator."""
+        node = node_with_wallet
+        # First stake
+        await node._rpc_stake(
+            wallet_address=wallet.address,
+            validator_address=wallet.address,
+            amount=10,
+        )
+        node.blockchain.produce_block(wallet.address, wallet.signing_sk)
+
+        result = await node._rpc_unstake(
+            wallet_address=wallet.address,
+            validator_address=wallet.address,
+            amount=5,
+        )
+        assert "tx_id" in result
+
+    @pytest.mark.asyncio
+    async def test_unstake_bad_validator(self, node_with_wallet, wallet):
+        """Unstake with empty validator raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="non-empty string"):
+            await node._rpc_unstake(
+                wallet_address=wallet.address,
+                validator_address="",
+                amount=10,
+            )
+
+    @pytest.mark.asyncio
+    async def test_unstake_bad_amount(self, node_with_wallet, wallet):
+        """Unstake with zero amount raises."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="positive integer"):
+            await node._rpc_unstake(
+                wallet_address=wallet.address,
+                validator_address=wallet.address,
+                amount=0,
+            )
+
+
+class TestRPCSubmitEvidenceSuccess:
+    """Tests for submit_evidence success path."""
+
+    @pytest.mark.asyncio
+    async def test_submit_evidence_success(self, node_with_wallet, wallet):
+        """Submit evidence with valid params creates tx."""
+        from qbit_network.crypto import sha3_256
+        node = node_with_wallet
+        # Create two different fake headers that hash to known values
+        header_a = "aa" * 32
+        header_b = "bb" * 32
+        hash_a = sha3_256(bytes.fromhex(header_a)).hex()
+        hash_b = sha3_256(bytes.fromhex(header_b)).hex()
+        result = await node._rpc_submit_evidence(
+            wallet_address=wallet.address,
+            validator_address=wallet.address,
+            block_index=0,
+            block_a_hash=hash_a,
+            block_b_hash=hash_b,
+            block_a_sig="cc" * 32,
+            block_b_sig="dd" * 32,
+            block_a_header=header_a,
+            block_b_header=header_b,
+        )
+        assert "tx_id" in result
+        assert result["validator_address"] == wallet.address
+
+
+class TestNodeSyncLoop:
+    """Tests for _sync_loop()."""
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_broadcasts_height(self, node_with_wallet, wallet):
+        """_sync_loop broadcasts our height."""
+        node = node_with_wallet
+        node._running = True
+
+        # Run one iteration by patching sleep to run once then stop
+        call_count = 0
+
+        async def mock_sleep(t):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                node._running = False
+
+        with patch("asyncio.sleep", side_effect=mock_sleep):
+            await node._sync_loop()
+
+        node.p2p.broadcast.assert_any_call(
+            MSG_STATUS, {"height": node.blockchain.height})
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_requests_blocks_from_ahead_peer(self, node_with_wallet, wallet):
+        """_sync_loop requests blocks when a peer is ahead."""
+        node = node_with_wallet
+        node._running = True
+
+        # Add a peer that's ahead
+        ahead_peer = FakePeer(height=100)
+        node.p2p.peers = {"8.8.8.8:9000": ahead_peer}
+        node.p2p.peer_count = MagicMock(return_value=1)
+        node.p2p.best_peer_height = MagicMock(return_value=100)
+
+        call_count = 0
+
+        async def mock_sleep(t):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                node._running = False
+
+        with patch("asyncio.sleep", side_effect=mock_sleep):
+            await node._sync_loop()
+
+        # Should have tried to request blocks from the best peer
+        ahead_peer.send.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_error_handled(self, node_with_wallet, wallet):
+        """_sync_loop handles errors without crashing."""
+        node = node_with_wallet
+        node._running = True
+
+        # Make broadcast raise
+        node.p2p.broadcast = AsyncMock(side_effect=RuntimeError("network error"))
+
+        call_count = 0
+
+        async def mock_sleep(t):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                node._running = False
+
+        with patch("asyncio.sleep", side_effect=mock_sleep):
+            await node._sync_loop()
+        # Should not raise
+
+
+class TestNodeP2PPeers:
+    """Tests for _p2p_peers handler."""
+
+    @pytest.mark.asyncio
+    async def test_p2p_peers_connects_to_discovered_peers(self, node_with_wallet):
+        """_p2p_peers processes peer list from remote."""
+        node = node_with_wallet
+        peer = FakePeer()
+        node.p2p.connect = AsyncMock()
+
+        await node._p2p_peers(peer, {"peers": ["8.8.8.8:9000", "1.2.3.4:9000"]})
+        # Should have tried to connect
+        assert node.p2p.connect.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_p2p_peers_bad_port_ignored(self, node_with_wallet):
+        """_p2p_peers ignores peers with invalid ports."""
+        node = node_with_wallet
+        peer = FakePeer()
+        node.p2p.connect = AsyncMock()
+
+        await node._p2p_peers(peer, {"peers": ["8.8.8.8:notaport"]})
+        node.p2p.connect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_p2p_peers_non_list_ignored(self, node_with_wallet):
+        """_p2p_peers ignores non-list peers data."""
+        node = node_with_wallet
+        peer = FakePeer()
+        node.p2p.connect = AsyncMock()
+
+        await node._p2p_peers(peer, {"peers": "not_a_list"})
+        node.p2p.connect.assert_not_called()
+
+
+class TestNodeBlockLoop:
+    """Tests for _block_loop()."""
+
+    @pytest.mark.asyncio
+    async def test_block_loop_produces_blocks(self, node_with_wallet, wallet):
+        """_block_loop produces blocks when running."""
+        node = node_with_wallet
+        node._running = True
+        # Add a tx to the pool so there's something to mine
+        tx = Transaction.notarize(wallet.address, "c" * 64, nonce=1)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        node.blockchain.submit_tx(tx)
+        initial_height = node.blockchain.height
+
+        call_count = 0
+
+        async def mock_sleep(t):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                node._running = False
+
+        with patch("asyncio.sleep", side_effect=mock_sleep):
+            await node._block_loop()
+
+        # Should have produced at least one block
+        assert node.blockchain.height > initial_height
+
+    @pytest.mark.asyncio
+    async def test_block_loop_handles_error(self, node_with_wallet, wallet):
+        """_block_loop handles production errors gracefully."""
+        node = node_with_wallet
+        node._running = True
+
+        # Make produce_block raise
+        node.blockchain.produce_block = MagicMock(
+            side_effect=RuntimeError("production error"))
+
+        call_count = 0
+
+        async def mock_sleep(t):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                node._running = False
+
+        with patch("asyncio.sleep", side_effect=mock_sleep):
+            await node._block_loop()
+        # Should not crash
+
+
+class TestNodeLifecycleFull:
+    """Tests for start() and stop() lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_start_and_stop(self, tmp_dir, wallet):
+        """Full start/stop cycle with validator."""
+        node = FullNode(data_dir=tmp_dir, rpc_port=0, p2p_port=0)
+        try:
+            await node.start(validator_wallet=wallet, verify_on_load=False)
+            assert node._running is True
+            assert node.blockchain.height >= 0
+            assert node.validator_wallet is not None
+            assert wallet.address in node.wallets
+        finally:
+            await node.stop()
+            assert node._running is False
+
+    @pytest.mark.asyncio
+    async def test_start_without_validator(self, tmp_dir):
+        """Start without validator wallet (non-validator node)."""
+        node = FullNode(data_dir=tmp_dir, rpc_port=0, p2p_port=0)
+        try:
+            await node.start(validator_wallet=None, verify_on_load=False)
+            assert node._running is True
+            assert node.validator_wallet is None
+            assert node._block_task is None  # no block production
+        finally:
+            await node.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_with_bootstrap(self, tmp_dir, wallet):
+        """Start with bootstrap peers."""
+        node = FullNode(data_dir=tmp_dir, rpc_port=0, p2p_port=0,
+                        bootstrap=["invalid:port"])
+        try:
+            await node.start(validator_wallet=wallet, verify_on_load=False)
+            assert node._running is True
+        finally:
+            await node.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_saves_chain(self, tmp_dir, wallet):
+        """stop() persists the blockchain."""
+        node = FullNode(data_dir=tmp_dir, rpc_port=0, p2p_port=0)
+        await node.start(validator_wallet=wallet, verify_on_load=False)
+        # Produce a block
+        node.blockchain.produce_block(wallet.address, wallet.signing_sk)
+        height = node.blockchain.height
+        await node.stop()
+
+        # Load again and verify
+        node2 = FullNode(data_dir=tmp_dir, rpc_port=0, p2p_port=0)
+        node2.blockchain.consensus.add_validator(wallet.address, wallet.signing_pk)
+        loaded = node2.blockchain.load(verify_signatures=True)
+        assert loaded is True
+        assert node2.blockchain.height == height
+
+    @pytest.mark.asyncio
+    async def test_run_exits_on_stop(self, tmp_dir, wallet):
+        """run() exits when _running becomes False."""
+        node = FullNode(data_dir=tmp_dir, rpc_port=0, p2p_port=0)
+        await node.start(validator_wallet=wallet, verify_on_load=False)
+
+        # Schedule stop after a short delay
+        async def delayed_stop():
+            await asyncio.sleep(0.1)
+            await node.stop()
+
+        stop_task = asyncio.create_task(delayed_stop())
+        await node.run()
+        await stop_task
+
+
+class TestWSNotifyHelpers:
+    """Tests for _ws_notify_block and _ws_notify_tx helpers."""
+
+    @pytest.mark.asyncio
+    async def test_ws_notify_block_with_finalized(self, node_with_wallet, wallet):
+        """_ws_notify_block also broadcasts finalized height."""
+        node = node_with_wallet
+        block = node.blockchain.get_block(0)
+        # Mock finalized height
+        node.blockchain.get_finalized_height = MagicMock(return_value=0)
+
+        await node._ws_notify_block(block)
+
+        # Should have broadcast new_block and finalized
+        calls = node.ws_manager.broadcast.call_args_list
+        channels = [c[0][0] for c in calls]
+        assert "new_block" in channels
+        assert "finalized" in channels
+
+    @pytest.mark.asyncio
+    async def test_ws_notify_block_finalized_error_handled(self, node_with_wallet, wallet):
+        """_ws_notify_block handles finalized broadcast error."""
+        node = node_with_wallet
+        block = node.blockchain.get_block(0)
+        node.blockchain.get_finalized_height = MagicMock(
+            side_effect=RuntimeError("db error"))
+
+        # Should not raise
+        await node._ws_notify_block(block)
+
+    @pytest.mark.asyncio
+    async def test_deliver_block_webhooks(self, node_with_wallet, wallet):
+        """_deliver_block_webhooks collects and delivers events."""
+        node = node_with_wallet
+        block = node.blockchain.get_block(0)
+        # Ensure it runs without error
+        await node._deliver_block_webhooks(block)
+
+
+class TestRPCRevokeKey:
+    """Tests for _rpc_revoke_key success path."""
+
+    @pytest.mark.asyncio
+    async def test_revoke_key_success(self, node_with_wallet, wallet):
+        """Successfully revoke a key for a non-genesis wallet."""
+        node = node_with_wallet
+        # Use a second wallet (non-genesis)
+        bob = Wallet.generate()
+        node.wallets[bob.address] = bob
+        # Register bob's encryption key first
+        tx = Transaction.register_key(bob.address, bob.encryption_pk, nonce=0)
+        tx.sign(bob.signing_sk, bob.signing_pk)
+        node.blockchain.submit_tx(tx)
+        node.blockchain.produce_block(wallet.address, wallet.signing_sk)
+
+        result = await node._rpc_revoke_key(
+            wallet_address=bob.address,
+            key_type="encryption",
+            reason="rotation",
+        )
+        assert "tx_id" in result
+        assert result["key_type"] == "encryption"
+        assert result["reason"] == "rotation"
+
+
+class TestRPCRegisterP2P:
+    """Tests for _register_p2p and _register_rpc."""
+
+    def test_register_p2p(self, node_with_wallet):
+        """_register_p2p sets up all P2P handlers."""
+        node = node_with_wallet
+        node.p2p._handlers = {}
+        node._register_p2p()
+        expected = {MSG_NEW_BLOCK, MSG_NEW_TX, MSG_GET_BLOCKS,
+                    MSG_BLOCKS, "get_peers", "peers", "status"}
+        assert set(node.p2p._handlers.keys()) == expected
+
+    def test_register_rpc(self, node_with_wallet):
+        """_register_rpc sets up RPC methods."""
+        node = node_with_wallet
+        node.rpc._methods = {}
+        node._register_rpc()
+        assert len(node.rpc._methods) > 10  # many methods registered
+
+
+class TestWalletPersistence:
+    """Additional wallet persistence tests."""
+
+    def test_save_wallets_creates_dir(self, tmp_dir, wallet):
+        """_save_wallets creates wallet directory with restricted permissions."""
+        node = _make_node(tmp_dir, wallet)
+        wallets_dir = node._wallets_dir()
+        if os.path.exists(wallets_dir):
+            import shutil
+            shutil.rmtree(wallets_dir)
+        node._save_wallets()
+        assert os.path.isdir(wallets_dir)
+
+    def test_load_wallets_missing_dir(self, tmp_dir):
+        """_load_wallets does nothing when directory doesn't exist."""
+        node = FullNode(data_dir=tmp_dir)
+        node.data_dir = os.path.join(tmp_dir, "nonexistent")
+        node._load_wallets()  # Should not raise
+        assert len(node.wallets) == 0
+
+
+class TestRPCGetTxWithFee:
+    """Test _rpc_get_tx with effective fee calculation."""
+
+    @pytest.mark.asyncio
+    async def test_get_tx_with_block_index(self, node_with_wallet, wallet):
+        """_rpc_get_tx includes block_index for confirmed tx."""
+        node = node_with_wallet
+        # The genesis block has a register_key tx
+        all_txs = list(node.blockchain._tx_by_id.keys())
+        if all_txs:
+            result = await node._rpc_get_tx(tx_id=all_txs[0])
+            assert result is not None
+            assert "block_index" in result
+
+    @pytest.mark.asyncio
+    async def test_get_tx_bad_type(self, node_with_wallet):
+        """_rpc_get_tx raises for non-string input."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="string"):
+            await node._rpc_get_tx(tx_id=42)
+
+    @pytest.mark.asyncio
+    async def test_verify_document_bad_type(self, node_with_wallet):
+        """_rpc_verify_document raises for non-string input."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="string"):
+            await node._rpc_verify_document(document_hash=42)
+
+    @pytest.mark.asyncio
+    async def test_txs_by_sender_bad_type(self, node_with_wallet):
+        """_rpc_txs_by_sender raises for non-string input."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="string"):
+            await node._rpc_txs_by_sender(address=123)
+
+    @pytest.mark.asyncio
+    async def test_txs_by_recipient_bad_type(self, node_with_wallet):
+        """_rpc_txs_by_recipient raises for non-string input."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="string"):
+            await node._rpc_txs_by_recipient(address=123)
+
+    @pytest.mark.asyncio
+    async def test_get_encryption_pk_bad_type(self, node_with_wallet):
+        """_rpc_get_encryption_pk raises for non-string input."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="string"):
+            await node._rpc_get_encryption_pk(address=42)
