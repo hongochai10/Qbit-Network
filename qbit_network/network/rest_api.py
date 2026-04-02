@@ -651,6 +651,8 @@ class RESTApi:
         to_address = body.get("to_address", "")
         amount = body.get("amount", 0)
         memo = body.get("memo", "")
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
 
         if not isinstance(wallet_address, str) or not wallet_address:
             return _err(400, "wallet_address is required and must be a string")
@@ -667,6 +669,8 @@ class RESTApi:
                 to_address=to_address,
                 amount=amount,
                 memo=memo,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee,
             )
             return _ok(result, status=201)
         except ValueError as e:
@@ -847,6 +851,8 @@ class RESTApi:
         document_hash = body.get("document_hash", "")
         cid = body.get("cid", "")
         metadata = body.get("metadata", "")
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
 
         if not isinstance(wallet_address, str) or not wallet_address:
             return _err(400, "wallet_address is required and must be a string")
@@ -863,6 +869,8 @@ class RESTApi:
                 document_hash=document_hash,
                 cid=cid,
                 metadata=metadata,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee,
             )
             return _ok(result, status=201)
         except ValueError as e:
@@ -886,6 +894,8 @@ class RESTApi:
         cid = body.get("cid", "")
         recipient_encryption_pk = body.get("recipient_encryption_pk", "")
         expires = body.get("expires", 0)
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
 
         if not isinstance(wallet_address, str) or not wallet_address:
             return _err(400, "wallet_address is required and must be a string")
@@ -905,6 +915,8 @@ class RESTApi:
                 cid=cid,
                 recipient_encryption_pk=recipient_encryption_pk,
                 expires=expires,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee,
             )
             return _ok(result, status=201)
         except ValueError as e:
@@ -924,12 +936,16 @@ class RESTApi:
             return _err(400, "request body must be a JSON object")
 
         wallet_address = body.get("wallet_address", "")
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
         if not isinstance(wallet_address, str) or not wallet_address:
             return _err(400, "wallet_address is required and must be a string")
 
         try:
             result = await self._node._rpc_register_validator(
                 wallet_address=wallet_address,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee,
             )
             return _ok(result, status=201)
         except ValueError as e:
@@ -974,6 +990,8 @@ class RESTApi:
         wallet_address = body.get("wallet_address", "")
         validator_address = body.get("validator_address", "")
         amount = body.get("amount", 0)
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
 
         if not isinstance(wallet_address, str) or not wallet_address:
             return _err(400, "wallet_address is required and must be a string")
@@ -987,6 +1005,8 @@ class RESTApi:
                 wallet_address=wallet_address,
                 validator_address=validator_address,
                 amount=amount,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee,
             )
             return _ok(result, status=201)
         except ValueError as e:
@@ -1006,6 +1026,8 @@ class RESTApi:
         wallet_address = body.get("wallet_address", "")
         validator_address = body.get("validator_address", "")
         amount = body.get("amount", 0)
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
 
         if not isinstance(wallet_address, str) or not wallet_address:
             return _err(400, "wallet_address is required and must be a string")
@@ -1019,6 +1041,8 @@ class RESTApi:
                 wallet_address=wallet_address,
                 validator_address=validator_address,
                 amount=amount,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee,
             )
             return _ok(result, status=201)
         except ValueError as e:
@@ -1038,6 +1062,8 @@ class RESTApi:
         wallet_address = body.get("wallet_address", "")
         validator_address = body.get("validator_address", "")
         amount = body.get("amount", 0)
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
 
         if not isinstance(wallet_address, str) or not wallet_address:
             return _err(400, "wallet_address is required and must be a string")
@@ -1051,6 +1077,8 @@ class RESTApi:
                 wallet_address=wallet_address,
                 validator_address=validator_address,
                 amount=amount,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee,
             )
             return _ok(result, status=201)
         except ValueError as e:
@@ -1182,6 +1210,8 @@ class RESTApi:
         decimals = body.get("decimals")
         max_supply = body.get("max_supply", 0)
         transferable = body.get("transferable", True)
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
 
         if not wallet_name:
             return _err(400, "wallet is required")
@@ -1190,7 +1220,9 @@ class RESTApi:
 
         try:
             result = await self._node._rpc_issue_token(
-                wallet_name, name, symbol, decimals, max_supply, transferable)
+                wallet_name, name, symbol, decimals, max_supply, transferable,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee)
             return _ok(result, status=201)
         except ValueError as e:
             return _err(400, str(e))
@@ -1208,13 +1240,17 @@ class RESTApi:
         token_id = body.get("token_id", "")
         recipient = body.get("recipient", "")
         amount = body.get("amount")
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
 
         if not wallet_name or not token_id or not recipient or not amount:
             return _err(400, "wallet, token_id, recipient, and amount are required")
 
         try:
             result = await self._node._rpc_mint_token(
-                wallet_name, token_id, recipient, amount)
+                wallet_name, token_id, recipient, amount,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee)
             return _ok(result, status=201)
         except ValueError as e:
             return _err(400, str(e))
@@ -1233,13 +1269,17 @@ class RESTApi:
         recipient = body.get("recipient", "")
         amount = body.get("amount")
         memo = body.get("memo", "")
+        max_fee_per_weight = body.get("max_fee_per_weight")
+        max_priority_fee = body.get("max_priority_fee")
 
         if not wallet_name or not token_id or not recipient or not amount:
             return _err(400, "wallet, token_id, recipient, and amount are required")
 
         try:
             result = await self._node._rpc_transfer_token(
-                wallet_name, token_id, recipient, amount, memo)
+                wallet_name, token_id, recipient, amount, memo,
+                max_fee_per_weight=max_fee_per_weight,
+                max_priority_fee=max_priority_fee)
             return _ok(result, status=201)
         except ValueError as e:
             return _err(400, str(e))

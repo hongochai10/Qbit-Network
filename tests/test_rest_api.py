@@ -145,7 +145,8 @@ class MockNode:
     async def _rpc_verify_document(self, document_hash=""):
         return self.blockchain.verify_document(document_hash)
 
-    async def _rpc_store(self, wallet_address="", document_hash="", cid="", metadata=""):
+    async def _rpc_store(self, wallet_address="", document_hash="", cid="", metadata="",
+                         max_fee_per_weight=None, max_priority_fee=None):
         w = self.wallets.get(wallet_address)
         if not w:
             raise ValueError(f"wallet not found: {wallet_address[:16]}...")
@@ -159,10 +160,12 @@ class MockNode:
         return {"tx_id": result}
 
     async def _rpc_share(self, wallet_address="", recipient_address="",
-                         cid="", recipient_encryption_pk="", expires=0):
+                         cid="", recipient_encryption_pk="", expires=0,
+                         max_fee_per_weight=None, max_priority_fee=None):
         raise ValueError("share not supported in mock")
 
-    async def _rpc_register_validator(self, wallet_address=""):
+    async def _rpc_register_validator(self, wallet_address="",
+                                     max_fee_per_weight=None, max_priority_fee=None):
         raise ValueError("register_validator not supported in mock")
 
     # --- dPoS stubs ---
@@ -179,7 +182,8 @@ class MockNode:
             return {"validator": validator_address, "stake": 1000, "delegated": 500}
         return {"validator": validator_address, "stake": 0, "delegated": 0}
 
-    async def _rpc_stake(self, wallet_address="", validator_address="", amount=0):
+    async def _rpc_stake(self, wallet_address="", validator_address="", amount=0,
+                         max_fee_per_weight=None, max_priority_fee=None):
         if not wallet_address:
             raise ValueError("wallet_address required")
         if not validator_address:
@@ -188,7 +192,8 @@ class MockNode:
             raise ValueError("amount must be positive integer")
         return {"tx_id": "mock-stake-tx-id", "status": "pending"}
 
-    async def _rpc_delegate(self, wallet_address="", validator_address="", amount=0):
+    async def _rpc_delegate(self, wallet_address="", validator_address="", amount=0,
+                            max_fee_per_weight=None, max_priority_fee=None):
         if not wallet_address:
             raise ValueError("wallet_address required")
         if not validator_address:
@@ -197,7 +202,8 @@ class MockNode:
             raise ValueError("amount must be positive integer")
         return {"tx_id": "mock-delegate-tx-id", "status": "pending"}
 
-    async def _rpc_unstake(self, wallet_address="", validator_address="", amount=0):
+    async def _rpc_unstake(self, wallet_address="", validator_address="", amount=0,
+                           max_fee_per_weight=None, max_priority_fee=None):
         if not wallet_address:
             raise ValueError("wallet_address required")
         if not validator_address:
@@ -231,7 +237,8 @@ class MockNode:
     # --- Transfer / Evidence / Token / Light client stubs ---
 
     async def _rpc_transfer(self, wallet_address="", to_address="",
-                            amount=0, memo=""):
+                            amount=0, memo="",
+                            max_fee_per_weight=None, max_priority_fee=None):
         if not wallet_address:
             raise ValueError("wallet_address required")
         return {"tx_id": "mock-transfer-tx", "status": "pending"}
@@ -266,19 +273,22 @@ class MockNode:
         return {"finalized_height": self.blockchain.height, "finalized_hash": "abc"}
 
     async def _rpc_issue_token(self, wallet_address, name, symbol,
-                               decimals, max_supply, transferable=True):
+                               decimals, max_supply, transferable=True,
+                               max_fee_per_weight=None, max_priority_fee=None):
         if not name:
             raise ValueError("name required")
         return {"tx_id": "mock-issue-tx", "symbol": symbol}
 
     async def _rpc_mint_token(self, wallet_address, token_id,
-                              recipient, amount):
+                              recipient, amount,
+                              max_fee_per_weight=None, max_priority_fee=None):
         if not token_id:
             raise ValueError("token_id required")
         return {"tx_id": "mock-mint-tx"}
 
     async def _rpc_transfer_token(self, wallet_address, token_id,
-                                  recipient, amount, memo=""):
+                                  recipient, amount, memo="",
+                                  max_fee_per_weight=None, max_priority_fee=None):
         if not token_id:
             raise ValueError("token_id required")
         return {"tx_id": "mock-transfer-token-tx"}
