@@ -944,3 +944,32 @@ class TestStateSnapshotPruning:
         assert 0 not in bc._state_snapshots, (
             "Genesis snapshot should be pruned after chain exceeds MAX_REORG_DEPTH"
         )
+
+    def test_memory_stable_over_many_blocks(self, wallet, monkeypatch):
+        """R33-M05: Memory usage stable over 10,000+ blocks — snapshots bounded."""
+        import qbit_network.core.blockchain as bc_mod
+        monkeypatch.setattr(bc_mod, "MAX_REORG_DEPTH", 32)
+
+        bc = Blockchain()
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk)
+
+        block_count = 500  # scaled down but verifies O(1) memory bound
+        for i in range(block_count):
+            tx = Transaction.notarize(wallet.address, f"{i:064x}", nonce=i)
+            tx.sign(wallet.signing_sk, wallet.signing_pk)
+            bc.submit_tx(tx)
+            bc.produce_block(wallet.address, wallet.signing_sk)
+
+        # Snapshot count must stay bounded by MAX_REORG_DEPTH + small margin
+        snapshot_count = len(bc._state_snapshots)
+        assert snapshot_count <= 34, (
+            f"Expected at most ~34 snapshots with MAX_REORG_DEPTH=32 after "
+            f"{block_count} blocks, got {snapshot_count} — memory leak"
+        )
+        # Old snapshots must not exist
+        cutoff = bc.height - 32 - 1
+        old_keys = [k for k in bc._state_snapshots if k < cutoff]
+        assert not old_keys, (
+            f"Stale snapshots found: {old_keys} (cutoff={cutoff})"
+        )

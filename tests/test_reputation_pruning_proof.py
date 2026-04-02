@@ -224,6 +224,31 @@ class TestPeerReputationDecay:
         # Should converge to DEFAULT_SCORE, never go below
         assert score >= default - 0.1
 
+    def test_many_peers_decay_all_converge(self, rep):
+        """R33-M03: Many peers with varied events all converge to DEFAULT_SCORE."""
+        default = PeerReputation.DEFAULT_SCORE
+        # Create diverse peers with different starting scores
+        for i in range(50):
+            peer = f"peer_{i}"
+            if i % 3 == 0:
+                rep.record(peer, "valid_block")   # score = 110
+            elif i % 3 == 1:
+                rep.record(peer, "invalid_tx")    # score = 90
+            else:
+                rep.record(peer, "timeout")        # score = 95
+
+        # Decay 10,000 rounds (simulates long-running node)
+        for _ in range(10000):
+            rep.decay()
+
+        # All non-banned peers should converge to DEFAULT_SCORE or be cleaned up
+        for i in range(50):
+            peer = f"peer_{i}"
+            score = rep.get_score(peer)
+            assert abs(score - default) < 0.1, (
+                f"{peer} score={score}, expected ~{default} after 10k decays"
+            )
+
 
 class TestPeerReputationEdgeCases:
 

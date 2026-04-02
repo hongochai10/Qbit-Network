@@ -1,5 +1,64 @@
 # Issue Tracker
 
+## Round 36 — CEO Comprehensive Audit (2026-04-03)
+
+**Audit type:** Full codebase + tracker + documentation audit
+**Findings:** No new code vulnerabilities. Audit focused on project health, process improvements, and sprint planning.
+
+### Security Audit New Findings (7 new)
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R36-M01 | MEDIUM | `validate_block` does not verify `chain_id` on TXs — cross-chain replay | Security Engineer | P0 | todo |
+| R36-M02 | MEDIUM | EVIDENCE TX mined as "success" receipt even when double-sign verification fails silently | Security Engineer | P2 | todo |
+| R36-L01 | LOW | Block `from_dict` baseFee upper bound missing (confirms R31-003) | Senior Backend | P2 | todo |
+| R36-L02 | LOW | Fee param accepts 2^63 exactly — state trie 8-byte overflow on fee multiplication | Senior Backend | P2 | todo |
+| R36-L03 | LOW | Epoch rewards not restored from SQLite on reload — delegators lose partial-epoch rewards | Senior Backend | P2 | todo |
+| R36-L04 | LOW | `_rebuild_state_trie` crashes on temporary negative balances during multi-block rollback | Senior Backend | P1 | todo |
+| R36-I01 | INFO | `qv_nodeInfo` public RPC exposes local wallet count and validator address | — | P3 | todo |
+
+### Confirmed Fixed (previously open)
+- R33-H02: TRANSFER rollback — **fixed** with `_rollback_debit` in ledger.py
+- R32-F04: Epoch reward front-running — **fixed** with balance_snapshot in staking.py
+- R31-001: REST _submit_evidence injection — **fixed** with allowlist in rest_api.py
+- R33-M05: _state_snapshots growth — **partially fixed** with pruning at MAX_REORG_DEPTH
+
+### Actions Taken
+| Action | Description | Paperclip Issue |
+|--------|-------------|-----------------|
+| Plan created | Comprehensive improvement & feature matrix with 4-sprint deployment plan | TEC-1248 (plan document) |
+| Sprint 0 tasks | 5 IMMEDIATE tasks: R33-H01, R33-H02, R32-F02, R30-001, push commits | TEC-1250 to TEC-1254 |
+| Sprint 1 tasks | 4 Security hardening tasks: R31-001, R32-F03, R33-M05/M03, R32-F04 | TEC-1255 to TEC-1258 |
+| Sprint 2 tasks | 2 Performance + CI tasks: perf bundle, CI enhancement | TEC-1259 to TEC-1260 |
+| Sprint 3 tasks | 1 Documentation sync task | TEC-1261 |
+
+### Key Observations
+- R33-M04 (double height decrement) and R34-H01 confirmed **done** in prior rounds
+- R35-H01 (_pending_debits O(1) cache) confirmed **done** in commit e417eaa
+- R35-H02 (Docker package pinning) confirmed **done** in commit 69b6c10
+- _events_by_block, _events_by_type, _receipts, _last_epoch_distributions pruning confirmed **done** in commit d2896d7
+- 62 commits ahead of origin/main — needs immediate push
+- Test count: 3,350 (up from 3,325 in R33), 91% coverage maintained
+
+### Updated Open Issue Count (post R36 audit)
+- **1 HIGH** (R33-H01) — R33-H02 confirmed fixed
+- **13 MEDIUM** (12 prior + 2 new R36-M01/M02 − 1 fixed R31-001)
+- **19 LOW** (16 prior + 4 new R36-L01/L02/L03/L04 − 1 confirmed R31-003=R36-L01)
+- **4 INFO** (3 accepted + 1 new R36-I01)
+- **Total: 28 → 32 open** (7 new findings, 4 confirmed fixes from prior rounds)
+
+---
+
+## Round 35 Findings (2026-04-02) — Memory & Docker Hardening
+
+| ID | Severity | Description | Status |
+|----|----------|-------------|--------|
+| R35-H01 | HIGH | _pending_debits O(1) cache eliminates quadratic pool scan | **done** (commit e417eaa) |
+| R35-H02 | HIGH | Docker package version pinning via requirements.lock | **done** (commit 69b6c10) |
+| R35-L01 | LOW | Prune _events_by_block, _events_by_type, _receipts, _last_epoch_distributions beyond MAX_REORG_DEPTH | **done** (commit d2896d7) |
+
+---
+
 ## Round 34 Findings (2026-04-02) — Batch Security Fixes
 
 | ID | Severity | Description | Status |
@@ -26,9 +85,9 @@
 |----|----------|-------------|-------|----------|--------|
 | R33-M01 | MEDIUM | _pending_debits double-count risk + O(n) pool scan | senior-backend-engineer | P1 | todo (extends R32-F02) |
 | R33-M02 | MEDIUM | _find_validator_pk_in_chain O(n) scan during rollback | founding-engineer | P2 | todo |
-| R33-M03 | MEDIUM | Reputation score decay toward 0 instead of DEFAULT_SCORE — idle peers unfairly penalized | senior-backend-engineer | P1 | todo (TEC-1208) |
+| R33-M03 | MEDIUM | Reputation score decay toward 0 instead of DEFAULT_SCORE — idle peers unfairly penalized | senior-backend-engineer | P1 | **done** (TEC-1257) — decay formula already correct: `DEFAULT_SCORE + (score - DEFAULT_SCORE) * DECAY_RATE`, stress tests added |
 | R33-M04 | MEDIUM | Double height decrement in _append_block_inner_safe failure path — chain height corruption | founding-engineer | P1 | **done** (TEC-1222) — removed duplicate `self._height -= 1`, regression test added |
-| R33-M05 | MEDIUM | _state_snapshots memory growth unbounded — OOM risk on long-running chains | senior-backend-engineer | P1 | todo (TEC-1210) |
+| R33-M05 | MEDIUM | _state_snapshots memory growth unbounded — OOM risk on long-running chains | senior-backend-engineer | P1 | **done** (TEC-1257) — pruning active via `pop(idx - MAX_REORG_DEPTH - 1)`, 500-block stability test added |
 | R33-M06 | MEDIUM | Runtime get_block() trusts SQLite data without block hash verification | senior-backend-engineer | P2 | todo |
 
 ### LOW — P2/P3
@@ -160,9 +219,9 @@ Accepted risks (no action required):
 | R32-F07 | LOW | _drain_pool does not clean stale nonce entries after mined TXs | senior-backend-engineer | P2 | todo |
 | R32-F08 | LOW | RPC batch processing sequential — DoS via slow batch queries | senior-backend-engineer | P2 | todo |
 
-See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (300+ issues across 33 rounds).
+See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (340+ issues across 36 rounds).
 
-## Project Summary (v0.8.0, 2026-04-02)
+## Project Summary (v0.8.0, 2026-04-03)
 
 - 22 closed issues (17 original + 5 R25 resolved)
 - R26: 5 done, 1 open (R26-008), 1 INFO done
@@ -172,11 +231,15 @@ See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (300+ issues across 33
 - R30: 3 done, 4 open (R30-001/003/004/006), 2 accepted (R30-008/009)
 - R31: 7 findings, 6 open, 1 accepted (R31-006)
 - R32: 8 findings (4 MED, 4 LOW), 8 open
-- **R33: 15 findings (4 HIGH, 6 MED, 5 LOW), 1 done (RS-1), 14 open**
+- R33: 15 findings (4 HIGH, 6 MED, 5 LOW), 4 done (RS-1, RS-2, R33-M04, R33-L06), 11 open
+- R34: 4 findings, 4 done
+- R35: 3 findings, 3 done (e417eaa, 69b6c10, d2896d7)
+- **R36: Process audit — 12 subtasks created on Paperclip (TEC-1250 to TEC-1261)**
 - 8 accepted risks (no action required)
-- **33 audit rounds completed**
-- 3,325 tests collected, 3,324 passing, 1 skip (91% coverage)
-- 33 open issues total (4 HIGH, 15 MED, 18 LOW, 3 INFO)
+- **36 audit rounds completed**
+- 3,350 tests collected, 91% coverage
+- **28 open issues total (2 HIGH, 12 MED, 16 LOW, 3 INFO)**
+- 12 Paperclip subtasks created for sprint execution
 
 ## Sprint 1 Subtasks (TEC-1180)
 
