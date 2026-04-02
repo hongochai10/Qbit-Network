@@ -1020,6 +1020,34 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         if prune_before >= 0:
             self._state_snapshots.pop(prune_before, None)
 
+        # Prune _events_by_block and associated _events_by_type / _receipts (R33-M05, R35-M03)
+        if prune_before >= 0:
+            pruned_tx_ids = self._events_by_block.pop(prune_before, None)
+            if pruned_tx_ids:
+                pruned_set = set(pruned_tx_ids)
+                # Remove pruned tx_ids from _events_by_type reverse index
+                empty_types = []
+                for ev_type, tx_list in self._events_by_type.items():
+                    self._events_by_type[ev_type] = [
+                        tid for tid in tx_list if tid not in pruned_set
+                    ]
+                    if not self._events_by_type[ev_type]:
+                        empty_types.append(ev_type)
+                for ev_type in empty_types:
+                    del self._events_by_type[ev_type]
+                # Remove pruned receipts from in-memory cache
+                for tid in pruned_set:
+                    self._receipts.pop(tid, None)
+
+        # Prune _last_epoch_distributions beyond MAX_REORG_DEPTH (R33-L03)
+        if prune_before >= 0 and self._last_epoch_distributions:
+            stale_epochs = [
+                ep for ep in self._last_epoch_distributions
+                if ep < prune_before
+            ]
+            for ep in stale_epochs:
+                del self._last_epoch_distributions[ep]
+
         # Persist balance changes to SQLite (after epoch distribution)
         if self._store is not None and self._financial_active:
             self._persist_balances_after_block(block, idx, matured_stakers)
