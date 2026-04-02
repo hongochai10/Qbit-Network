@@ -93,6 +93,18 @@ class TestPeerReputationBasic:
         rep.record("peer1", "invalid_tx")
         assert rep.get_score("peer1") == PeerReputation.DEFAULT_SCORE - 10
 
+    def test_state_root_mismatch_heavy_penalty(self, rep):
+        """RS-2: state_root_mismatch carries -100 penalty (Byzantine forgery)."""
+        rep.record("peer1", "state_root_mismatch")
+        assert rep.get_score("peer1") == PeerReputation.DEFAULT_SCORE - 100
+
+    def test_state_root_mismatch_bans_quickly(self, rep):
+        """RS-2: Two state_root_mismatch events from default score triggers ban."""
+        rep.record("peer1", "state_root_mismatch")
+        assert not rep.is_banned("peer1")  # 100 - 100 = 0, not yet banned
+        rep.record("peer1", "state_root_mismatch")
+        assert rep.is_banned("peer1")  # 0 - 100 = -100, banned
+
     def test_multiple_events_accumulate(self, rep):
         rep.record("peer1", "valid_block")
         rep.record("peer1", "valid_block")
@@ -165,12 +177,15 @@ class TestPeerReputationBanning:
 
 class TestPeerReputationDecay:
 
-    def test_decay_moves_score_toward_zero(self, rep):
+    def test_decay_moves_score_toward_default(self, rep):
+        """R33-M01: Decay moves scores toward DEFAULT_SCORE, not zero."""
         rep.record("peer1", "valid_block")
         score_before = rep.get_score("peer1")
         rep.decay()
         score_after = rep.get_score("peer1")
-        assert abs(score_after) < abs(score_before)
+        # Score should move closer to DEFAULT_SCORE
+        default = PeerReputation.DEFAULT_SCORE
+        assert abs(score_after - default) < abs(score_before - default)
 
     def test_decay_preserves_ban_status(self, rep):
         rep.record("peer1", "auth_failed")
@@ -180,20 +195,34 @@ class TestPeerReputationDecay:
         # Ban persists even as score decays
         assert rep.is_banned("peer1")
 
-    def test_multiple_decays_converge(self, rep):
+    def test_multiple_decays_converge_to_default(self, rep):
+        """R33-M01: After many decays, score converges to DEFAULT_SCORE."""
         rep.record("peer1", "invalid_block")
         for _ in range(500):
             rep.decay()
-        # After many decays, score should be very close to 0
-        assert abs(rep.get_score("peer1")) < 1.0
+        default = PeerReputation.DEFAULT_SCORE
+        assert abs(rep.get_score("peer1") - default) < 1.0
 
-    def test_decay_cleans_up_near_zero_entries(self, rep):
+    def test_decay_cleans_up_near_default_entries(self, rep):
+        """R33-M01: Peers near DEFAULT_SCORE are cleaned up."""
         rep.record("peer1", "valid_tx")
         # Decay many times until cleaned
         for _ in range(1000):
             rep.decay()
-        # Peer count may drop to 0 as near-zero entries are cleaned
-        assert rep.peer_count() == 0 or abs(rep.get_score("peer1")) < 0.01
+        default = PeerReputation.DEFAULT_SCORE
+        # Peer count may drop to 0 as near-default entries are cleaned
+        assert rep.peer_count() == 0 or abs(rep.get_score("peer1") - default) < 0.01
+
+    def test_idle_peer_stays_at_default_score(self, rep):
+        """R33-M01: A peer with only DEFAULT_SCORE should not decay below it."""
+        rep.record("peer1", "valid_tx")  # score = 101
+        # Decay many rounds
+        for _ in range(2000):
+            rep.decay()
+        default = PeerReputation.DEFAULT_SCORE
+        score = rep.get_score("peer1")
+        # Should converge to DEFAULT_SCORE, never go below
+        assert score >= default - 0.1
 
 
 class TestPeerReputationEdgeCases:
