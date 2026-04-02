@@ -35,7 +35,7 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **Webhook system** -- event-driven HTTP callbacks with HMAC-SHA256 signatures, retry with exponential backoff, auto-disable on persistent failure
 - **Python SDK** -- `qbit_sdk` package with zero external dependencies, sync HTTP client, WebSocket client, typed data models
 - **OpenAPI 3.0 spec** -- complete REST API specification at `docs/openapi.yaml`
-- **29 audit rounds, 10 open issues (0 critical, 0 high)**
+- **31 audit rounds, 17 open issues (0 critical, 0 high)**
 
 ## Quick Start
 
@@ -101,6 +101,9 @@ python3 run_node.py --no-validate
 
 # TLS with auto-generated certificate
 python3 run_node.py --tls-auto --tls-hostname mynode.example.com
+
+# Enable EIP-1559 dynamic fees from block 100
+python3 run_node.py --dynamic-fee-activation 100
 ```
 
 ### Docker Quickstart (3-validator testnet)
@@ -117,6 +120,7 @@ curl http://localhost:8545 -d '{"jsonrpc":"2.0","method":"qv_nodeInfo","id":1}'
 |----------|---------|-------------|
 | `QBIT_DATA_DIR` | `~/.qbit` | Chain and wallet storage |
 | `QBIT_ALLOW_PRIVATE_PEERS` | `false` | Allow P2P connections to RFC 1918 addresses |
+| `QBIT_DYNAMIC_FEE_ACTIVATION` | *(disabled)* | Block height to activate EIP-1559 dynamic fees (0 = genesis) |
 
 ## CLI Usage
 
@@ -257,7 +261,7 @@ tracker/             AUDIT_LOG.md, ISSUES.md, FEATURES.md, CHANGELOG.md, DEVELOP
 
 ## Security
 
-QBit Network has completed **29 rounds of security audit** covering:
+QBit Network has completed **31 rounds of security audit** covering:
 
 - Cryptographic correctness (PQC primitive usage, key handling, side-channels)
 - Input validation (deserialization, RPC params, P2P messages)
@@ -267,7 +271,7 @@ QBit Network has completed **29 rounds of security audit** covering:
 - Persistence (atomic writes, load validation, tamper detection)
 - dPoS security (slashing, epoch manipulation, evidence replay)
 
-**10 open issues (0 critical, 0 high).** See [`tracker/AUDIT_LOG.md`](tracker/AUDIT_LOG.md) for the complete audit trail and [`docs/SECURITY.md`](docs/SECURITY.md) for the threat model.
+**17 open issues (0 critical, 0 high).** See [`tracker/AUDIT_LOG.md`](tracker/AUDIT_LOG.md) for the complete audit trail and [`docs/SECURITY.md`](docs/SECURITY.md) for the threat model.
 
 **PQC algorithms:**
 

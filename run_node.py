@@ -42,7 +42,18 @@ async def main():
                         help="Skip signature verification when loading chain from SQLite (faster startup)")
     parser.add_argument("--wallet-password", default="",
                         help="Password for wallet encryption (or set QBIT_WALLET_PASSWORD env var)")
+    parser.add_argument("--dynamic-fee-activation", type=int, default=None,
+                        help="Block height to activate EIP-1559 dynamic fees (0=genesis, default=disabled)")
     args = parser.parse_args()
+
+    # Dynamic fee activation: CLI flag overrides env var, which overrides default
+    if args.dynamic_fee_activation is not None:
+        import qbit_network.config as _cfg
+        import qbit_network.core.blockchain as _bc
+        import qbit_network.core.consensus as _cons
+        _cfg.DYNAMIC_FEE_ACTIVATION_HEIGHT = args.dynamic_fee_activation
+        _bc.DYNAMIC_FEE_ACTIVATION_HEIGHT = args.dynamic_fee_activation
+        _cons.DYNAMIC_FEE_ACTIVATION_HEIGHT = args.dynamic_fee_activation
 
     # Wallet password: CLI arg takes precedence, then env var
     wallet_password = args.wallet_password or os.environ.get("QBIT_WALLET_PASSWORD", "")

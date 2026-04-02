@@ -103,7 +103,8 @@ BASE_FEE_CHANGE_DENOM = 8
 INITIAL_BASE_FEE = 10
 MIN_BASE_FEE = 1
 MAX_BASE_FEE = 10_000
-DYNAMIC_FEE_ACTIVATION_HEIGHT = 2**63  # set to 0 for new chains; high default preserves legacy behavior
+_dfa_env = os.environ.get("QBIT_DYNAMIC_FEE_ACTIVATION")
+DYNAMIC_FEE_ACTIVATION_HEIGHT = int(_dfa_env) if _dfa_env is not None else 2**63  # env var or high default preserves legacy behavior
 MAX_SELF_TX_WEIGHT_RATIO = 25  # percent
 
 # Financial activation
