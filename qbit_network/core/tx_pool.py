@@ -191,7 +191,14 @@ class TxPoolMixin:
                 return False, "only the token issuer can mint"
             if reg["max_supply"] > 0:
                 amount = tx.payload.get("amount", 0)
-                if reg["total_minted"] + amount > reg["max_supply"]:
+                # R32-003: account for pending MINT_TOKEN amounts in pool
+                pending_mint = sum(
+                    ptx.payload.get("amount", 0)
+                    for ptx in self.tx_pool
+                    if ptx.tx_type == TxType.MINT_TOKEN
+                    and ptx.payload.get("token_id") == tid
+                )
+                if reg["total_minted"] + pending_mint + amount > reg["max_supply"]:
                     return False, (f"minting {amount} would exceed max_supply "
                                    f"{reg['max_supply']}")
 
@@ -204,8 +211,17 @@ class TxPoolMixin:
                 return False, f"token {tid} is not transferable"
             amount = tx.payload.get("amount", 0)
             bal = self._token_balances.get((tid, tx.sender), 0)
-            if bal < amount:
-                return False, (f"insufficient token balance: have {bal}, "
+            # R32-003: subtract pending TRANSFER_TOKEN debits from same sender+token
+            pending_debit = sum(
+                ptx.payload.get("amount", 0)
+                for ptx in self.tx_pool
+                if ptx.tx_type == TxType.TRANSFER_TOKEN
+                and ptx.payload.get("token_id") == tid
+                and ptx.sender == tx.sender
+            )
+            effective_bal = bal - pending_debit
+            if effective_bal < amount:
+                return False, (f"insufficient token balance: have {effective_bal}, "
                                f"need {amount}")
 
         # Nonce check -- O(1) via _pool_sender_count

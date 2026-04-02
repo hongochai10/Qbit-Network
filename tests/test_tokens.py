@@ -1430,3 +1430,78 @@ class TestTokenEdgeCases:
         assert token_id not in bc._token_registry
         assert "LIF" not in bc._token_by_symbol
         assert len(bc.chain) == chain_len
+
+
+# ========================================================================
+# R32-003: POOL ADMISSION — PENDING TOKEN DEBIT/MINT TRACKING
+# ========================================================================
+
+class TestTokenPoolPendingTracking:
+    """Verify pool admission accounts for pending token debits and mints."""
+
+    def test_transfer_token_double_spend_rejected_at_pool(self, funded_chain, wallet, wallet2):
+        """Two TRANSFER_TOKEN txs for same sender+token exceeding balance should
+        reject the second at pool admission."""
+        bc = funded_chain
+        _, _, token_id = issue_token(bc, wallet, "Coin", "COIN", 8)
+        mint_token(bc, wallet, wallet.address, token_id, 100)
+
+        # First transfer: 60 out of 100 — should pass
+        n = bc.get_nonce(wallet.address) + bc._pool_sender_count.get(wallet.address, 0)
+        tx1 = Transaction.transfer_token(
+            wallet.address, wallet2.address, token_id, 60, nonce=n)
+        tx1.sign(wallet.signing_sk, wallet.signing_pk)
+        ok1, _ = bc.submit_tx(tx1)
+        assert ok1
+
+        # Second transfer: 60 more — only 40 remaining after pending, should fail
+        n2 = bc.get_nonce(wallet.address) + bc._pool_sender_count.get(wallet.address, 0)
+        tx2 = Transaction.transfer_token(
+            wallet.address, wallet2.address, token_id, 60, nonce=n2)
+        tx2.sign(wallet.signing_sk, wallet.signing_pk)
+        ok2, err = bc.submit_tx(tx2)
+        assert not ok2
+        assert "insufficient token balance" in err
+
+    def test_transfer_token_within_pending_balance_accepted(self, funded_chain, wallet, wallet2):
+        """Two TRANSFER_TOKEN txs within total balance should both be accepted."""
+        bc = funded_chain
+        _, _, token_id = issue_token(bc, wallet, "Gem", "GEM", 0)
+        mint_token(bc, wallet, wallet.address, token_id, 200)
+
+        n = bc.get_nonce(wallet.address) + bc._pool_sender_count.get(wallet.address, 0)
+        tx1 = Transaction.transfer_token(
+            wallet.address, wallet2.address, token_id, 80, nonce=n)
+        tx1.sign(wallet.signing_sk, wallet.signing_pk)
+        ok1, _ = bc.submit_tx(tx1)
+        assert ok1
+
+        n2 = bc.get_nonce(wallet.address) + bc._pool_sender_count.get(wallet.address, 0)
+        tx2 = Transaction.transfer_token(
+            wallet.address, wallet2.address, token_id, 100, nonce=n2)
+        tx2.sign(wallet.signing_sk, wallet.signing_pk)
+        ok2, _ = bc.submit_tx(tx2)
+        assert ok2
+
+    def test_mint_token_exceeds_max_supply_with_pending(self, funded_chain, wallet):
+        """Second MINT_TOKEN should be rejected when pending + new exceeds max_supply."""
+        bc = funded_chain
+        _, _, token_id = issue_token(bc, wallet, "Cap", "CAP", 0,
+                                     max_supply=1000)
+
+        # First mint: 600 out of 1000 max
+        n = bc.get_nonce(wallet.address) + bc._pool_sender_count.get(wallet.address, 0)
+        tx1 = Transaction.mint_token(
+            wallet.address, wallet.address, token_id, 600, nonce=n)
+        tx1.sign(wallet.signing_sk, wallet.signing_pk)
+        ok1, _ = bc.submit_tx(tx1)
+        assert ok1
+
+        # Second mint: 600 more — pending 600 + 600 > 1000 max
+        n2 = bc.get_nonce(wallet.address) + bc._pool_sender_count.get(wallet.address, 0)
+        tx2 = Transaction.mint_token(
+            wallet.address, wallet.address, token_id, 600, nonce=n2)
+        tx2.sign(wallet.signing_sk, wallet.signing_pk)
+        ok2, err = bc.submit_tx(tx2)
+        assert not ok2
+        assert "exceed max_supply" in err
