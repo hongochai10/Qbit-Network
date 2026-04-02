@@ -105,28 +105,33 @@ class BalanceLedgerMixin:
         if self._height >= 0:
             self._state_snapshots[self._height] = self._state_trie.snapshot()
 
-    def _pending_debits(self, address: str) -> int:
-        """Sum of pending transfers + fees in the pool for an address."""
+    def _calc_tx_debit(self, tx) -> int:
+        """Compute the pending debit (fee + amount) for a single pool TX."""
         dynamic_active = (self._height + 1 >= _config.DYNAMIC_FEE_ACTIVATION_HEIGHT
                           and self._height >= 0)
-        total = 0
+        if dynamic_active:
+            w = tx_weight(tx.tx_type.value)
+            fee = tx.max_fee_per_weight * w
+        else:
+            fee = TX_FEES.get(tx.tx_type.value, 0)
+        debit = fee
+        if tx.tx_type == TxType.TRANSFER:
+            debit += tx.payload.get("amount", 0)
+        elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
+            debit += tx.payload.get("amount", 0)
+        return debit
+
+    def _pending_debits(self, address: str) -> int:
+        """Sum of pending transfers + fees in the pool for an address. O(1) via cache."""
+        return self._pending_debits_cache.get(address, 0)
+
+    def _rebuild_pending_debits_cache(self):
+        """Rebuild _pending_debits_cache from scratch. Called after pool mutations
+        that may change the fee model (e.g. height change in _drain_pool)."""
+        cache: dict[str, int] = {}
         for tx in self.tx_pool:
-            if tx.sender != address:
-                continue
-            if dynamic_active:
-                # Worst-case fee: max_fee_per_weight * weight
-                w = tx_weight(tx.tx_type.value)
-                fee = tx.max_fee_per_weight * w
-            else:
-                fee = TX_FEES.get(tx.tx_type.value, 0)
-            total += fee
-            if tx.tx_type == TxType.TRANSFER:
-                total += tx.payload.get("amount", 0)
-            elif tx.tx_type in (TxType.STAKE, TxType.DELEGATE):
-                total += tx.payload.get("amount", 0)
-            # Note: ISSUE_TOKEN/MINT_TOKEN/TRANSFER_TOKEN only charge QBIT fees,
-            # no native QBIT amount transfer, so fee-only is correct.
-        return total
+            cache[tx.sender] = cache.get(tx.sender, 0) + self._calc_tx_debit(tx)
+        self._pending_debits_cache = cache
 
     def _persist_balances_after_block(self, block, idx: int,
                                       matured_stakers: set | None = None):

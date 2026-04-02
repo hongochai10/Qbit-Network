@@ -97,6 +97,7 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         self.tx_pool: list[Transaction] = []
         self._pool_ids: set[str] = set()
         self._pool_sender_count: dict[str, int] = {}  # sender -> pending tx count (O(1) nonce calc)
+        self._pending_debits_cache: dict[str, int] = {}  # sender -> total pending debit (O(1) balance check)
 
         # Indices (always in-memory for fast validation)
         self._block_by_hash: dict[str, int] = {}
@@ -538,8 +539,13 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                 self._pool_ids.add(tx.tx_id)
                 self._pool_sender_count[tx.sender] = \
                     self._pool_sender_count.get(tx.sender, 0) + 1
+                self._pending_debits_cache[tx.sender] = (
+                    self._pending_debits_cache.get(tx.sender, 0)
+                    + self._calc_tx_debit(tx))
                 returned += 1
 
+        # Rebuild cache: height changed during reorg, fee model may differ
+        self._rebuild_pending_debits_cache()
         logger.info(
             f"REORG: depth={depth}, displaced={len(displaced_txs)}, "
             f"returned_to_pool={returned}")
@@ -559,6 +565,8 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                 self._pool_sender_count.pop(sender, None)
             else:
                 self._pool_sender_count[sender] = remaining
+        # Rebuild pending debits cache: height may have changed (fee model switch)
+        self._rebuild_pending_debits_cache()
 
     # ---- Internal ----
 
@@ -775,6 +783,8 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                             self._pool_sender_count.pop(revoked_addr, None)
                         else:
                             self._pool_sender_count[revoked_addr] = remaining
+                        # Clear pending debits for the revoked sender
+                        self._pending_debits_cache.pop(revoked_addr, None)
                     if to_remove:
                         logger.info(
                             f"Purged {len(to_remove)} pool txs from revoked sender "
