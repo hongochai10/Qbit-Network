@@ -105,9 +105,19 @@ class BalanceLedgerMixin:
         if self._height >= 0:
             self._state_snapshots[self._height] = self._state_trie.snapshot()
 
-    def _calc_tx_debit(self, tx) -> int:
-        """Compute the pending debit (fee + amount) for a single pool TX."""
-        dynamic_active = (self._height + 1 >= _config.DYNAMIC_FEE_ACTIVATION_HEIGHT
+    def _calc_tx_debit(self, tx, *, next_block_height: int | None = None) -> int:
+        """Compute the pending debit (fee + amount) for a single pool TX.
+
+        Args:
+            next_block_height: The height of the next block these pool TXs
+                target.  When omitted, defaults to ``self._height + 1``.
+                Passing it explicitly avoids a race where
+                ``_rebuild_pending_debits_cache`` runs before
+                ``self._height`` has been updated (R37-H01).
+        """
+        if next_block_height is None:
+            next_block_height = self._height + 1
+        dynamic_active = (next_block_height >= _config.DYNAMIC_FEE_ACTIVATION_HEIGHT
                           and self._height >= 0)
         if dynamic_active:
             w = tx_weight(tx.tx_type.value)
@@ -127,10 +137,17 @@ class BalanceLedgerMixin:
 
     def _rebuild_pending_debits_cache(self):
         """Rebuild _pending_debits_cache from scratch. Called after pool mutations
-        that may change the fee model (e.g. height change in _drain_pool)."""
+        that may change the fee model (e.g. height change in _drain_pool).
+
+        Uses ``self._height + 1`` as the explicit next-block height so the
+        fee model is always determined from the *current* chain tip, even if
+        called during block processing (R37-H01).
+        """
+        next_h = self._height + 1
         cache: dict[str, int] = {}
         for tx in self.tx_pool:
-            cache[tx.sender] = cache.get(tx.sender, 0) + self._calc_tx_debit(tx)
+            cache[tx.sender] = cache.get(tx.sender, 0) + self._calc_tx_debit(
+                tx, next_block_height=next_h)
         self._pending_debits_cache = cache
 
     def _persist_balances_after_block(self, block, idx: int,

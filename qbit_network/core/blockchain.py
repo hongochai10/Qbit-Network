@@ -541,7 +541,8 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                     self._pool_sender_count.get(tx.sender, 0) + 1
                 self._pending_debits_cache[tx.sender] = (
                     self._pending_debits_cache.get(tx.sender, 0)
-                    + self._calc_tx_debit(tx))
+                    + self._calc_tx_debit(tx,
+                                          next_block_height=self._height + 1))
                 returned += 1
 
         # Rebuild cache: height changed during reorg, fee model may differ

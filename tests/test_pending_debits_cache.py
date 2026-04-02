@@ -217,3 +217,101 @@ class TestPendingDebitsO1Lookup:
         bc.submit_tx(tx)
         expected = bc._calc_tx_debit(tx)
         assert bc._pending_debits(wallet.address) == expected
+
+
+class TestPendingDebitsCacheFeeTransition:
+    """R37-H01: Cache consistency across the dynamic-fee activation boundary.
+
+    Verifies that _rebuild_pending_debits_cache uses the correct fee model
+    when the chain crosses DYNAMIC_FEE_ACTIVATION_HEIGHT, even if called
+    during or immediately after _append_block.
+    """
+
+    def test_cache_correct_at_activation_boundary(self, wallet, monkeypatch):
+        """Submit TXs under static fees, produce block that crosses activation
+        height, verify cache switches to dynamic fee model."""
+        # Activation at block 2: blocks 0-1 use static, blocks 2+ use dynamic
+        ACTIVATION = 2
+        monkeypatch.setattr("qbit_network.config.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+        monkeypatch.setattr("qbit_network.core.blockchain.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+        monkeypatch.setattr("qbit_network.core.consensus.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+
+        bc = Blockchain()
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk,
+                      validator_pk=wallet.signing_pk)
+        bc.activate_financial_layer(wallet.address)
+        assert bc._height == 0  # genesis
+
+        # Fund a second wallet so pool TXs aren't "self-tx" of the validator
+        w2 = Wallet.generate()
+        fund_tx = Transaction.transfer(wallet.address, w2.address,
+                                       1_000_000_000, nonce=0)
+        fund_tx.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, _ = bc.submit_tx(fund_tx)
+        assert ok
+        blk = bc.produce_block(wallet.address, wallet.signing_sk)
+        assert blk is not None
+        assert bc._height == 1
+
+        # Now next block = 2 = ACTIVATION.  Submit pool TX from w2 with
+        # dynamic fee fields.
+        tx1 = Transaction.notarize(w2.address, "11" * 32,
+                                   nonce=0,
+                                   max_fee_per_weight=500)
+        tx1.sign(w2.signing_sk, w2.signing_pk)
+        ok, _ = bc.submit_tx(tx1)
+        assert ok
+
+        # Cache should reflect dynamic fees (next block = 2 >= ACTIVATION)
+        _assert_cache_consistent(bc)
+        debits_at_boundary = bc._pending_debits(w2.address)
+        assert debits_at_boundary > 0
+
+        # Produce block 2 (activation block) — drain rebuilds with dynamic
+        blk2 = bc.produce_block(wallet.address, wallet.signing_sk)
+        assert blk2 is not None
+        assert bc._height == 2
+        _assert_cache_consistent(bc)
+
+    def test_calc_tx_debit_explicit_height_overrides(self, wallet, monkeypatch):
+        """_calc_tx_debit with explicit next_block_height uses the supplied
+        height rather than self._height + 1."""
+        # Set activation at height 5 so we can test both sides of the boundary
+        ACTIVATION = 5
+        monkeypatch.setattr("qbit_network.config.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+        monkeypatch.setattr("qbit_network.core.blockchain.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+        monkeypatch.setattr("qbit_network.core.consensus.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+
+        bc = Blockchain()
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk,
+                      validator_pk=wallet.signing_pk)
+        bc.activate_financial_layer(wallet.address)
+
+        from qbit_network.config import TX_FEES
+
+        tx = Transaction.notarize(wallet.address, "bb" * 32, nonce=0,
+                                  max_fee_per_weight=500)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+
+        # Explicit height >= ACTIVATION → dynamic fees
+        debit_dyn = bc._calc_tx_debit(tx, next_block_height=ACTIVATION)
+        # Explicit height < ACTIVATION → static fees
+        debit_static = bc._calc_tx_debit(tx, next_block_height=ACTIVATION - 1)
+
+        static_fee = TX_FEES.get(tx.tx_type.value, 0)
+        assert debit_static == static_fee
+
+        from qbit_network.core.fees import tx_weight
+        w = tx_weight(tx.tx_type.value)
+        expected_dyn = tx.max_fee_per_weight * w
+        assert debit_dyn == expected_dyn
+        # Verify that the two models produce different results
+        assert debit_dyn != debit_static

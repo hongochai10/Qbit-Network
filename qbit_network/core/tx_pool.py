@@ -242,7 +242,8 @@ class TxPoolMixin:
         self._pool_ids.add(tx.tx_id)
         self._pool_sender_count[tx.sender] = pending_from_sender + 1
         self._pending_debits_cache[tx.sender] = (
-            self._pending_debits_cache.get(tx.sender, 0) + self._calc_tx_debit(tx))
+            self._pending_debits_cache.get(tx.sender, 0)
+            + self._calc_tx_debit(tx, next_block_height=self._height + 1))
         return True, tx.tx_id
 
     def _current_base_fee(self) -> int:
