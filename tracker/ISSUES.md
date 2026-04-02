@@ -1,5 +1,14 @@
 # Issue Tracker
 
+## Round 34 Findings (2026-04-02) — Batch Security Fixes
+
+| ID | Severity | Description | Status |
+|----|----------|-------------|--------|
+| R34-M01 | MEDIUM | SSRF resolver missing multicast/unspecified checks (webhooks.py) | **done** — also resolves R33-L06 |
+| R34-M02 | MEDIUM | SQLiteStore.close() thread leak — only closes current thread connection | **done** — track all conns in `_all_conns` |
+| R34-L01 | LOW | Epoch reward accumulator not reset for validators without delegators | **done** — reset all validators after distribution |
+| R34-L02 | LOW | Pool sender count desync on key revocation purge | **done** — batch update replaces per-item decrement |
+
 ## Round 33 Findings (2026-04-02) — CEO Full Audit + Security Auditor Review
 
 ### HIGH — P0 Critical Security
@@ -29,7 +38,7 @@
 | R33-L03 | LOW | _last_epoch_distributions grows unbounded | senior-backend-engineer | P3 | todo |
 | R33-L04 | LOW | _events_by_type list grows unbounded | senior-backend-engineer | P3 | todo |
 | R33-L05 | LOW | Receipt index rebuild O(blocks * receipts) on load | database-architect | P3 | todo |
-| R33-L06 | LOW | Webhook SSRF resolver missing .is_multicast/.is_unspecified check | security-engineer | P2 | todo |
+| R33-L06 | LOW | Webhook SSRF resolver missing .is_multicast/.is_unspecified check | security-engineer | P2 | **done** (R34-M01) — multicast + unspecified added to both resolver and registration |
 | R33-L07 | LOW | _drain_pool does not evict stale-nonce TXs after block mined | senior-backend-engineer | P2 | todo (extends R32-F07) |
 
 ## Open Issues (Round 26 — 2026-03-30)

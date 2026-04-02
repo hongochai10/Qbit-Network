@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 from .block import Block
 from .transaction import Transaction, TxType
 
@@ -136,73 +137,105 @@ CREATE INDEX IF NOT EXISTS idx_ble_block ON block_level_events(block_index);
 
 
 class SQLiteStore:
-    """SQLite-backed chain storage. Zero external dependencies."""
+    """SQLite-backed chain storage. Zero external dependencies.
+
+    Thread-safety (R32-F01): uses a connection-per-thread model via
+    threading.local().  Each thread gets its own sqlite3.Connection so
+    concurrent reads (enabled by WAL mode) never share a connection object.
+    Write operations are serialised through ``_write_lock``.
+    """
 
     def __init__(self, data_dir: str):
-        db_path = os.path.join(data_dir, "chain.db")
-        self._db = sqlite3.connect(db_path, isolation_level="DEFERRED")
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=NORMAL")
-        self._db.executescript(_SCHEMA)
+        self._db_path = os.path.join(data_dir, "chain.db")
+        self._local = threading.local()
+        self._all_conns: list[sqlite3.Connection] = []  # R34-M02: track all thread connections
+        self._conns_lock = threading.Lock()
+        self._write_lock = threading.RLock()
+        # Initialise schema and height on the creating thread
+        db = self._get_conn()
+        db.executescript(_SCHEMA)
         self._height = -1
-        row = self._db.execute("SELECT MAX(idx) FROM blocks").fetchone()
+        row = db.execute("SELECT MAX(idx) FROM blocks").fetchone()
         if row and row[0] is not None:
             self._height = row[0]
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return the current thread's connection, creating one if needed."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(
+                self._db_path,
+                isolation_level="DEFERRED",
+                check_same_thread=False,
+            )
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._local.conn = conn
+            with self._conns_lock:
+                self._all_conns.append(conn)
+        return conn
+
+    @property
+    def _db(self) -> sqlite3.Connection:
+        """Backward-compatible accessor used by all existing methods."""
+        return self._get_conn()
 
     def height(self) -> int:
         return self._height
 
     def append_block(self, block: Block):
         """Append block + all indices in one transaction (atomic)."""
-        idx = self._height + 1
-        block_json = json.dumps(block.to_dict(), separators=(",", ":"))
+        with self._write_lock:
+            idx = self._height + 1
+            block_json = json.dumps(block.to_dict(), separators=(",", ":"))
 
-        c = self._db.cursor()
-        try:
-            c.execute("INSERT INTO blocks (idx, hash, data) VALUES (?, ?, ?)",
-                       (idx, block.block_hash, block_json))
+            c = self._db.cursor()
+            try:
+                c.execute("INSERT INTO blocks (idx, hash, data) VALUES (?, ?, ?)",
+                           (idx, block.block_hash, block_json))
 
-            for tx_idx, tx in enumerate(block.transactions):
-                c.execute(
-                    "INSERT OR IGNORE INTO txs (tx_id, block_idx, tx_idx, sender, recipient, tx_type, nonce) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (tx.tx_id, idx, tx_idx, tx.sender, tx.recipient or "",
-                     tx.tx_type.value, tx.nonce))
+                for tx_idx, tx in enumerate(block.transactions):
+                    c.execute(
+                        "INSERT OR IGNORE INTO txs (tx_id, block_idx, tx_idx, sender, recipient, tx_type, nonce) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (tx.tx_id, idx, tx_idx, tx.sender, tx.recipient or "",
+                         tx.tx_type.value, tx.nonce))
 
-                if tx.tx_type == TxType.NOTARIZE:
-                    dh = tx.payload.get("documentHash", "")
-                    if dh:
-                        existing = c.execute(
-                            "SELECT 1 FROM notarizations WHERE doc_hash=? AND is_first=1",
-                            (dh,)).fetchone()
-                        is_first = 0 if existing else 1
-                        c.execute(
-                            "INSERT OR IGNORE INTO notarizations (doc_hash, tx_id, is_first) "
-                            "VALUES (?, ?, ?)", (dh, tx.tx_id, is_first))
+                    if tx.tx_type == TxType.NOTARIZE:
+                        dh = tx.payload.get("documentHash", "")
+                        if dh:
+                            existing = c.execute(
+                                "SELECT 1 FROM notarizations WHERE doc_hash=? AND is_first=1",
+                                (dh,)).fetchone()
+                            is_first = 0 if existing else 1
+                            c.execute(
+                                "INSERT OR IGNORE INTO notarizations (doc_hash, tx_id, is_first) "
+                                "VALUES (?, ?, ?)", (dh, tx.tx_id, is_first))
 
-                elif tx.tx_type == TxType.REGISTER_KEY:
-                    epk = tx.payload.get("encryption_pk", "")
-                    if epk:
-                        seq = c.execute(
-                            "SELECT COUNT(*) FROM key_registry WHERE address=?",
-                            (tx.sender,)).fetchone()[0]
-                        c.execute(
-                            "INSERT OR IGNORE INTO key_registry (address, encryption_pk, seq) "
-                            "VALUES (?, ?, ?)", (tx.sender, epk, seq))
+                    elif tx.tx_type == TxType.REGISTER_KEY:
+                        epk = tx.payload.get("encryption_pk", "")
+                        if epk:
+                            seq = c.execute(
+                                "SELECT COUNT(*) FROM key_registry WHERE address=?",
+                                (tx.sender,)).fetchone()[0]
+                            c.execute(
+                                "INSERT OR IGNORE INTO key_registry (address, encryption_pk, seq) "
+                                "VALUES (?, ?, ?)", (tx.sender, epk, seq))
 
-            self._db.commit()
-            self._height = idx
-        except Exception:
-            self._db.rollback()
-            raise
+                self._db.commit()
+                self._height = idx
+            except Exception:
+                self._db.rollback()
+                raise
 
     def update_block(self, block: Block):
         """Update a block's serialized data and hash in-place (e.g. after re-signing)."""
-        block_json = json.dumps(block.to_dict(), separators=(",", ":"))
-        self._db.execute(
-            "UPDATE blocks SET hash=?, data=? WHERE idx=?",
-            (block.block_hash, block_json, block.index))
-        self._db.commit()
+        with self._write_lock:
+            block_json = json.dumps(block.to_dict(), separators=(",", ":"))
+            self._db.execute(
+                "UPDATE blocks SET hash=?, data=? WHERE idx=?",
+                (block.block_hash, block_json, block.index))
+            self._db.commit()
 
     def get_block(self, index: int) -> Block | None:
         row = self._db.execute("SELECT data FROM blocks WHERE idx=?", (index,)).fetchone()
@@ -288,11 +321,12 @@ class SQLiteStore:
         When commit=False, the caller is responsible for committing the
         transaction (e.g. during reorg operations for atomicity).
         """
-        self._db.execute(
-            "INSERT OR REPLACE INTO validator_registry (address, pubkey) VALUES (?, ?)",
-            (address, pubkey_hex))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO validator_registry (address, pubkey) VALUES (?, ?)",
+                (address, pubkey_hex))
+            if commit:
+                self._db.commit()
 
     def get_validator(self, address: str) -> str | None:
         """Get a validator's signing pubkey hex, or None."""
@@ -313,21 +347,23 @@ class SQLiteStore:
         When commit=False, the caller is responsible for committing the
         transaction (e.g. during reorg operations for atomicity).
         """
-        self._db.execute(
-            "DELETE FROM validator_registry WHERE address=?", (address,))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "DELETE FROM validator_registry WHERE address=?", (address,))
+            if commit:
+                self._db.commit()
 
     # ---- Staking registry ----
 
     def put_stake(self, staker: str, validator: str, amount: int,
                   commit: bool = True):
         """Insert or update a stake entry."""
-        self._db.execute(
-            "INSERT OR REPLACE INTO stakes (staker, validator, amount) "
-            "VALUES (?, ?, ?)", (staker, validator, amount))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO stakes (staker, validator, amount) "
+                "VALUES (?, ?, ?)", (staker, validator, amount))
+            if commit:
+                self._db.commit()
 
     def get_stake(self, staker: str, validator: str) -> int:
         """Get stake amount for a staker/validator pair."""
@@ -338,11 +374,12 @@ class SQLiteStore:
 
     def delete_stake(self, staker: str, validator: str, commit: bool = True):
         """Remove a stake entry."""
-        self._db.execute(
-            "DELETE FROM stakes WHERE staker=? AND validator=?",
-            (staker, validator))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "DELETE FROM stakes WHERE staker=? AND validator=?",
+                (staker, validator))
+            if commit:
+                self._db.commit()
 
     def get_all_stakes(self) -> list[tuple[str, str, int]]:
         """Return all stakes as (staker, validator, amount) tuples."""
@@ -353,11 +390,12 @@ class SQLiteStore:
     def put_unbonding(self, staker: str, validator: str, amount: int,
                       release_block: int, commit: bool = True):
         """Record an unbonding entry."""
-        self._db.execute(
-            "INSERT INTO unbonding (staker, validator, amount, release_block) "
-            "VALUES (?, ?, ?, ?)", (staker, validator, amount, release_block))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "INSERT INTO unbonding (staker, validator, amount, release_block) "
+                "VALUES (?, ?, ?, ?)", (staker, validator, amount, release_block))
+            if commit:
+                self._db.commit()
 
     def get_mature_unbondings(self, current_block: int) -> list[dict]:
         """Get unbonding entries that have matured (release_block <= current)."""
@@ -371,35 +409,36 @@ class SQLiteStore:
     def delete_unbonding(self, staker: str, validator: str,
                          amount: int, release_block: int, commit: bool = True):
         """Remove an unbonding entry by matching fields."""
-        self._db.execute(
-            "DELETE FROM unbonding WHERE staker=? AND validator=? "
-            "AND amount=? AND release_block=?",
-            (staker, validator, amount, release_block))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "DELETE FROM unbonding WHERE staker=? AND validator=? "
+                "AND amount=? AND release_block=?",
+                (staker, validator, amount, release_block))
+            if commit:
+                self._db.commit()
 
     def delete_unbondings_from_block(self, from_block: int, commit: bool = True):
         """Remove unbonding entries created at or after from_block."""
-        # release_block = block_index + UNBONDING_PERIOD, so we remove
-        # entries whose originating block is >= from_block
-        self._db.execute(
-            "DELETE FROM unbonding WHERE release_block >= ?",
-            (from_block,))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "DELETE FROM unbonding WHERE release_block >= ?",
+                (from_block,))
+            if commit:
+                self._db.commit()
 
     # ---- Revocation registry ----
 
     def put_revocation(self, address: str, key_type: str, tx_id: str,
                        timestamp: float, reason: str, commit: bool = True):
         """Record a key revocation."""
-        self._db.execute(
-            "INSERT OR REPLACE INTO revoked_keys "
-            "(address, key_type, tx_id, timestamp, reason) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (address, key_type, tx_id, timestamp, reason))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO revoked_keys "
+                "(address, key_type, tx_id, timestamp, reason) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (address, key_type, tx_id, timestamp, reason))
+            if commit:
+                self._db.commit()
 
     def get_revocation(self, address: str, key_type: str) -> dict | None:
         """Get revocation info, or None."""
@@ -413,11 +452,12 @@ class SQLiteStore:
 
     def delete_revocation(self, address: str, key_type: str, commit: bool = True):
         """Remove a revocation (for rollback)."""
-        self._db.execute(
-            "DELETE FROM revoked_keys WHERE address=? AND key_type=?",
-            (address, key_type))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "DELETE FROM revoked_keys WHERE address=? AND key_type=?",
+                (address, key_type))
+            if commit:
+                self._db.commit()
 
     def get_all_revocations(self) -> list[tuple[str, str, str, float, str]]:
         """Return all revocations as (address, key_type, tx_id, timestamp, reason)."""
@@ -431,11 +471,12 @@ class SQLiteStore:
     def put_epoch(self, epoch_number: int, block_start: int,
                   validators_json: str, commit: bool = True):
         """Record an epoch snapshot."""
-        self._db.execute(
-            "INSERT OR REPLACE INTO epochs (epoch_number, block_start, validators_json) "
-            "VALUES (?, ?, ?)", (epoch_number, block_start, validators_json))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO epochs (epoch_number, block_start, validators_json) "
+                "VALUES (?, ?, ?)", (epoch_number, block_start, validators_json))
+            if commit:
+                self._db.commit()
 
     def get_epoch(self, epoch_number: int) -> dict | None:
         """Get epoch info, or None."""
@@ -448,10 +489,11 @@ class SQLiteStore:
 
     def delete_epochs_from(self, epoch_number: int, commit: bool = True):
         """Delete epochs with epoch_number >= given value (for rollback)."""
-        self._db.execute(
-            "DELETE FROM epochs WHERE epoch_number >= ?", (epoch_number,))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "DELETE FROM epochs WHERE epoch_number >= ?", (epoch_number,))
+            if commit:
+                self._db.commit()
 
     def get_all_epochs(self) -> list[tuple[int, int, str]]:
         """Return all epochs as (epoch_number, block_start, validators_json)."""
@@ -466,13 +508,14 @@ class SQLiteStore:
                            amount_slashed: int, block_index: int,
                            commit: bool = True):
         """Record a slashing event."""
-        self._db.execute(
-            "INSERT INTO slashing_events "
-            "(validator, evidence_tx_id, amount_slashed, block_index) "
-            "VALUES (?, ?, ?, ?)",
-            (validator, evidence_tx_id, amount_slashed, block_index))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "INSERT INTO slashing_events "
+                "(validator, evidence_tx_id, amount_slashed, block_index) "
+                "VALUES (?, ?, ?, ?)",
+                (validator, evidence_tx_id, amount_slashed, block_index))
+            if commit:
+                self._db.commit()
 
     def get_slashing_events(self, validator: str = "") -> list[dict]:
         """Get slashing events, optionally filtered by validator."""
@@ -491,21 +534,23 @@ class SQLiteStore:
     def delete_slashing_events_from_block(self, from_block: int,
                                           commit: bool = True):
         """Remove slashing events at or after from_block (for rollback)."""
-        self._db.execute(
-            "DELETE FROM slashing_events WHERE block_index >= ?",
-            (from_block,))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "DELETE FROM slashing_events WHERE block_index >= ?",
+                (from_block,))
+            if commit:
+                self._db.commit()
 
     # ---- Balance ledger ----
 
     def put_balance(self, address: str, amount: int, commit: bool = True):
         """Insert or update an address balance."""
-        self._db.execute(
-            "INSERT OR REPLACE INTO balances (address, amount) VALUES (?, ?)",
-            (address, amount))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO balances (address, amount) VALUES (?, ?)",
+                (address, amount))
+            if commit:
+                self._db.commit()
 
     def get_balance(self, address: str) -> int:
         """Get balance for an address."""
@@ -522,11 +567,12 @@ class SQLiteStore:
 
     def put_supply(self, key: str, value: int, commit: bool = True):
         """Insert or update a supply counter."""
-        self._db.execute(
-            "INSERT OR REPLACE INTO supply (key, value) VALUES (?, ?)",
-            (key, value))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO supply (key, value) VALUES (?, ?)",
+                (key, value))
+            if commit:
+                self._db.commit()
 
     def get_supply(self, key: str) -> int:
         """Get a supply counter value."""
@@ -539,18 +585,19 @@ class SQLiteStore:
 
     def put_token(self, token_id: str, meta: dict, commit: bool = True):
         """Insert or update a token registry entry."""
-        self._db.execute(
-            "INSERT OR REPLACE INTO tokens "
-            "(token_id, issuer, name, symbol, decimals, max_supply, "
-            "total_minted, transferable, created_block, created_tx) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (token_id, meta["issuer"], meta["name"], meta["symbol"],
-             meta["decimals"], meta.get("max_supply", 0),
-             meta.get("total_minted", 0),
-             1 if meta.get("transferable", True) else 0,
-             meta.get("created_block", 0), meta.get("created_tx", "")))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO tokens "
+                "(token_id, issuer, name, symbol, decimals, max_supply, "
+                "total_minted, transferable, created_block, created_tx) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (token_id, meta["issuer"], meta["name"], meta["symbol"],
+                 meta["decimals"], meta.get("max_supply", 0),
+                 meta.get("total_minted", 0),
+                 1 if meta.get("transferable", True) else 0,
+                 meta.get("created_block", 0), meta.get("created_tx", "")))
+            if commit:
+                self._db.commit()
 
     def get_token(self, token_id: str) -> dict | None:
         """Get token metadata by ID."""
@@ -582,25 +629,27 @@ class SQLiteStore:
 
     def delete_token(self, token_id: str, commit: bool = True):
         """Delete a token (for rollback)."""
-        self._db.execute("DELETE FROM tokens WHERE token_id=?", (token_id,))
-        self._db.execute("DELETE FROM token_balances WHERE token_id=?", (token_id,))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute("DELETE FROM tokens WHERE token_id=?", (token_id,))
+            self._db.execute("DELETE FROM token_balances WHERE token_id=?", (token_id,))
+            if commit:
+                self._db.commit()
 
     def put_token_balance(self, token_id: str, address: str, amount: int,
                           commit: bool = True):
         """Insert or update a token balance."""
-        if amount <= 0:
-            self._db.execute(
-                "DELETE FROM token_balances WHERE token_id=? AND address=?",
-                (token_id, address))
-        else:
-            self._db.execute(
-                "INSERT OR REPLACE INTO token_balances "
-                "(token_id, address, amount) VALUES (?, ?, ?)",
-                (token_id, address, amount))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            if amount <= 0:
+                self._db.execute(
+                    "DELETE FROM token_balances WHERE token_id=? AND address=?",
+                    (token_id, address))
+            else:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO token_balances "
+                    "(token_id, address, amount) VALUES (?, ?, ?)",
+                    (token_id, address, amount))
+            if commit:
+                self._db.commit()
 
     def get_token_balance(self, token_id: str, address: str) -> int:
         """Get token balance for an address."""
@@ -617,6 +666,27 @@ class SQLiteStore:
             (token_id,)).fetchall()
         return [(r[0], r[1]) for r in rows]
 
+    def get_token_holders_page(self, token_id: str, page: int = 1,
+                               limit: int = 100) -> tuple[list[dict], int]:
+        """Return paginated holders sorted by amount desc, with total count.
+
+        Returns (holders_list, total_count) without materializing full set.
+        """
+        offset = (page - 1) * limit
+        rows = self._db.execute(
+            "SELECT address, amount FROM token_balances "
+            "WHERE token_id=? AND amount > 0 "
+            "ORDER BY amount DESC, address ASC "
+            "LIMIT ? OFFSET ?",
+            (token_id, limit, offset)).fetchall()
+        holders = [{"address": r[0], "amount": r[1]} for r in rows]
+        count_row = self._db.execute(
+            "SELECT COUNT(*) FROM token_balances "
+            "WHERE token_id=? AND amount > 0",
+            (token_id,)).fetchone()
+        total = count_row[0] if count_row else 0
+        return holders, total
+
     def get_address_tokens(self, address: str) -> list[tuple[str, int]]:
         """Return all token balances for an address as (token_id, amount) pairs."""
         rows = self._db.execute(
@@ -629,30 +699,31 @@ class SQLiteStore:
 
     def put_receipt(self, receipt, commit: bool = True):
         """Persist a TransactionReceipt to SQLite."""
-        events_json = json.dumps(receipt.events, separators=(",", ":"))
-        c = self._db.cursor()
-        try:
-            c.execute(
-                "INSERT OR REPLACE INTO receipts "
-                "(tx_id, status, fee_paid, block_index, tx_index, events_json) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (receipt.tx_id, receipt.status, receipt.fee_paid,
-                 receipt.block_index, receipt.tx_index, events_json))
-            # Also insert into events table for indexed queries
-            for ev in receipt.events:
-                ev_type = ev.get("type", "")
-                if ev_type:
-                    ev_data = json.dumps(ev, separators=(",", ":"))
-                    c.execute(
-                        "INSERT INTO events "
-                        "(block_index, tx_id, event_type, event_data) "
-                        "VALUES (?, ?, ?, ?)",
-                        (receipt.block_index, receipt.tx_id, ev_type, ev_data))
-            if commit:
-                self._db.commit()
-        except Exception:
-            self._db.rollback()
-            raise
+        with self._write_lock:
+            events_json = json.dumps(receipt.events, separators=(",", ":"))
+            c = self._db.cursor()
+            try:
+                c.execute(
+                    "INSERT OR REPLACE INTO receipts "
+                    "(tx_id, status, fee_paid, block_index, tx_index, events_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (receipt.tx_id, receipt.status, receipt.fee_paid,
+                     receipt.block_index, receipt.tx_index, events_json))
+                # Also insert into events table for indexed queries
+                for ev in receipt.events:
+                    ev_type = ev.get("type", "")
+                    if ev_type:
+                        ev_data = json.dumps(ev, separators=(",", ":"))
+                        c.execute(
+                            "INSERT INTO events "
+                            "(block_index, tx_id, event_type, event_data) "
+                            "VALUES (?, ?, ?, ?)",
+                            (receipt.block_index, receipt.tx_id, ev_type, ev_data))
+                if commit:
+                    self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
 
     def get_receipt(self, tx_id: str):
         """Retrieve a receipt by tx_id. Returns TransactionReceipt or None."""
@@ -681,14 +752,15 @@ class SQLiteStore:
 
     def delete_receipts_for_block(self, block_index: int, commit: bool = True):
         """Remove all receipts, events, and block-level events for a given block (for rollback)."""
-        self._db.execute(
-            "DELETE FROM events WHERE block_index >= ?", (block_index,))
-        self._db.execute(
-            "DELETE FROM receipts WHERE block_index >= ?", (block_index,))
-        self._db.execute(
-            "DELETE FROM block_level_events WHERE block_index >= ?", (block_index,))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            self._db.execute(
+                "DELETE FROM events WHERE block_index >= ?", (block_index,))
+            self._db.execute(
+                "DELETE FROM receipts WHERE block_index >= ?", (block_index,))
+            self._db.execute(
+                "DELETE FROM block_level_events WHERE block_index >= ?", (block_index,))
+            if commit:
+                self._db.commit()
 
     # ---- Block-level event storage ----
 
@@ -697,12 +769,13 @@ class SQLiteStore:
         """Persist block-level events (BlockReward, EpochTransition) for a block."""
         if not events:
             return
-        events_json = json.dumps(events, separators=(",", ":"))
-        self._db.execute(
-            "INSERT OR REPLACE INTO block_level_events (block_index, event_data) "
-            "VALUES (?, ?)", (block_index, events_json))
-        if commit:
-            self._db.commit()
+        with self._write_lock:
+            events_json = json.dumps(events, separators=(",", ":"))
+            self._db.execute(
+                "INSERT OR REPLACE INTO block_level_events (block_index, event_data) "
+                "VALUES (?, ?)", (block_index, events_json))
+            if commit:
+                self._db.commit()
 
     def get_block_level_events(self, block_index: int) -> list[dict]:
         """Retrieve block-level events for a block index."""
@@ -744,26 +817,27 @@ class SQLiteStore:
         """
         if before_index <= 0:
             return 0
-        c = self._db.cursor()
-        try:
-            # Count blocks to prune
-            row = c.execute(
-                "SELECT COUNT(*) FROM blocks WHERE idx < ?",
-                (before_index,)).fetchone()
-            count = row[0] if row else 0
-            if count == 0:
-                return 0
+        with self._write_lock:
+            c = self._db.cursor()
+            try:
+                # Count blocks to prune
+                row = c.execute(
+                    "SELECT COUNT(*) FROM blocks WHERE idx < ?",
+                    (before_index,)).fetchone()
+                count = row[0] if row else 0
+                if count == 0:
+                    return 0
 
-            # Delete tx rows for pruned blocks
-            c.execute("DELETE FROM txs WHERE block_idx < ?", (before_index,))
-            # Delete block data
-            c.execute("DELETE FROM blocks WHERE idx < ?", (before_index,))
-            self._db.commit()
-            logger.info(f"Pruned {count} blocks (idx < {before_index})")
-            return count
-        except Exception:
-            self._db.rollback()
-            raise
+                # Delete tx rows for pruned blocks
+                c.execute("DELETE FROM txs WHERE block_idx < ?", (before_index,))
+                # Delete block data
+                c.execute("DELETE FROM blocks WHERE idx < ?", (before_index,))
+                self._db.commit()
+                logger.info(f"Pruned {count} blocks (idx < {before_index})")
+                return count
+            except Exception:
+                self._db.rollback()
+                raise
 
     def block_hash_exists(self, h: str) -> bool:
         return self._db.execute(
@@ -793,6 +867,10 @@ class SQLiteStore:
         Handles validator registry cleanup within the same transaction to
         prevent non-atomic commits during reorg.
         """
+        with self._write_lock:
+            self._delete_blocks_from_inner(from_index)
+
+    def _delete_blocks_from_inner(self, from_index: int):
         c = self._db.cursor()
         try:
             # Collect validator addresses and revocations from rolled-back blocks
@@ -920,10 +998,19 @@ class SQLiteStore:
 
     def commit(self):
         """Explicit commit for batched operations."""
-        self._db.commit()
+        with self._write_lock:
+            self._db.commit()
 
     def close(self):
-        self._db.close()
+        """Close all thread-local connections (R34-M02)."""
+        with self._conns_lock:
+            for conn in self._all_conns:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._all_conns.clear()
+        self._local.conn = None
 
 
 def migrate_json_to_sqlite(data_dir: str):

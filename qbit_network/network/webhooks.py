@@ -53,7 +53,7 @@ class _SSRFSafeResolver(AbstractResolver):
             addr = ipaddress.ip_address(entry["host"])
             if hasattr(addr, "ipv4_mapped") and addr.ipv4_mapped is not None:
                 addr = addr.ipv4_mapped
-            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
                 raise OSError(
                     f"SSRF blocked: {host} resolved to private/reserved IP {addr}"
                 )
@@ -117,8 +117,8 @@ class WebhookManager:
                 # R25-001: unwrap IPv6-mapped IPv4 (e.g. ::ffff:127.0.0.1)
                 if hasattr(addr, 'ipv4_mapped') and addr.ipv4_mapped is not None:
                     addr = addr.ipv4_mapped
-                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-                    raise ValueError("webhook url must not target private/loopback/link-local addresses")
+                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
+                    raise ValueError("webhook url must not target private/loopback/link-local/multicast/unspecified addresses")
             except ValueError as ip_err:
                 # Not a bare IP — hostname is fine (DNS resolution happens at delivery time)
                 if "must not target" in str(ip_err):

@@ -2,10 +2,10 @@
 
 ## Summary
 
-- **Total rounds**: 33 (including all v0.8.0 sprints)
+- **Total rounds**: 34 (including all v0.8.0 sprints)
 - **Total issues found**: 300+
-- **Total fixed**: 258+
-- **Open issues**: 32 (4 HIGH, 14 MED, 18 LOW, 3 INFO)
+- **Total fixed**: 262+
+- **Open issues**: 28 (4 HIGH, 12 MED, 16 LOW, 3 INFO)
 - **Accepted risks**: 2 (R21-010 informational, R23-002 latent/safe)
 - **R28 findings**: 3 MEDIUM, 4 LOW, 1 INFO — R28-001/002/003/004/007 fixed, R28-005/006 open
 - **R29 findings**: 2 MEDIUM, 2 LOW, 1 INFO — R29-001/002/003/004/005 open
@@ -13,7 +13,8 @@
 - **R31 findings**: 2 MEDIUM, 4 LOW, 1 INFO — REST param injection, pagination, fee config
 - **R32 findings**: 4 MEDIUM, 4 LOW — epoch reward front-run, token fee accounting, SQLite safety, state root
 - **R33 findings**: 4 HIGH, 6 MEDIUM, 5 LOW — EVIDENCE replay, TRANSFER rollback, liboqs version, stateRoot policy, reputation decay, height decrement, state snapshots, get_block trust
-- **Latest**: Round 33 CEO audit + security auditor review — 2026-04-02
+- **R34 findings**: 2 MEDIUM, 2 LOW — SSRF multicast/unspecified, SQLite thread leak, epoch reward reset, pool sender count desync — all fixed
+- **Latest**: Round 34 batch security fixes — 2026-04-02
 
 ## Deferred Findings Resolved in v0.4.0
 
@@ -723,6 +724,18 @@ Scope: Comprehensive codebase audit, security review (Round 26), test suite anal
 | TEC-1178 | Commit test_persistence.py + expand test coverage | qa-engineer | HIGH |
 
 **Round 32 summary:** 8 found (4 MED, 4 LOW), 8 open, 0 accepted. No CRITICAL or HIGH severity. 5 subtasks created (TEC-1174 to TEC-1178) under parent TEC-1172. Test baseline updated: 3,174 → 3,200 (+26 tests). Coverage stable at 91%. Total open issues across all rounds: 25 (9 MED, 13 LOW, 3 INFO) — 0 critical/high.
+
+## Round 34 — Batch Security Fixes (2026-04-02)
+
+**Scope:** 4 targeted fixes from automated audit sweep.
+**Tests:** 3,332 passed, 1 skipped, 0 failures.
+
+| # | Sev | Issue | Fix |
+|---|-----|-------|-----|
+| R34-M01 | MED | SSRF resolver missing `is_multicast`/`is_unspecified` checks (webhooks.py) | Added multicast + unspecified to both resolver and registration checks |
+| R34-M02 | MED | SQLiteStore.close() only closes current thread's connection — thread leak | Track all thread-local connections in `_all_conns` list; close() iterates all |
+| R34-L01 | LOW | Epoch reward accumulator not reset for validators without delegators | Reset `_epoch_rewards` for ALL validators after distribution loop |
+| R34-L02 | LOW | Pool sender count desync on key revocation purge (per-item decrement) | Batch update: `max(0, count - len(to_remove))` instead of per-item decrement |
 
 ## Round 33 — CEO Comprehensive Audit (2026-04-02)
 

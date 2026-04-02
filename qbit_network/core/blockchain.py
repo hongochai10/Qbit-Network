@@ -767,8 +767,14 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                     for t in to_remove:
                         self.tx_pool.remove(t)
                         self._pool_ids.discard(t.tx_id)
-                        self._pool_sender_count[t.sender] = max(
-                            0, self._pool_sender_count.get(t.sender, 0) - 1)
+                    # R34-L02: Batch update sender count instead of per-item decrement
+                    if to_remove:
+                        count = self._pool_sender_count.get(revoked_addr, 0)
+                        remaining = max(0, count - len(to_remove))
+                        if remaining == 0:
+                            self._pool_sender_count.pop(revoked_addr, None)
+                        else:
+                            self._pool_sender_count[revoked_addr] = remaining
                     if to_remove:
                         logger.info(
                             f"Purged {len(to_remove)} pool txs from revoked sender "

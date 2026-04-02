@@ -256,6 +256,12 @@ class StakingMixin:
             # Reset epoch rewards for this validator
             self._epoch_rewards[validator_addr] = 0
 
+        # R34-L01: Reset epoch rewards for ALL validators, not just those
+        # with delegators (the loop above skips validators with no delegators
+        # or zero rewards, leaving stale accumulations).
+        for addr in list(self._epoch_rewards):
+            self._epoch_rewards[addr] = 0
+
         # Record for rollback
         self._last_epoch_distributions[epoch_number] = {
             "credits": credits,
