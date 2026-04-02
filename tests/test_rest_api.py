@@ -1795,6 +1795,24 @@ class TestTokenEndpoints(AsyncRESTTestCase):
         resp = await self.client.get("/api/v1/tokens/nonexistent/holders")
         self.assertEqual(resp.status, 404)
 
+    async def test_get_token_holders_invalid_offset(self):
+        node = self.app["_mock_node"]
+        bc = node.blockchain
+        bc._token_registry["tok1"] = {"id": "tok1"}
+        resp = await self.client.get("/api/v1/tokens/tok1/holders?offset=abc")
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("offset", body["error"]["message"])
+
+    async def test_get_token_holders_invalid_limit(self):
+        node = self.app["_mock_node"]
+        bc = node.blockchain
+        bc._token_registry["tok1"] = {"id": "tok1"}
+        resp = await self.client.get("/api/v1/tokens/tok1/holders?limit=xyz")
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("limit", body["error"]["message"])
+
     async def test_get_address_tokens(self):
         node = self.app["_mock_node"]
         resp = await self.client.get(
@@ -1802,6 +1820,80 @@ class TestTokenEndpoints(AsyncRESTTestCase):
         self.assertEqual(resp.status, 200)
         body = await resp.json()
         self.assertIn("tokens", body["data"])
+
+    async def test_get_address_tokens_invalid_offset(self):
+        resp = await self.client.get("/api/v1/address/someaddr/tokens?offset=abc")
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("offset", body["error"]["message"])
+
+    async def test_get_address_tokens_invalid_limit(self):
+        resp = await self.client.get("/api/v1/address/someaddr/tokens?limit=xyz")
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("limit", body["error"]["message"])
+
+    # -- R31-002 boundary tests --
+
+    async def test_list_tokens_negative_offset(self):
+        resp = await self.client.get("/api/v1/tokens?offset=-1")
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("offset", body["error"]["message"])
+
+    async def test_list_tokens_zero_limit(self):
+        resp = await self.client.get("/api/v1/tokens?limit=0")
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("limit", body["error"]["message"])
+
+    async def test_list_tokens_limit_exceeds_max(self):
+        resp = await self.client.get("/api/v1/tokens?limit=1001")
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("limit", body["error"]["message"])
+
+    async def test_list_tokens_valid_offset_limit(self):
+        resp = await self.client.get("/api/v1/tokens?offset=0&limit=100")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertEqual(body["data"]["offset"], 0)
+        self.assertEqual(body["data"]["limit"], 100)
+
+    async def test_list_tokens_max_valid_limit(self):
+        resp = await self.client.get("/api/v1/tokens?limit=1000")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertEqual(body["data"]["limit"], 1000)
+
+    async def test_list_tokens_default_pagination(self):
+        resp = await self.client.get("/api/v1/tokens")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertEqual(body["data"]["offset"], 0)
+        self.assertEqual(body["data"]["limit"], 100)
+
+    async def test_token_holders_negative_offset(self):
+        node = self.app["_mock_node"]
+        bc = node.blockchain
+        bc._token_registry["tok1"] = {"id": "tok1"}
+        resp = await self.client.get("/api/v1/tokens/tok1/holders?offset=-5")
+        self.assertEqual(resp.status, 400)
+
+    async def test_token_holders_limit_exceeds_max(self):
+        node = self.app["_mock_node"]
+        bc = node.blockchain
+        bc._token_registry["tok1"] = {"id": "tok1"}
+        resp = await self.client.get("/api/v1/tokens/tok1/holders?limit=1001")
+        self.assertEqual(resp.status, 400)
+
+    async def test_address_tokens_negative_offset(self):
+        resp = await self.client.get("/api/v1/address/someaddr/tokens?offset=-1")
+        self.assertEqual(resp.status, 400)
+
+    async def test_address_tokens_limit_exceeds_max(self):
+        resp = await self.client.get("/api/v1/address/someaddr/tokens?limit=2000")
+        self.assertEqual(resp.status, 400)
 
     async def test_issue_token(self):
         resp = await self.client.post(

@@ -12,6 +12,10 @@ _DEFAULT_PAGE = 1
 _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 100
 
+# Token endpoint pagination defaults (R31-002)
+_TOKEN_DEFAULT_LIMIT = 100
+_TOKEN_MAX_LIMIT = 1000
+
 
 def _ok(data, status: int = 200) -> web.Response:
     """Return a success JSON response."""
@@ -43,6 +47,28 @@ def _parse_pagination(request: web.Request) -> tuple[int, int] | web.Response:
         return _err(400, f"limit must be 1-{_MAX_LIMIT}")
 
     return page, limit
+
+
+def _parse_token_pagination(request: web.Request) -> tuple[int, int] | web.Response:
+    """Extract offset and limit for token endpoints (R31-002).
+
+    Returns (offset, limit) or error Response.
+    """
+    try:
+        offset = int(request.query.get("offset", 0))
+    except (ValueError, TypeError):
+        return _err(400, "offset must be an integer")
+    try:
+        limit = int(request.query.get("limit", _TOKEN_DEFAULT_LIMIT))
+    except (ValueError, TypeError):
+        return _err(400, "limit must be an integer")
+
+    if offset < 0:
+        return _err(400, "offset must be >= 0")
+    if limit < 1 or limit > _TOKEN_MAX_LIMIT:
+        return _err(400, f"limit must be 1-{_TOKEN_MAX_LIMIT}")
+
+    return offset, limit
 
 
 class RESTApi:
@@ -1094,13 +1120,14 @@ class RESTApi:
     # ------------------------------------------------------------------
 
     async def _list_tokens(self, request: web.Request) -> web.Response:
-        pag = _parse_pagination(request)
+        pag = _parse_token_pagination(request)
         if isinstance(pag, web.Response):
             return pag
-        page, limit = pag
+        offset, limit = pag
         bc = self._node.blockchain
+        page = (offset // limit) + 1
         tokens = bc.list_tokens(page=page, limit=limit)
-        return _ok({"tokens": tokens, "page": page, "limit": limit,
+        return _ok({"tokens": tokens, "offset": offset, "limit": limit,
                      "total": len(bc._token_registry)})
 
     async def _get_token(self, request: web.Request) -> web.Response:
@@ -1120,22 +1147,28 @@ class RESTApi:
         bc = self._node.blockchain
         if token_id not in bc._token_registry:
             return _err(404, "token not found", status=404)
-        page = int(request.query.get("page", 1))
-        limit = int(request.query.get("limit", 100))
+        pag = _parse_token_pagination(request)
+        if isinstance(pag, web.Response):
+            return pag
+        offset, limit = pag
+        page = (offset // limit) + 1
         holders, total = bc.get_token_holders(token_id, page=page, limit=limit)
         return _ok({"token_id": token_id, "holders": holders,
-                     "total": total, "page": page, "limit": limit})
+                     "total": total, "offset": offset, "limit": limit})
 
     async def _get_address_tokens(self, request: web.Request) -> web.Response:
         addr = request.match_info.get("addr", "")
         if not addr:
             return _err(400, "address is required")
         bc = self._node.blockchain
-        page = int(request.query.get("page", 1))
-        limit = int(request.query.get("limit", 100))
+        pag = _parse_token_pagination(request)
+        if isinstance(pag, web.Response):
+            return pag
+        offset, limit = pag
+        page = (offset // limit) + 1
         tokens = bc.get_address_tokens(addr, page=page, limit=limit)
         return _ok({"address": addr, "tokens": tokens,
-                     "page": page, "limit": limit})
+                     "offset": offset, "limit": limit})
 
     async def _issue_token_rest(self, request: web.Request) -> web.Response:
         try:
