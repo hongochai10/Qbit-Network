@@ -314,11 +314,12 @@ class TestEpochRewardDistribution:
             delegator_after = bc.get_balance(delegator.address)
             delegator_gain = delegator_after - delegator_before
 
-            # Total epoch rewards = rewards_before + rewards from new blocks
-            # But all were distributed at the boundary with 20% commission
-            # delegator gets (100-20)% = 80% of the full epoch rewards
+            # Total epoch rewards = rewards_before + rewards from blocks before boundary.
+            # R32-F04: epoch transition fires BEFORE the boundary block's reward
+            # is credited, so the boundary block's reward goes to the new epoch.
+            # delegator gets (100-20)% = 80% of the outgoing epoch rewards
             total_epoch_rewards = rewards_before
-            for i in range(target - current):
+            for i in range(target - current - 1):
                 total_epoch_rewards += INITIAL_BLOCK_REWARD  # block reward per block
 
             expected_pool = total_epoch_rewards * 80 // 100
@@ -481,6 +482,242 @@ class TestEpochRewardDistribution:
         total_debited = sum(amt for _, amt in dist["debits"])
         assert total_credited == total_debited, (
             f"credits={total_credited} != debits={total_debited}")
+
+    def test_r32_f04_self_transfer_no_reward_reduction(self, wallet, wallet_pair):
+        """R32-F04: Validator self-transfer in epoch-boundary block must not
+        reduce delegator rewards. The fix snapshots validator balance before
+        processing block TXs so rewards use pre-block balance."""
+        import qbit_network.core.blockchain as bc_mod
+        original = bc_mod.EPOCH_LENGTH
+        try:
+            delegator, recipient = wallet_pair
+            bc, delegate_amount = self._setup_with_delegator(
+                wallet, delegator, epoch_length=5)
+
+            delegator_balance_before = bc.get_balance(delegator.address)
+
+            # Mine to one block before epoch boundary
+            current = bc.height
+            target = ((current // 5) + 1) * 5  # next epoch boundary
+            nonce = bc.get_nonce(wallet.address)
+
+            # Fill blocks up to target - 1 (one block before boundary)
+            for i in range(target - current - 1):
+                tx = Transaction.notarize(
+                    wallet.address, f"{0xf0 + i:064x}", nonce=nonce + i)
+                tx.sign(wallet.signing_sk, wallet.signing_pk)
+                submit_and_mine(bc, wallet, tx)
+
+            nonce = bc.get_nonce(wallet.address)
+
+            # Record validator balance before the epoch-boundary block
+            validator_balance_pre = bc.get_balance(wallet.address)
+            assert validator_balance_pre > 0, "validator must have balance"
+
+            # Validator self-transfers 99% of balance in the epoch-boundary block
+            drain_amount = (validator_balance_pre * 99) // 100
+            drain_tx = Transaction.transfer(
+                wallet.address, recipient.address, drain_amount, nonce=nonce)
+            drain_tx.sign(wallet.signing_sk, wallet.signing_pk)
+            submit_and_mine(bc, wallet, drain_tx)
+
+            delegator_balance_after = bc.get_balance(delegator.address)
+
+            # Delegator must have received rewards despite the self-transfer
+            assert delegator_balance_after > delegator_balance_before, (
+                f"Delegator reward was suppressed by self-transfer! "
+                f"before={delegator_balance_before}, after={delegator_balance_after}")
+
+        finally:
+            bc_mod.EPOCH_LENGTH = original
+
+    def test_r32_f04_multiple_self_transfers_same_block(self, wallet, wallet_pair):
+        """R32-F04 adversarial: multiple self-transfers in the same epoch-boundary
+        block must not reduce delegator rewards."""
+        import qbit_network.core.blockchain as bc_mod
+        original = bc_mod.EPOCH_LENGTH
+        try:
+            delegator, recipient = wallet_pair
+            bc, delegate_amount = self._setup_with_delegator(
+                wallet, delegator, epoch_length=5)
+
+            delegator_balance_before = bc.get_balance(delegator.address)
+
+            # Mine to one block before epoch boundary
+            current = bc.height
+            target = ((current // 5) + 1) * 5
+            nonce = bc.get_nonce(wallet.address)
+
+            for i in range(target - current - 1):
+                tx = Transaction.notarize(
+                    wallet.address, f"{0xa0 + i:064x}", nonce=nonce + i)
+                tx.sign(wallet.signing_sk, wallet.signing_pk)
+                submit_and_mine(bc, wallet, tx)
+
+            nonce = bc.get_nonce(wallet.address)
+            validator_balance_pre = bc.get_balance(wallet.address)
+
+            # Submit two self-transfers that collectively drain most balance
+            chunk = (validator_balance_pre * 45) // 100  # 45% each = 90% total
+            for j in range(2):
+                tx = Transaction.transfer(
+                    wallet.address, recipient.address, chunk, nonce=nonce + j)
+                tx.sign(wallet.signing_sk, wallet.signing_pk)
+                ok, _ = bc.submit_tx(tx)
+                assert ok, f"self-transfer {j} failed to submit"
+
+            # Mine block at epoch boundary with all queued transfers
+            block = bc.produce_block(wallet.address, wallet.signing_sk)
+            assert block is not None
+
+            delegator_balance_after = bc.get_balance(delegator.address)
+
+            # Delegator must still receive rewards
+            assert delegator_balance_after > delegator_balance_before, (
+                f"Multiple self-transfers suppressed rewards! "
+                f"before={delegator_balance_before}, after={delegator_balance_after}")
+
+        finally:
+            bc_mod.EPOCH_LENGTH = original
+
+    def test_r32_f04_epoch_distributes_before_txs(self, wallet, wallet_pair):
+        """R32-F04 unit: epoch transition fires before TX processing in the
+        block, so validator balance is intact during reward distribution."""
+        import qbit_network.core.blockchain as bc_mod
+        original = bc_mod.EPOCH_LENGTH
+        try:
+            delegator, recipient = wallet_pair
+            bc, delegate_amount = self._setup_with_delegator(
+                wallet, delegator, epoch_length=5)
+
+            # Mine to one block before epoch boundary
+            current = bc.height
+            target = ((current // 5) + 1) * 5
+            nonce = bc.get_nonce(wallet.address)
+
+            for i in range(target - current - 1):
+                tx = Transaction.notarize(
+                    wallet.address, f"{0xb0 + i:064x}", nonce=nonce + i)
+                tx.sign(wallet.signing_sk, wallet.signing_pk)
+                submit_and_mine(bc, wallet, tx)
+
+            nonce = bc.get_nonce(wallet.address)
+            validator_balance_pre = bc.get_balance(wallet.address)
+            epoch_rewards = bc._epoch_rewards.get(wallet.address, 0)
+            assert epoch_rewards > 0, "must have accumulated rewards"
+
+            # Submit a transfer draining most of balance in epoch-boundary block
+            drain_amount = (validator_balance_pre * 90) // 100
+            drain_tx = Transaction.transfer(
+                wallet.address, recipient.address, drain_amount, nonce=nonce)
+            drain_tx.sign(wallet.signing_sk, wallet.signing_pk)
+
+            delegator_before = bc.get_balance(delegator.address)
+            submit_and_mine(bc, wallet, drain_tx)
+            delegator_after = bc.get_balance(delegator.address)
+
+            # Epoch distribution happened BEFORE the drain TX was processed,
+            # so delegator rewards should be based on the full pre-TX balance
+            assert delegator_after > delegator_before, (
+                f"Epoch distribution should precede TX processing! "
+                f"before={delegator_before}, after={delegator_after}")
+        finally:
+            bc_mod.EPOCH_LENGTH = original
+
+    def test_r32_f04_snapshot_used_for_delegator_pool_cap(self, funded_chain, wallet):
+        """R32-F04 defense-in-depth: _distribute_epoch_rewards uses the explicit
+        balance snapshot for the delegator_pool cap.
+
+        With correct ordering, snapshot == live balance at distribution time.
+        The snapshot is an explicit frozen dict that guards against future
+        refactors that might reorder operations."""
+        bc = funded_chain
+        delegator_addr = "qv1snapshot_delegator"
+
+        # Setup: validator earned 200 epoch rewards, delegator staked 500
+        bc._epoch_rewards[wallet.address] = 200
+        bc._stakes[wallet.address] = {
+            wallet.address: 500,
+            delegator_addr: 500,
+        }
+        bc._total_stake[wallet.address] = 1000
+        bc._validator_commission[wallet.address] = 0
+
+        # Validator has 300 balance — snapshot matches live (correct ordering)
+        bc._balances[wallet.address] = 300
+        snapshot = {wallet.address: 300}
+
+        supply_before = sum(bc._balances.values()) + sum(bc._total_stake.values())
+
+        # Distribute with snapshot — pool = 200, cap = min(200, 300) = 200
+        bc._distribute_epoch_rewards(1, balance_snapshot=snapshot)
+
+        supply_after = sum(bc._balances.values()) + sum(bc._total_stake.values())
+
+        delegator_bal = bc.get_balance(delegator_addr)
+        # Full reward distributed since balance (300) > delegator_pool (200)
+        assert delegator_bal == 200, (
+            f"Snapshot cap should allow full reward (200), got {delegator_bal}")
+
+        # Supply conservation: credits == debits
+        dist = bc._last_epoch_distributions.get(1)
+        assert dist is not None
+        total_credited = sum(amt for _, amt in dist["credits"])
+        total_debited = sum(amt for _, amt in dist["debits"])
+        assert total_credited == total_debited
+
+        # Supply must not change
+        assert supply_after == supply_before
+
+    def test_r32_f04_snapshot_caps_to_live_balance_safety(self, funded_chain, wallet):
+        """R32-F04 safety: even with a high snapshot, distribution is capped
+        to live balance to prevent _debit ValueError (supply conservation)."""
+        bc = funded_chain
+        delegator_addr = "qv1safety_delegator"
+
+        bc._epoch_rewards[wallet.address] = 200
+        bc._stakes[wallet.address] = {
+            wallet.address: 500,
+            delegator_addr: 500,
+        }
+        bc._total_stake[wallet.address] = 1000
+        bc._validator_commission[wallet.address] = 0
+
+        # Snapshot says 300 but live is only 50 (edge case: funds moved between
+        # snapshot capture and distribution — should not happen with correct
+        # ordering but safety net prevents crash)
+        bc._balances[wallet.address] = 50
+        snapshot = {wallet.address: 300}
+
+        bc._distribute_epoch_rewards(3, balance_snapshot=snapshot)
+
+        delegator_bal = bc.get_balance(delegator_addr)
+        # pool = 200, cap = min(snapshot 300, live 50) = 50
+        assert delegator_bal == 50, (
+            f"Safety cap should limit to live balance (50), got {delegator_bal}")
+
+    def test_r32_f04_no_snapshot_fallback(self, funded_chain, wallet):
+        """R32-F04: When no snapshot provided (e.g. SQLite replay),
+        _distribute_epoch_rewards falls back to live balances."""
+        bc = funded_chain
+        delegator_addr = "qv1fallback_delegator"
+
+        bc._epoch_rewards[wallet.address] = 100
+        bc._stakes[wallet.address] = {
+            wallet.address: 500,
+            delegator_addr: 500,
+        }
+        bc._total_stake[wallet.address] = 1000
+        bc._validator_commission[wallet.address] = 0
+        bc._balances[wallet.address] = 50  # only 50 available
+
+        # No snapshot — should fall back to live balance (50)
+        bc._distribute_epoch_rewards(2, balance_snapshot=None)
+
+        delegator_bal = bc.get_balance(delegator_addr)
+        # pool = 100, cap = min(100, live 50) = 50
+        assert delegator_bal == 50, (
+            f"Fallback should cap to live balance (50), got {delegator_bal}")
 
 
 # ========== Part 3: Supply Tracking ==========

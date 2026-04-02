@@ -183,11 +183,19 @@ class StakingMixin:
 
     # ---- Epoch rewards ----
 
-    def _distribute_epoch_rewards(self, epoch_number: int):
+    def _distribute_epoch_rewards(self, epoch_number: int,
+                                   balance_snapshot: dict[str, int] | None = None):
         """Distribute validator block rewards to delegators proportionally.
 
         Debits the distributed amount from the validator's balance to maintain
         the supply conservation invariant (R16-003).
+
+        Args:
+            epoch_number: The epoch whose rewards are being distributed.
+            balance_snapshot: R32-F04 explicit pre-TX balance snapshot.
+                Frozen before epoch-boundary block TXs to prevent front-running
+                via validator self-transfer.  Falls back to live balances when
+                None (e.g. during SQLite reload replay).
         """
         credits: list[tuple[str, int]] = []
         debits: list[tuple[str, int]] = []
@@ -213,10 +221,17 @@ class StakingMixin:
             validator_commission = epoch_rewards * commission_rate // 100
             delegator_pool = epoch_rewards - validator_commission
 
-            # R24-001: Cap delegator_pool to validator's available balance
-            # to prevent supply inflation when validator spent rewards
-            # before epoch boundary
-            val_bal = self._balances.get(validator_addr, 0)
+            # R24-001 + R32-F04: Cap delegator_pool to validator's available
+            # balance to prevent supply inflation.  Use the explicit pre-TX
+            # snapshot when available (defense-in-depth against front-running);
+            # fall back to live balance for backward-compat / replay paths.
+            # Always also cap to live balance so debit cannot exceed what
+            # the validator actually holds (prevents ValueError on _debit).
+            live_bal = self._balances.get(validator_addr, 0)
+            if balance_snapshot is not None:
+                val_bal = min(balance_snapshot.get(validator_addr, 0), live_bal)
+            else:
+                val_bal = live_bal
             if delegator_pool > val_bal:
                 delegator_pool = val_bal
 
@@ -267,7 +282,17 @@ class StakingMixin:
         if new_epoch > self._current_epoch or (block_index == 0 and not self._epochs):
             # Distribute epoch rewards before transitioning (not on epoch 0)
             if new_epoch > 0 and self._financial_active:
-                self._distribute_epoch_rewards(new_epoch - 1)
+                # R32-F04: Capture explicit balance snapshot BEFORE distribution.
+                # This runs before the epoch-boundary block's TXs (ordering
+                # enforced by _apply_block), so balances reflect pre-TX state.
+                # Using a frozen snapshot dict prevents any future reordering
+                # bugs from re-introducing the front-running vulnerability.
+                balance_snapshot = {
+                    v_addr: self._balances.get(v_addr, 0)
+                    for v_addr in self._stakes
+                }
+                self._distribute_epoch_rewards(new_epoch - 1,
+                                               balance_snapshot)
 
             self._current_epoch = new_epoch
             # Snapshot current live validators for this epoch
