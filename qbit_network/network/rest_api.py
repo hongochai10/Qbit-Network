@@ -1213,10 +1213,22 @@ class RESTApi:
         max_fee_per_weight = body.get("max_fee_per_weight")
         max_priority_fee = body.get("max_priority_fee")
 
-        if not wallet_name:
-            return _err(400, "wallet is required")
-        if not name or not symbol or decimals is None:
-            return _err(400, "name, symbol, and decimals are required")
+        if not isinstance(wallet_name, str) or not wallet_name:
+            return _err(400, "wallet is required and must be a string")
+        if not isinstance(name, str) or not name:
+            return _err(400, "name is required and must be a string")
+        if not isinstance(symbol, str) or not symbol:
+            return _err(400, "symbol is required and must be a string")
+        if not isinstance(decimals, int) or isinstance(decimals, bool):
+            return _err(400, "decimals is required and must be an integer")
+        if decimals < 0:
+            return _err(400, "decimals must be >= 0")
+        if not isinstance(max_supply, int) or isinstance(max_supply, bool):
+            return _err(400, "max_supply must be an integer")
+        if max_supply < 0:
+            return _err(400, "max_supply must be >= 0")
+        if not isinstance(transferable, bool):
+            return _err(400, "transferable must be a boolean")
 
         try:
             result = await self._node._rpc_issue_token(
@@ -1243,8 +1255,14 @@ class RESTApi:
         max_fee_per_weight = body.get("max_fee_per_weight")
         max_priority_fee = body.get("max_priority_fee")
 
-        if not wallet_name or not token_id or not recipient or not amount:
-            return _err(400, "wallet, token_id, recipient, and amount are required")
+        if not isinstance(wallet_name, str) or not wallet_name:
+            return _err(400, "wallet is required and must be a string")
+        if not isinstance(token_id, str) or not token_id:
+            return _err(400, "token_id is required and must be a string")
+        if not isinstance(recipient, str) or not recipient:
+            return _err(400, "recipient is required and must be a string")
+        if not isinstance(amount, int) or isinstance(amount, bool) or amount < 1:
+            return _err(400, "amount must be a positive integer")
 
         try:
             result = await self._node._rpc_mint_token(
@@ -1272,8 +1290,16 @@ class RESTApi:
         max_fee_per_weight = body.get("max_fee_per_weight")
         max_priority_fee = body.get("max_priority_fee")
 
-        if not wallet_name or not token_id or not recipient or not amount:
-            return _err(400, "wallet, token_id, recipient, and amount are required")
+        if not isinstance(wallet_name, str) or not wallet_name:
+            return _err(400, "wallet is required and must be a string")
+        if not isinstance(token_id, str) or not token_id:
+            return _err(400, "token_id is required and must be a string")
+        if not isinstance(recipient, str) or not recipient:
+            return _err(400, "recipient is required and must be a string")
+        if not isinstance(amount, int) or isinstance(amount, bool) or amount < 1:
+            return _err(400, "amount must be a positive integer")
+        if not isinstance(memo, str):
+            return _err(400, "memo must be a string")
 
         try:
             result = await self._node._rpc_transfer_token(

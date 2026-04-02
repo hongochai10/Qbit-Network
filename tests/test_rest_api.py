@@ -1980,6 +1980,116 @@ class TestTokenEndpoints(AsyncRESTTestCase):
         )
         self.assertEqual(resp.status, 400)
 
+    # --- R32-002: Type validation tests ---
+
+    async def test_issue_token_string_decimals(self):
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "name": "T", "symbol": "T", "decimals": "8"},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("integer", body["error"]["message"])
+
+    async def test_issue_token_bool_decimals(self):
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "name": "T", "symbol": "T", "decimals": True},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_issue_token_negative_decimals(self):
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "name": "T", "symbol": "T", "decimals": -1},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_issue_token_string_max_supply(self):
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "name": "T", "symbol": "T", "decimals": 8,
+                  "max_supply": "1000"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_issue_token_non_bool_transferable(self):
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "name": "T", "symbol": "T", "decimals": 8,
+                  "transferable": "yes"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_issue_token_int_wallet(self):
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": 123, "name": "T", "symbol": "T", "decimals": 8},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_mint_token_string_amount(self):
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "t1", "recipient": "r1",
+                  "amount": "100"},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("integer", body["error"]["message"])
+
+    async def test_mint_token_zero_amount(self):
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "t1", "recipient": "r1",
+                  "amount": 0},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_mint_token_int_token_id(self):
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": 123, "recipient": "r1",
+                  "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_token_string_amount(self):
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "t1", "recipient": "r1",
+                  "amount": "50"},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_token_int_memo(self):
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "t1", "recipient": "r1",
+                  "amount": 50, "memo": 123},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_transfer_token_bool_amount(self):
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "t1", "recipient": "r1",
+                  "amount": True},
+        )
+        self.assertEqual(resp.status, 400)
+
 
 class TestLightClientEndpoints(AsyncRESTTestCase):
     """Light client endpoints."""
