@@ -40,7 +40,7 @@
 
 | ID | Severity | Description | Owner | Priority | Status |
 |----|----------|-------------|-------|----------|--------|
-| R29-001 | MEDIUM | get_token_holders() materializes full holder list before pagination — DoS via public endpoint | security-engineer | P1 | todo (TEC-925) |
+| R29-001 | MEDIUM | get_token_holders() materializes full holder list before pagination — DoS via public endpoint | security-engineer | P1 | done (TEC-1155) |
 | R29-002 | MEDIUM | Inbound P2P connections bypass _is_safe_peer() — private IPs accepted | security-engineer | P1 | done (p2p.py:951 _is_safe_inbound_ip) |
 | R29-003 | LOW | qv_getStateProofAt accepts arbitrary trie key — unauthenticated token balance probing | security-engineer | P2 | todo (TEC-925) |
 | R29-004 | LOW | Inbound P2P first message uses readline() — incompatible with binary wire format | senior-backend-engineer | P3 | todo |
@@ -119,5 +119,5 @@ See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (290+ issues across 31
 - R31: 7 findings (2 MED, 4 LOW, 1 INFO), 6 open, 1 accepted (R31-006)
 - 8 accepted risks (no action required)
 - 31 audit rounds completed
-- 2,998 tests collected, 2,996 passing (78% coverage)
+- 3,175 tests collected, 3,174 passing (91% coverage)
 - 17 open issues total (5 MED, 9 LOW, 3 INFO) — 0 critical/high

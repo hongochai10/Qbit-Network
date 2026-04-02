@@ -3,6 +3,7 @@
 Extracted as a mixin to reduce blockchain.py size while preserving
 all method signatures and self.* access patterns.
 """
+import heapq
 import time
 from .transaction import TxType
 
@@ -163,23 +164,32 @@ class QueryMixin:
         if store is not None and hasattr(store, "get_token_holders_page"):
             return store.get_token_holders_page(token_id, page=page, limit=limit)
 
-        # In-memory fallback: build only the requested page
+        # In-memory fallback: lazy iteration — never materialize full dict list
         addrs = self._holders_by_token.get(token_id)
         if not addrs:
             return [], 0
 
-        # Collect holders with positive balance (full scan unavoidable in memory)
-        holders = []
-        for addr in addrs:
-            amount = self._token_balances.get((token_id, addr), 0)
-            if amount > 0:
-                holders.append({"address": addr, "amount": amount})
+        # Generator: yield sort keys + addr without creating dicts
+        def _positive_holders():
+            for addr in addrs:
+                amount = self._token_balances.get((token_id, addr), 0)
+                if amount > 0:
+                    yield (-amount, addr)
 
-        total = len(holders)
-        # Sort and slice only the requested page
-        holders.sort(key=lambda h: (-h["amount"], h["address"]))
+        # Count total positive holders (lightweight scan, no dict alloc)
+        total = sum(1 for _ in _positive_holders())
+        if total == 0:
+            return [], 0
+
+        # Use heapq.nsmallest to extract only the needed prefix
+        # (sort key is (-amount, addr) so nsmallest = highest amounts first)
         start = (page - 1) * limit
-        return holders[start:start + limit], total
+        needed = start + limit
+        top_n = heapq.nsmallest(needed, _positive_holders())
+        page_slice = top_n[start:]
+
+        return [{"address": addr, "amount": -neg_amt}
+                for neg_amt, addr in page_slice], total
 
     def get_address_tokens(self, address: str, page: int = 1,
                            limit: int = 100) -> list[dict]:
