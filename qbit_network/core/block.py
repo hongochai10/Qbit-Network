@@ -113,6 +113,11 @@ class Block:
             raise ValueError("block index must be int")
         if not isinstance(data.get("timestamp"), int):
             raise ValueError("block timestamp must be int")
+        raw_fee = data.get("baseFee", 0)
+        if isinstance(raw_fee, bool) or not isinstance(raw_fee, int):
+            raise ValueError("baseFee must be an integer")
+        if raw_fee < 0:
+            raise ValueError("baseFee must be non-negative")
         txs = [Transaction.from_dict(t) for t in data.get("transactions", [])]
         block = cls(
             index=data["index"],
@@ -121,7 +126,7 @@ class Block:
             validator=data.get("validator", ""),
             timestamp=data["timestamp"],
             signature=bytes.fromhex(data.get("signature", "")),
-            base_fee=data.get("baseFee", 0),
+            base_fee=raw_fee,
             state_root=data.get("stateRoot", ""),
             receipts_root=data.get("receiptsRoot", ""),
         )

@@ -79,6 +79,34 @@ class TestBlockSerialization:
             Block.from_dict({"index": 0, "timestamp": "not_int", "prevHash": "0" * 64,
                              "validator": "", "transactions": [], "signature": ""})
 
+    @pytest.mark.parametrize("bad_fee", [-1, -100])
+    def test_from_dict_rejects_negative_basefee(self, bad_fee):
+        with pytest.raises(ValueError, match="baseFee must be non-negative"):
+            Block.from_dict({"index": 0, "timestamp": 1, "prevHash": "0" * 64,
+                             "baseFee": bad_fee,
+                             "validator": "", "transactions": [], "signature": ""})
+
+    @pytest.mark.parametrize("bad_fee", [1.5, "10", None, [0]])
+    def test_from_dict_rejects_non_integer_basefee(self, bad_fee):
+        with pytest.raises(ValueError, match="baseFee must be an integer"):
+            Block.from_dict({"index": 0, "timestamp": 1, "prevHash": "0" * 64,
+                             "baseFee": bad_fee,
+                             "validator": "", "transactions": [], "signature": ""})
+
+    def test_from_dict_rejects_boolean_basefee(self):
+        with pytest.raises(ValueError, match="baseFee must be an integer"):
+            Block.from_dict({"index": 0, "timestamp": 1, "prevHash": "0" * 64,
+                             "baseFee": True,
+                             "validator": "", "transactions": [], "signature": ""})
+
+    def test_from_dict_accepts_valid_basefee(self, wallet):
+        g = Block.genesis(wallet.address)
+        d = g.to_dict()
+        d["baseFee"] = 100
+        d.pop("hash", None)
+        restored = Block.from_dict(d)
+        assert restored.base_fee == 100
+
 
 class TestMerkleProof:
     def test_proof_for_single_tx(self, wallet):
