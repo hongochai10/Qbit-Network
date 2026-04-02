@@ -9,7 +9,7 @@ import tempfile
 import logging
 from .block import Block
 from .transaction import TxType
-from ..config import UNBONDING_PERIOD
+from ..config import UNBONDING_PERIOD, MIN_STAKE
 
 logger = logging.getLogger("qbit_network.chain")
 
@@ -295,11 +295,14 @@ class PersistenceMixin:
                     vpk_bytes = bytes.fromhex(vpk_hex)
                     self._validator_registry[vaddr] = vpk_bytes
                     self.consensus.add_validator(vaddr, vpk_bytes)
-            # Load stakes from SQLite (covers stakes persisted but not yet replayed from txs)
+            # H-01 FIX: SQLite stakes are authoritative (include slashing reductions).
+            # Clear TX-replayed stakes and rebuild entirely from SQLite to ensure
+            # slashed validators retain their reduced stake after node restart.
+            self._stakes.clear()
+            self._total_stake.clear()
             for staker, validator, amount in self._store.get_all_stakes():
-                if validator not in self._stakes or staker not in self._stakes.get(validator, {}):
-                    self._stakes.setdefault(validator, {})[staker] = amount
-                    self._total_stake[validator] = self._total_stake.get(validator, 0) + amount
+                self._stakes.setdefault(validator, {})[staker] = amount
+                self._total_stake[validator] = self._total_stake.get(validator, 0) + amount
 
             # Load epochs from SQLite
             for epoch_num, block_start, validators_json in self._store.get_all_epochs():
@@ -316,6 +319,14 @@ class PersistenceMixin:
                 self._slashing_events.append(event)
                 self._slashed_validators.add(event["validator"])
                 self._processed_evidence.add(event["validator"])
+
+            # R33-H01: Remove slashed validators from consensus when stake < MIN_STAKE.
+            # During live operation _process_evidence_tx handles this, but on reload
+            # we must reconcile consensus.validators with the authoritative SQLite stakes.
+            for vaddr in list(self._slashed_validators):
+                remaining = self._total_stake.get(vaddr, 0)
+                if remaining < MIN_STAKE:
+                    self.consensus.remove_validator(vaddr)
 
             # Load balances from SQLite
             for addr, amount in self._store.get_all_balances():
@@ -350,6 +361,21 @@ class PersistenceMixin:
 
         # Rebuild state trie from loaded balances and nonces (R19-SEC-001)
         self._rebuild_state_trie()
+
+        # R32-F03: Verify state root integrity after SQLite reload
+        if self._latest_block and self._latest_block.state_root:
+            computed_root = self._state_trie.root().hex()
+            stored_root = self._latest_block.state_root
+            if computed_root != stored_root:
+                logger.error(
+                    f"State root mismatch after SQLite load: "
+                    f"computed {computed_root[:16]}... vs "
+                    f"stored {stored_root[:16]}...")
+                raise ValueError(
+                    f"SQLite state integrity check failed: state root mismatch "
+                    f"(computed {computed_root[:16]}... vs "
+                    f"block #{self._height} stored {stored_root[:16]}...). "
+                    f"Database may be tampered or corrupted.")
 
         verified_msg = " (signatures verified)" if verify_signatures else " (signature verification skipped)"
         logger.info(f"Loaded {self._height + 1} blocks from SQLite{verified_msg}")

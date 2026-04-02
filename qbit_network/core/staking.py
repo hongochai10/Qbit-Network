@@ -140,11 +140,13 @@ class StakingMixin:
         # If stake drops below MIN_STAKE, remove from active validators
         if new_total < MIN_STAKE:
             self._total_stake.pop(vaddr, None)
+            # Capture staker keys before popping (R33-H01 fix: was dead code)
+            remaining_stakers = list(self._stakes.get(vaddr, {}).keys())
             self._stakes.pop(vaddr, None)
             if self._store is not None:
-                # Clean up any remaining stake entries
-                for staker in list(self._stakes.get(vaddr, {}).keys()):
+                for staker in remaining_stakers:
                     self._store.delete_stake(staker, vaddr)
+            self.consensus.remove_validator(vaddr)
 
         # Record slashing
         self._slashed_validators.add(vaddr)

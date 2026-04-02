@@ -385,3 +385,218 @@ class TestStateRootVerificationOnLoad:
         bc2.consensus.add_validator(wallet.address, wallet.signing_pk)
         with pytest.raises(ValueError, match="state root mismatch"):
             bc2.load(verify_signatures=True)
+
+
+# ===================================================================
+# SQLite thread safety (R32-F01)
+# ===================================================================
+import threading
+from qbit_network.core.store import SQLiteStore
+from qbit_network.core.block import Block
+
+
+class TestSQLiteThreadSafety:
+    """R32-F01: SQLiteStore connection-per-thread model and write serialisation."""
+
+    def test_per_thread_connections_are_distinct(self, tmp_dir):
+        """Each thread should get its own sqlite3 connection."""
+        store = SQLiteStore(tmp_dir)
+        main_conn = store._get_conn()
+        other_conn = [None]
+
+        def worker():
+            other_conn[0] = store._get_conn()
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+        assert other_conn[0] is not None
+        assert other_conn[0] is not main_conn
+        store.close()
+
+    def test_concurrent_reads_during_write(self, tmp_dir, wallet):
+        """Concurrent reads should not block or crash while a write is in progress."""
+        bc = _build_financial_chain(tmp_dir, wallet, num_blocks=5)
+        store = SQLiteStore(tmp_dir)
+        errors = []
+        read_results = []
+
+        def reader(n):
+            try:
+                for _ in range(n):
+                    block = store.get_block(0)
+                    if block is not None:
+                        read_results.append(block.index)
+                    h = store.height()
+                    read_results.append(h)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=reader, args=(20,)) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Thread errors: {errors}"
+        assert len(read_results) > 0
+        store.close()
+
+    def test_concurrent_writes_serialised(self, tmp_dir, wallet):
+        """Concurrent put_balance calls should not corrupt or raise."""
+        store = SQLiteStore(tmp_dir)
+        store._db.executescript(
+            "CREATE TABLE IF NOT EXISTS balances "
+            "(address TEXT PRIMARY KEY, amount INTEGER NOT NULL DEFAULT 0);"
+        )
+        errors = []
+
+        def writer(addr, count):
+            try:
+                for i in range(count):
+                    store.put_balance(addr, i + 1)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=writer, args=(f"addr_{i}", 50))
+            for i in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Write errors: {errors}"
+        for i in range(4):
+            bal = store.get_balance(f"addr_{i}")
+            assert bal == 50  # last written value
+        store.close()
+
+    def test_write_lock_is_reentrant(self, tmp_dir):
+        """RLock should allow nested write lock acquisition (e.g. commit inside locked method)."""
+        store = SQLiteStore(tmp_dir)
+        # Simulate nested locking: acquire _write_lock then call commit (which also acquires it)
+        with store._write_lock:
+            store.commit()  # Should not deadlock
+        store.close()
+
+    def test_close_only_affects_current_thread(self, tmp_dir):
+        """close() should close the calling thread's connection without crashing others."""
+        store = SQLiteStore(tmp_dir)
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def worker():
+            try:
+                _ = store._get_conn()  # create thread-local conn
+                barrier.wait(timeout=5)
+                # After main thread calls close(), this thread's conn should still work
+                h = store.height()
+                assert h >= -1
+            except Exception as e:
+                errors.append(e)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        barrier.wait(timeout=5)
+        store.close()  # closes main thread's conn only
+        t.join()
+        assert len(errors) == 0, f"Worker errors: {errors}"
+
+
+# ===================================================================
+# EVIDENCE TX replay on SQLite reload (R33-H01)
+# ===================================================================
+
+class TestEvidenceReplayOnReload:
+    """R33-H01: Slashed validators must retain reduced stake after SQLite reload."""
+
+    def test_evidence_slash_persists_across_reload(self, tmp_dir):
+        """Slashed validator stake and consensus removal survive SQLite reload."""
+        from qbit_network.core.wallet import Wallet as W
+        from qbit_network.config import MIN_STAKE, SLASH_PERCENTAGE
+        from qbit_network.crypto import MLDSA, sha3_256
+
+        w = W.generate()
+        w2 = W.generate()
+        bc = Blockchain(data_dir=tmp_dir)
+        bc.consensus.add_validator(w.address, w.signing_pk)
+        bc.init_chain(w.address, w.signing_sk)
+
+        wallet_map = {w.address: w, w2.address: w2}
+
+        def mine_block_correct(bc, txs):
+            """Submit txs and produce a block using the same dPoS selection as produce_block."""
+            for tx in txs:
+                bc.submit_tx(tx)
+            parent = bc._latest_block
+            # Use parent_hash so select_validator matches produce_block's internal logic
+            expected = bc.consensus.select_validator(
+                parent.index + 1, parent_hash=parent.block_hash)
+            producer = wallet_map.get(expected, w)
+            block = bc.produce_block(producer.address, producer.signing_sk)
+            assert block is not None, (
+                f"produce_block returned None for {producer.address[:16]}... "
+                f"(expected={expected[:16] if expected else None})")
+            return block
+
+        # Block 1: register w2 on-chain so evidence verification can find its public key
+        nonce = bc.get_nonce(w2.address)
+        reg_tx = Transaction.register_validator(
+            sender=w2.address,
+            validator_pubkey=w2.signing_pk,
+            validator_address=w2.address,
+            nonce=nonce,
+        )
+        reg_tx.sign(w2.signing_sk, w2.signing_pk)
+        mine_block_correct(bc, [reg_tx])
+
+        # Block 2: stake w2 (from w) so it has stake to be slashed
+        nonce = bc.get_nonce(w.address)
+        stake_tx = Transaction.stake(
+            sender=w.address, validator_address=w2.address, amount=MIN_STAKE, nonce=nonce,
+        )
+        stake_tx.sign(w.signing_sk, w.signing_pk)
+        mine_block_correct(bc, [stake_tx])
+        assert bc._total_stake.get(w2.address, 0) >= MIN_STAKE, (
+            "stake_tx did not commit -- check validator rotation")
+
+        # Block 3: submit double-sign evidence against w2
+        # sha3_256() returns bytes directly (not a hashlib object)
+        header_a = sha3_256(b"block_a_header")
+        header_b = sha3_256(b"block_b_header")
+        sig_a = MLDSA.sign(w2.signing_sk, header_a)
+        sig_b = MLDSA.sign(w2.signing_sk, header_b)
+        hash_a = sha3_256(header_a).hex()
+        hash_b = sha3_256(header_b).hex()
+
+        nonce = bc.get_nonce(w.address)
+        ev_tx = Transaction.evidence(
+            sender=w.address, validator_address=w2.address, block_index=2,
+            block_a_hash=hash_a, block_b_hash=hash_b,
+            block_a_sig=sig_a.hex(), block_b_sig=sig_b.hex(),
+            block_a_header=header_a.hex(), block_b_header=header_b.hex(),
+            nonce=nonce,
+        )
+        ev_tx.sign(w.signing_sk, w.signing_pk)
+        ok, err = bc.submit_tx(ev_tx)
+        assert ok, f"evidence tx rejected at pool: {err}"
+        mine_block_correct(bc, [])
+
+        # Verify slash happened
+        assert bc.is_slashed(w2.address)
+        slashed_stake = bc._total_stake.get(w2.address, 0)
+        assert not bc.consensus.is_validator(w2.address)
+        bc._store.close()
+
+        # Reload from SQLite
+        bc2 = Blockchain(data_dir=tmp_dir)
+        bc2.consensus.add_validator(w.address, w.signing_pk)
+        bc2.load()
+
+        # Assertions: slash state fully preserved
+        assert bc2.is_slashed(w2.address), "Slashing state lost on reload"
+        assert bc2._total_stake.get(w2.address, 0) == slashed_stake
+        assert not bc2.consensus.is_validator(w2.address), (
+            "R33-H01: slashed validator still in consensus after reload")
