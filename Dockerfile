@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Build liboqs with shared libraries
-RUN git clone --depth 1 --branch 0.12.0 https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs \
+RUN git clone --depth 1 --branch 0.15.0 https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs \
     && cd /tmp/liboqs && mkdir build && cd build \
     && cmake -GNinja -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=/opt/oqs .. \
     && ninja && ninja install \
@@ -23,8 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir liboqs-python cryptography aiohttp
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY qbit_network/ qbit_network/
 COPY cli/ cli/
