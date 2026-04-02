@@ -1,6 +1,7 @@
 """QVault full node - ties blockchain, P2P, and RPC together."""
 import asyncio
 import collections
+import json
 import logging
 import os
 import secrets
@@ -20,7 +21,7 @@ from .network.rest_api import RESTApi
 from .network.websocket import WebSocketManager
 from .network.webhooks import WebhookManager
 from .network.metrics import MetricsRegistry
-from .config import DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, BLOCK_INTERVAL, VERSION
+from .config import DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, BLOCK_INTERVAL, VERSION, EXPECTED_LIBOQS_VERSION
 
 logger = logging.getLogger("qbit_network.node")
 
@@ -85,6 +86,20 @@ class FullNode:
             path = os.path.join(d, f"{addr}.json")
             if not os.path.exists(path):
                 w.save(path, password=self._wallet_password)
+            elif self._wallet_password:
+                # Re-encrypt plaintext wallets when password is now configured
+                try:
+                    with open(path, 'r') as f:
+                        data = json.load(f)
+                    if not data.get("encrypted"):
+                        logger.warning(
+                            "SECURITY: re-encrypting plaintext wallet %s — "
+                            "wallet was saved without encryption previously.",
+                            addr,
+                        )
+                        w.save(path, password=self._wallet_password)
+                except Exception as e:
+                    logger.warning("Failed to check/re-encrypt wallet %s: %s", addr, e)
 
     def _load_wallets(self):
         d = self._wallets_dir()
@@ -125,9 +140,14 @@ class FullNode:
                     MSG_NEW_BLOCK, {"block": block.to_dict()}, exclude=peer.addr)
                 await self._ws_notify_block(block)
             else:
-                self.p2p.reputation.record(peer.addr, "invalid_block")
+                # RS-2: heavier penalty for Byzantine state root forgery
+                event = ("state_root_mismatch" if "state_root mismatch" in err
+                         else "invalid_block")
+                self.p2p.reputation.record(peer.addr, event)
+                self.metrics.block_validation_errors_total.inc()
         except Exception as e:
             self.p2p.reputation.record(peer.addr, "invalid_block")
+            self.metrics.block_validation_errors_total.inc()
             logger.debug(f"bad block from {peer.addr}: {e}")
 
     async def _p2p_new_tx(self, peer, data):
@@ -184,12 +204,20 @@ class FullNode:
         for bd in blocks_list[:100]:
             try:
                 block = Block.from_dict(bd)
-                ok, _ = self.blockchain.add_block(block)
+                ok, err = self.blockchain.add_block(block)
                 if ok:
+                    self.p2p.reputation.record(peer.addr, "valid_block")
                     self._lock_genesis_if_needed()
                 else:
+                    # RS-2: penalize peers sending bad blocks in batch sync
+                    event = ("state_root_mismatch" if "state_root mismatch" in err
+                             else "invalid_block")
+                    self.p2p.reputation.record(peer.addr, event)
+                    self.metrics.block_validation_errors_total.inc()
                     break
             except Exception:
+                self.p2p.reputation.record(peer.addr, "invalid_block")
+                self.metrics.block_validation_errors_total.inc()
                 break
 
     async def _p2p_get_peers(self, peer, data):
@@ -367,8 +395,7 @@ class FullNode:
     async def _rpc_block_number(self):
         return self.blockchain.height
 
-    async def _rpc_get_block(self, index=None, **kwargs):
-        block_hash = kwargs.get("block_hash")
+    async def _rpc_get_block(self, index=None, block_hash=None):
         if index is not None:
             if not isinstance(index, int):
                 raise ValueError("index must be integer")
@@ -1050,12 +1077,24 @@ class FullNode:
             raise ValueError("count must be 1-100")
         return self.blockchain.get_block_headers(start=start, count=count)
 
+    # Key prefixes allowed for public (unauthenticated) state proof queries
+    _PUBLIC_PROOF_PREFIXES = ("balance:", "nonce:")
+
     async def _rpc_get_state_proof_at(self, key="", block_index=None):
-        """Get state proof at optional block height (public)."""
+        """Get state proof at optional block height (public, restricted prefixes).
+
+        Only balance: and nonce: key prefixes are allowed via the public RPC.
+        Token state proofs (token:*) require the authenticated REST endpoint.
+        """
         if not isinstance(key, str) or not key:
             raise ValueError("key must be a non-empty string")
         if block_index is not None and not isinstance(block_index, int):
             raise ValueError("block_index must be an integer or null")
+        if not any(key.startswith(p) for p in self._PUBLIC_PROOF_PREFIXES):
+            raise ValueError(
+                "only balance: and nonce: key prefixes are allowed; "
+                "use the authenticated REST endpoint for token state proofs"
+            )
         return self.blockchain.get_state_proof_at_block(key, block_index)
 
     async def _rpc_get_receipt_proof(self, tx_id=""):
@@ -1304,6 +1343,24 @@ class FullNode:
         logger.info("=" * 60)
         logger.info("  QBit Network PQC Blockchain Node")
         logger.info("=" * 60)
+
+        # Check liboqs version
+        try:
+            import oqs
+            oqs_ver = getattr(oqs, "oqs_version", None)
+            if callable(oqs_ver):
+                oqs_ver = oqs_ver()
+            if oqs_ver:
+                logger.info("liboqs version: %s (expected %s)", oqs_ver, EXPECTED_LIBOQS_VERSION)
+                if oqs_ver != EXPECTED_LIBOQS_VERSION:
+                    logger.warning(
+                        "liboqs version mismatch: got %s, expected %s — "
+                        "ML-DSA/ML-KEM parameter names may differ between releases",
+                        oqs_ver, EXPECTED_LIBOQS_VERSION)
+            else:
+                logger.info("liboqs loaded (version detection unavailable)")
+        except Exception:
+            logger.warning("Could not detect liboqs version")
 
         # Load persisted wallets
         self._load_wallets()

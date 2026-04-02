@@ -1825,6 +1825,35 @@ class TestWalletPersistence:
         node._load_wallets()  # Should not raise
         assert len(node.wallets) == 0
 
+    def test_reencrypt_plaintext_wallet_on_password(self, tmp_dir, wallet):
+        """Plaintext wallets are re-encrypted when password is later configured."""
+        import json
+
+        # Step 1: Save wallet WITHOUT password (plaintext)
+        node = _make_node(tmp_dir, wallet)
+        node._wallet_password = ""
+        node._save_wallets()
+
+        wallet_path = os.path.join(node._wallets_dir(), f"{wallet.address}.json")
+        with open(wallet_path, 'r') as f:
+            data = json.load(f)
+        assert data.get("encrypted") is False, "wallet should be plaintext initially"
+
+        # Step 2: Restart node with password — should re-encrypt
+        node._wallet_password = "test-secret-pw"
+        node._save_wallets()
+
+        with open(wallet_path, 'r') as f:
+            data = json.load(f)
+        assert data.get("encrypted") is True, "wallet should be encrypted after re-save"
+        assert "ciphertext" in data
+        assert "signing_sk" not in data, "secret keys must not be in plaintext"
+
+        # Step 3: Verify wallet can be loaded with the password
+        loaded = Wallet.load(wallet_path, password="test-secret-pw")
+        assert loaded.address == wallet.address
+        assert loaded.signing_pk == wallet.signing_pk
+
 
 class TestRPCGetTxWithFee:
     """Test _rpc_get_tx with effective fee calculation."""
