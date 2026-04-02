@@ -6,7 +6,11 @@ from enum import Enum
 from ..crypto import MLDSA, sha3_256
 from ..config import (MAX_TX_PAYLOAD_SIZE, CHAIN_ID, MIN_STAKE, MAX_STAKE,
                       MAX_TOKEN_NAME_LENGTH, MAX_TOKEN_SYMBOL_LENGTH,
-                      MIN_TOKEN_SYMBOL_LENGTH, MAX_TOKEN_DECIMALS)
+                      MIN_TOKEN_SYMBOL_LENGTH, MAX_TOKEN_DECIMALS,
+                      MAX_SUPPLY)
+
+# Upper bound for EIP-1559-style fee parameters (2^63)
+_MAX_FEE_PARAM = 2 ** 63
 
 
 class TxType(str, Enum):
@@ -222,6 +226,8 @@ class Transaction:
             amount = self.payload.get("amount")
             if not isinstance(amount, int) or amount <= 0:
                 return False, "amount must be a positive integer"
+            if amount > MAX_SUPPLY:
+                return False, f"amount exceeds MAX_SUPPLY ({MAX_SUPPLY})"
             memo = self.payload.get("memo")
             if memo is not None:
                 if not isinstance(memo, str):
@@ -309,6 +315,8 @@ class Transaction:
             amount = self.payload.get("amount")
             if not isinstance(amount, int) or amount <= 0:
                 return False, "amount must be a positive integer"
+            if amount > MAX_SUPPLY:
+                return False, f"amount exceeds MAX_SUPPLY ({MAX_SUPPLY})"
             if not self.recipient:
                 return False, "MINT_TOKEN requires a recipient"
             from ..config import ADDRESS_PREFIX
@@ -324,6 +332,8 @@ class Transaction:
             amount = self.payload.get("amount")
             if not isinstance(amount, int) or amount <= 0:
                 return False, "amount must be a positive integer"
+            if amount > MAX_SUPPLY:
+                return False, f"amount exceeds MAX_SUPPLY ({MAX_SUPPLY})"
             if not self.recipient:
                 return False, "TRANSFER_TOKEN requires a recipient"
             if self.recipient == self.sender:
@@ -384,8 +394,12 @@ class Transaction:
         mpf = data.get("maxPriorityFee", 0)
         if not isinstance(mfpw, int) or mfpw < 0:
             raise ValueError("maxFeePerWeight must be non-negative int")
+        if mfpw > _MAX_FEE_PARAM:
+            raise ValueError(f"maxFeePerWeight exceeds {_MAX_FEE_PARAM}")
         if not isinstance(mpf, int) or mpf < 0:
             raise ValueError("maxPriorityFee must be non-negative int")
+        if mpf > _MAX_FEE_PARAM:
+            raise ValueError(f"maxPriorityFee exceeds {_MAX_FEE_PARAM}")
         return cls(
             tx_type=TxType(data["type"]),
             sender=data["from"],

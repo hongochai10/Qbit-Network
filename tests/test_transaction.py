@@ -3,7 +3,7 @@ import json
 import pytest
 from qbit_network.core.transaction import Transaction, TxType
 from qbit_network.core.wallet import Wallet
-from qbit_network.config import CHAIN_ID, MAX_TX_PAYLOAD_SIZE
+from qbit_network.config import CHAIN_ID, MAX_TX_PAYLOAD_SIZE, MAX_SUPPLY
 
 
 class TestTransactionCreation:
@@ -758,3 +758,96 @@ class TestFromDictAllTypes:
                                         token_id="dd" * 16, amount=100,
                                         memo="token transfer", nonce=0)
         self._roundtrip(tx, alice)
+
+
+class TestAmountUpperBound:
+    """R30-001: TX amount fields must not exceed MAX_SUPPLY."""
+
+    def test_transfer_at_max_supply_accepted(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address, MAX_SUPPLY, nonce=0)
+        valid, msg = tx.validate_payload()
+        assert valid, msg
+
+    def test_transfer_above_max_supply_rejected(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address, MAX_SUPPLY + 1, nonce=0)
+        valid, msg = tx.validate_payload()
+        assert not valid
+        assert "MAX_SUPPLY" in msg
+
+    def test_transfer_huge_amount_rejected(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer(alice.address, bob.address, 2 ** 200, nonce=0)
+        valid, msg = tx.validate_payload()
+        assert not valid
+        assert "MAX_SUPPLY" in msg
+
+    def test_mint_token_above_max_supply_rejected(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.mint_token(alice.address, bob.address,
+                                    token_id="aa" * 16, amount=MAX_SUPPLY + 1, nonce=0)
+        valid, msg = tx.validate_payload()
+        assert not valid
+        assert "MAX_SUPPLY" in msg
+
+    def test_mint_token_at_max_supply_accepted(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.mint_token(alice.address, bob.address,
+                                    token_id="aa" * 16, amount=MAX_SUPPLY, nonce=0)
+        valid, msg = tx.validate_payload()
+        assert valid, msg
+
+    def test_transfer_token_above_max_supply_rejected(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer_token(alice.address, bob.address,
+                                        token_id="bb" * 16, amount=MAX_SUPPLY + 1, nonce=0)
+        valid, msg = tx.validate_payload()
+        assert not valid
+        assert "MAX_SUPPLY" in msg
+
+    def test_transfer_token_at_max_supply_accepted(self, wallet_pair):
+        alice, bob = wallet_pair
+        tx = Transaction.transfer_token(alice.address, bob.address,
+                                        token_id="bb" * 16, amount=MAX_SUPPLY, nonce=0)
+        valid, msg = tx.validate_payload()
+        assert valid, msg
+
+
+class TestFeeParamUpperBound:
+    """R30-002: Fee params in from_dict() must not exceed 2^63."""
+
+    _MAX_FEE = 2 ** 63
+
+    def _base_dict(self, wallet):
+        tx = Transaction.transfer(wallet.address,
+                                  "qv1" + "a" * 64,
+                                  amount=100, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        return tx.to_dict()
+
+    def test_fee_at_limit_accepted(self, wallet):
+        d = self._base_dict(wallet)
+        d["maxFeePerWeight"] = self._MAX_FEE
+        d["maxPriorityFee"] = self._MAX_FEE
+        tx = Transaction.from_dict(d)
+        assert tx.max_fee_per_weight == self._MAX_FEE
+        assert tx.max_priority_fee == self._MAX_FEE
+
+    def test_max_fee_per_weight_above_limit_rejected(self, wallet):
+        d = self._base_dict(wallet)
+        d["maxFeePerWeight"] = self._MAX_FEE + 1
+        with pytest.raises(ValueError, match="maxFeePerWeight"):
+            Transaction.from_dict(d)
+
+    def test_max_priority_fee_above_limit_rejected(self, wallet):
+        d = self._base_dict(wallet)
+        d["maxPriorityFee"] = self._MAX_FEE + 1
+        with pytest.raises(ValueError, match="maxPriorityFee"):
+            Transaction.from_dict(d)
+
+    def test_huge_fee_rejected(self, wallet):
+        d = self._base_dict(wallet)
+        d["maxFeePerWeight"] = 2 ** 200
+        with pytest.raises(ValueError, match="maxFeePerWeight"):
+            Transaction.from_dict(d)
