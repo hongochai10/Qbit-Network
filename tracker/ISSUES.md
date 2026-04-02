@@ -1,5 +1,37 @@
 # Issue Tracker
 
+## Round 33 Findings (2026-04-02) — CEO Full Audit + Security Auditor Review
+
+### HIGH — P0 Critical Security
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R33-H01 | HIGH | SQLite reload skips EVIDENCE TX replay — slashed validators regain full stake | security-engineer | P0 | todo (TEC-1204) |
+| R33-H02 | HIGH | TRANSFER rollback uses min(amount,bal) — QBIT created from nothing on reorg | security-engineer | P0 | todo (TEC-1205) |
+| RS-1 | HIGH | liboqs version mismatch: Dockerfile 0.12.0 vs README 0.15.0 | devops-engineer | P0 | done (TEC-1206) — all pinned to 0.15.0 |
+| RS-2 | HIGH | stateRoot warn-but-accept on mismatch — Byzantine validator undetected | senior-backend-engineer | P0 | **done** (TEC-1207) — hard-reject on empty/mismatched state_root, 3327 tests pass |
+
+### MEDIUM — P1/P2 Stability + New Findings
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R33-M01 | MEDIUM | _pending_debits double-count risk + O(n) pool scan | senior-backend-engineer | P1 | todo (extends R32-F02) |
+| R33-M02 | MEDIUM | _find_validator_pk_in_chain O(n) scan during rollback | founding-engineer | P2 | todo |
+| R33-M03 | MEDIUM | Reputation score decay toward 0 instead of DEFAULT_SCORE — idle peers unfairly penalized | senior-backend-engineer | P1 | todo (TEC-1208) |
+| R33-M04 | MEDIUM | Double height decrement in _append_block_inner_safe failure path — chain height corruption | senior-backend-engineer | P1 | todo (TEC-1209) |
+| R33-M05 | MEDIUM | _state_snapshots memory growth unbounded — OOM risk on long-running chains | senior-backend-engineer | P1 | todo (TEC-1210) |
+| R33-M06 | MEDIUM | Runtime get_block() trusts SQLite data without block hash verification | senior-backend-engineer | P2 | todo |
+
+### LOW — P2/P3
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R33-L03 | LOW | _last_epoch_distributions grows unbounded | senior-backend-engineer | P3 | todo |
+| R33-L04 | LOW | _events_by_type list grows unbounded | senior-backend-engineer | P3 | todo |
+| R33-L05 | LOW | Receipt index rebuild O(blocks * receipts) on load | database-architect | P3 | todo |
+| R33-L06 | LOW | Webhook SSRF resolver missing .is_multicast/.is_unspecified check | security-engineer | P2 | todo |
+| R33-L07 | LOW | _drain_pool does not evict stale-nonce TXs after block mined | senior-backend-engineer | P2 | todo (extends R32-F07) |
+
 ## Open Issues (Round 26 — 2026-03-30)
 
 | ID | Severity | Description | Owner | Priority | Status |
@@ -106,18 +138,47 @@ Accepted risks (no action required):
 | R25-005 | Security | Wallet files saved without encryption | Added directory permissions and plaintext warning (`bb21a88`) | 2026-03-29 |
 | R25-007 | Security | CORS wildcard allows cross-origin probing | Default restrictive CORS, added --cors-origin flag (`3a64749`) | 2026-03-29 |
 
-See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (290+ issues across 31 rounds).
+## New Findings (Round 32 — CEO Full Audit 2026-04-02)
+
+| ID | Severity | Description | Owner | Priority | Status |
+|----|----------|-------------|-------|----------|--------|
+| R32-F01 | MEDIUM | SQLite connection not thread-safe across async context — reload races with concurrent reads | database-architect | P2 | todo (TEC-1188) |
+| R32-F02 | MEDIUM | Token operation QBIT fees missing from _pending_debits — pool admits unfunded TXs | senior-backend-engineer | P0 | todo (TEC-1183) |
+| R32-F03 | MEDIUM | No post-load integrity verification — state root not compared after SQLite reload | database-architect | P1 | todo (TEC-1188) |
+| R32-F04 | MEDIUM | Epoch reward front-running — validator self-transfer reduces delegator rewards | security-engineer | P1 | todo (TEC-1189) |
+| R32-F05 | LOW | Evidence rollback does not restore slashed stake — permanent loss after reorg | senior-backend-engineer | P2 | todo |
+| R32-F06 | LOW | _ChainProxy.__iter__ O(n) SQLite queries — performance bottleneck | founding-engineer | P2 | todo |
+| R32-F07 | LOW | _drain_pool does not clean stale nonce entries after mined TXs | senior-backend-engineer | P2 | todo |
+| R32-F08 | LOW | RPC batch processing sequential — DoS via slow batch queries | senior-backend-engineer | P2 | todo |
+
+See [AUDIT_LOG.md](AUDIT_LOG.md) for the full audit trail (300+ issues across 33 rounds).
 
 ## Project Summary (v0.8.0, 2026-04-02)
 
 - 22 closed issues (17 original + 5 R25 resolved)
-- R26: 5 done (R26-005 reconciled), 1 open (R26-008), 1 INFO done
-- R27: 4 fixed (R27-001/002/003/004), 0 open
-- R28: 5 fixed (R28-001/002/003/004/007), 2 open (R28-005/006), 1 accepted (R28-008)
-- R29: 3 open (R29-001/003/004), 1 done (R29-002 reconciled), 1 open INFO (R29-005)
-- R30: 3 done (R30-002/005/007 reconciled), 4 open (R30-001/003/004/006), 2 accepted (R30-008/009)
-- R31: 7 findings (2 MED, 4 LOW, 1 INFO), 6 open, 1 accepted (R31-006)
+- R26: 5 done, 1 open (R26-008), 1 INFO done
+- R27: 4 fixed, 0 open
+- R28: 5 fixed, 2 open (R28-005/006), 1 accepted (R28-008)
+- R29: 2 done, 2 open (R29-003/004), 1 open INFO (R29-005)
+- R30: 3 done, 4 open (R30-001/003/004/006), 2 accepted (R30-008/009)
+- R31: 7 findings, 6 open, 1 accepted (R31-006)
+- R32: 8 findings (4 MED, 4 LOW), 8 open
+- **R33: 15 findings (4 HIGH, 6 MED, 5 LOW), 1 done (RS-1), 14 open**
 - 8 accepted risks (no action required)
-- 31 audit rounds completed
-- 3,175 tests collected, 3,174 passing (91% coverage)
-- 17 open issues total (5 MED, 9 LOW, 3 INFO) — 0 critical/high
+- **33 audit rounds completed**
+- 3,325 tests collected, 3,324 passing, 1 skip (91% coverage)
+- 33 open issues total (4 HIGH, 15 MED, 18 LOW, 3 INFO)
+
+## Sprint 1 Subtasks (TEC-1180)
+
+| Task | Title | Assignee | Priority |
+|------|-------|----------|----------|
+| TEC-1181 | Fix REST param injection R31-001 + state proof R30-003 | security-engineer | CRITICAL |
+| TEC-1183 | Fix token fees _pending_debits R32-F02 + pagination R31-002 | senior-backend-engineer | HIGH |
+| TEC-1184 | Fix unbounded amount R30-001 + validation R30-004 | security-engineer | HIGH |
+| TEC-1185 | CI/CD pipeline + Docker | devops-engineer | HIGH |
+| TEC-1186 | REST API test coverage 51% → 80%+ | qa-engineer | HIGH |
+| TEC-1187 | Documentation sync for v0.8.0 R32 | technical-writer | HIGH |
+| TEC-1188 | Post-load state root R32-F03 + SQLite safety R32-F01 | database-architect | HIGH |
+| TEC-1189 | Epoch reward front-running R32-F04 | security-engineer | HIGH |
+| TEC-1190 | Prometheus metrics + health check + logging | infrastructure-engineer | MEDIUM |

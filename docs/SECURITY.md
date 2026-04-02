@@ -18,6 +18,9 @@
 | Transaction pool not persisted across restarts | Accepted | WAL-based pool persistence planned |
 | No block finality checkpoint | Accepted | Checkpoint mechanism planned |
 | Sybil/Eclipse attacks (residual) | Accepted | HELLO_AUTH + reputation scoring raise the bar; full Sybil resistance needs staking bonding |
+| Slashed validator state not persisted across restarts (R33-H01) | **Open — P0** | Replay EVIDENCE txs during SQLite load (TEC-1193) |
+| TRANSFER rollback balance conservation (R33-H02) | **Open — P0** | Rollback journal or full state rebuild (TEC-1194) |
+| ~~stateRoot warn-but-accept on mismatch (RS-2)~~ | **Resolved** | Strict state root validation enforced — blocks with empty or mismatched state_root are hard-rejected (TEC-1207) |
 
 ### Resolved in v0.4.0
 
@@ -46,7 +49,7 @@
 
 ## Audit History
 
-31 rounds of security audit, 290+ issues found:
+33 rounds of security audit, 309+ issues found:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -82,6 +85,8 @@
 | 29 | CEO comprehensive audit (inbound P2P IP bypass, token holder DoS) | 5 |
 | 30 | CEO comprehensive audit (amount bounds, fee bypass, state proof enumeration) | 9 |
 | 31 | CEO comprehensive audit (REST param injection, pagination, tracker reconciliation) | 7 |
+| 32 | CEO full audit (epoch reward front-run, token fee accounting, SQLite safety, state root) | 8 |
+| 33 | CEO comprehensive audit (slashing replay, TRANSFER rollback, liboqs version, stateRoot enforcement) | 17 |
 
 See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
 
@@ -94,6 +99,26 @@ See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
 - **[LOW] Webhook event materialization**: `_deliver_block_webhooks` materializes all events before filtering — unnecessary memory allocation.
 - **[INFO] Dynamic fee activation**: `DYNAMIC_FEE_ACTIVATION_HEIGHT` default 2^63 effectively disables dynamic fees — needs env var activation.
 - **Tracker reconciliation**: 5 issues (R26-005, R29-002, R30-002, R30-005, R30-007) confirmed fixed in code and marked done.
+
+### Slashing Replay & TRANSFER Rollback (Round 33)
+
+- **[HIGH] SQLite reload skips EVIDENCE TX replay**: Slashed validators regain full stake after node restart because EVIDENCE transactions are not replayed during SQLite load. Requires replaying EVIDENCE txs during load or persisting slashed state separately.
+- **[HIGH] TRANSFER rollback uses `min(amount, bal)`**: On chain reorg, rollback credits `min(amount, balance)` instead of the original amount — QBIT created from nothing when balance has decreased since the original transfer.
+- **[HIGH] liboqs version mismatch**: Dockerfile pinned 0.12.0 vs README 0.15.0. Resolved: all files now pinned to 0.15.0.
+- ~~**[HIGH] stateRoot warn-but-accept**~~: **Resolved (TEC-1207)** — Blocks with empty or mismatched `state_root` are now hard-rejected. Tests verify both tampered and missing state_root scenarios.
+- **[MEDIUM] `_pending_debits` double-count risk**: Token operation QBIT fees (ISSUE/MINT/TRANSFER_TOKEN) can be double-counted in pending debit calculation, plus O(n) pool scan on every submission.
+- **[MEDIUM] `_find_validator_pk_in_chain` O(n) scan**: During rollback, validator public key lookup scans the entire chain instead of using an index.
+
+### Epoch Reward & Token Fee Accounting (Round 32)
+
+- **[MEDIUM] SQLite connection not thread-safe**: `store.py` shares SQLite connection across async contexts — reload can race with concurrent reads.
+- **[MEDIUM] Token operation QBIT fees missing from `_pending_debits`**: Pool admits token transactions (ISSUE/MINT/TRANSFER_TOKEN) that will fail at block production due to insufficient QBIT for fees.
+- **[MEDIUM] No post-load integrity verification**: State root not recomputed/compared after SQLite reload — silent state divergence possible.
+- **[MEDIUM] Epoch reward front-running**: Validator self-transfer in epoch-boundary block reduces delegator rewards by manipulating stake snapshot.
+- **[LOW] Evidence rollback does not restore slashed stake**: Permanent stake loss after reorg even when the evidence is rolled back.
+- **[LOW] `_ChainProxy.__iter__` O(n) SQLite queries**: Performance bottleneck on large chains during validator key lookup.
+- **[LOW] `_drain_pool` stale nonce entries**: Pool retains transactions with stale nonces after blocks are mined.
+- **[LOW] RPC batch processing sequential**: DoS vector via slow batch queries — should use `asyncio.gather` for read-only methods.
 
 ### Amount Bounds & State Proof Security (Round 30)
 
@@ -133,6 +158,60 @@ See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
 - **Fee atomicity**: fees deducted sequentially during block processing with `_debit()` balance checks
 - **Integer arithmetic only**: all balance operations use Python `int`, no floating-point
 - **Rollback correctness**: epoch distribution rollback uses explicit credit/debit records for clean reversal
+
+## Remediation Roadmap (as of R33, 2026-04-02)
+
+### Open HIGH Issues (4) — P0, immediate action required
+
+| ID | Issue | Owner | Fix Strategy | Task |
+|----|-------|-------|-------------|------|
+| R33-H01 | SQLite reload skips EVIDENCE TX replay — slashed validators regain full stake | security-engineer | Replay EVIDENCE txs during `_load_from_sqlite` or persist slashed-validator set in SQLite | TEC-1193 |
+| R33-H02 | TRANSFER rollback uses `min(amount, bal)` — QBIT inflation on reorg | senior-backend-engineer | Implement rollback journal recording original amounts, or full state rebuild from chain | TEC-1194 |
+| RS-1 | liboqs version mismatch (Dockerfile vs README) | devops-engineer | Pin all references to 0.15.0, add startup version check | TEC-1191 |
+| ~~RS-2~~ | ~~stateRoot warn-but-accept~~ — **Resolved (TEC-1207)** | senior-backend-engineer | Hard-reject blocks with empty or mismatched state_root | TEC-1207 |
+
+### Open MEDIUM Issues (9) — P1/P2
+
+| ID | Issue | Owner | Task |
+|----|-------|-------|------|
+| R30-001 | Unbounded TRANSFER/STAKE/MINT amount — pool DoS | security-engineer | TEC-1110 |
+| R30-003 | State proof arbitrary trie key enumeration | security-engineer | TEC-1111 |
+| R31-001 | REST `_submit_evidence` kwargs param injection | security-engineer | TEC-1129 |
+| R31-002 | REST pagination validation missing | senior-backend-engineer | TEC-1130 |
+| R32-F01 | SQLite connection not thread-safe across async | database-architect | TEC-1188 |
+| R32-F02 | Token QBIT fees missing from `_pending_debits` | senior-backend-engineer | TEC-1183 |
+| R32-F03 | No post-load state root verification | database-architect | TEC-1188 |
+| R32-F04 | Epoch reward front-running via self-transfer | security-engineer | TEC-1189 |
+| R33-M01 | `_pending_debits` double-count + O(n) scan | senior-backend-engineer | extends R32-F02 |
+
+### Open LOW Issues (13) — P2/P3
+
+| ID | Issue | Status |
+|----|-------|--------|
+| R28-005 | REST `_txs_by_sender` full list materialization | TEC-896 |
+| R28-006 | P2P HELLO_AUTH dispatch before auth completes | todo |
+| R29-003 | State proof arbitrary key (unauthenticated) | TEC-925 |
+| R29-004 | Inbound P2P readline incompatibility | todo |
+| R30-004 | TRANSFER amount validation inconsistency | TEC-1110 |
+| R30-006 | REST `/pool` type distribution without auth | todo |
+| R31-003 | Block `baseFee` type/range validation | TEC-1135 |
+| R31-005 | Webhook event materialization before filter | todo |
+| R32-F05 | Evidence rollback stake not restored | todo |
+| R32-F06 | `_ChainProxy.__iter__` O(n) queries | todo |
+| R32-F07 | `_drain_pool` stale nonce entries | todo |
+| R32-F08 | RPC batch sequential processing | todo |
+| R33-L03 | `_last_epoch_distributions` unbounded growth | todo |
+
+### Accepted Risks (no action required)
+
+- R25-004 (LOW): SQLite synchronous=NORMAL — self-corrects via peer re-sync
+- R25-006 (LOW): `_pending_debits` O(n) scan — known since R16-002
+- R25-008 (INFO): TLS uses classical SECP256R1 — transport-only
+- R25-009 (INFO): No TX timestamp age check — not exploitable
+- R28-008 (INFO): SecureBytes cannot zero source bytes — CPython limitation
+- R30-008 (INFO): Receipt events unsanitized — webhook consumer responsibility
+- R30-009 (INFO): WebSocket auth bypass without token — not exploitable
+- R31-006 (LOW): WebSocket auth bypass without token — accepted with WARNING log
 
 ## Key Security Controls
 

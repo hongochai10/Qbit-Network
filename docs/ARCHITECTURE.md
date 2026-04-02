@@ -131,7 +131,7 @@ At each epoch boundary (every 100 blocks), accumulated block rewards are redistr
 - **Verification**: `verify_proof(key, value, proof, root)` -- static, no trie instance needed
 - **Snapshots**: `snapshot()` / `restore()` for O(1) rollback; snapshots pruned beyond MAX_REORG_DEPTH
 
-The `stateRoot` is stamped on self-produced blocks (genesis + `produce_block`) after all state mutations. Received blocks log a warning on mismatch but do not reject (consensus is the gatekeeper).
+The `stateRoot` is stamped on self-produced blocks (genesis + `produce_block`) after all state mutations. Received blocks MUST carry a `state_root`; blocks with empty or mismatched `state_root` are hard-rejected (RS-2).
 
 ### Receipt System
 
@@ -162,7 +162,7 @@ Simple finality rule: a block is finalized when subsequent blocks whose validato
 
 ## Transaction Types
 
-Eleven transaction types are defined. All share the same wire format and validation rules; only the `payload` schema differs.
+Fourteen transaction types are defined. All share the same wire format and validation rules; only the `payload` schema differs.
 
 ### NOTARIZE
 Proves a document existed at a specific time.
@@ -303,6 +303,59 @@ Reports validator double-signing. Contains two ML-DSA-65 signatures over differe
   }
 }
 ```
+
+### ISSUE_TOKEN
+Creates a new custom token on the network.
+
+```json
+{
+  "type": "ISSUE_TOKEN",
+  "from": "qv1...",
+  "payload": {
+    "name": "My Token",
+    "symbol": "MTK",
+    "decimals": 9,
+    "max_supply": 1000000000000000000,
+    "transferable": true
+  }
+}
+```
+
+Token ID is derived deterministically: `SHA3-256(issuer_address + symbol + nonce)[:32]`. Symbol must be unique across the network. Only the issuer can mint new units.
+
+### MINT_TOKEN
+Mints new units of an existing token. Only the token issuer can mint.
+
+```json
+{
+  "type": "MINT_TOKEN",
+  "from": "qv1...",
+  "payload": {
+    "token_id": "hex_token_id",
+    "to": "qv1...",
+    "amount": 1000000000
+  }
+}
+```
+
+Minting is capped by `max_supply` and protected against integer overflow (`_MAX_TOKEN_AMOUNT = 2^63-1`).
+
+### TRANSFER_TOKEN
+Transfers custom tokens between addresses.
+
+```json
+{
+  "type": "TRANSFER_TOKEN",
+  "from": "qv1...",
+  "payload": {
+    "token_id": "hex_token_id",
+    "to": "qv1...",
+    "amount": 500000000
+  }
+}
+```
+
+Requires the token to have `transferable: true`. Sender must have sufficient token balance. Self-transfer rejected.
 
 ## Block Structure
 
