@@ -2063,8 +2063,11 @@ class TestP2PConnect:
             pass
         mock_writer.drain = _drain
 
+        def _close_coro(coro):
+            coro.close()
+
         with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            with patch("asyncio.create_task"):
+            with patch("asyncio.create_task", side_effect=_close_coro):
                 await node.connect("8.8.8.8", 9000)
 
         assert "8.8.8.8:9000" in node.peers
@@ -2089,8 +2092,11 @@ class TestP2PConnect:
             pass
         mock_writer.drain = _drain
 
+        def _close_coro(coro):
+            coro.close()
+
         with patch("asyncio.open_connection", return_value=(mock_reader, mock_writer)):
-            with patch("asyncio.create_task"):
+            with patch("asyncio.create_task", side_effect=_close_coro):
                 await node.connect("8.8.8.8", 9000)
 
         assert len(writes) >= 1
