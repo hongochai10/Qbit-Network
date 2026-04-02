@@ -412,6 +412,31 @@ class Transaction:
             raise ValueError("maxPriorityFee must be non-negative int")
         if mpf > _MAX_FEE_PARAM:
             raise ValueError(f"maxPriorityFee exceeds {_MAX_FEE_PARAM}")
+        # Defense-in-depth: validate payload amount fields at deserialization (R30-004)
+        tx_type_str = data.get("type", "")
+        payload = data["payload"]
+        _AMOUNT_TX_TYPES = {"TRANSFER", "STAKE", "DELEGATE", "UNSTAKE",
+                            "MINT_TOKEN", "TRANSFER_TOKEN"}
+        if tx_type_str in _AMOUNT_TX_TYPES:
+            amt = payload.get("amount")
+            if amt is not None:
+                if not isinstance(amt, int) or isinstance(amt, bool):
+                    raise ValueError("payload amount must be an integer")
+                if amt <= 0:
+                    raise ValueError("payload amount must be positive")
+                if amt > MAX_TX_AMOUNT:
+                    raise ValueError(
+                        f"payload amount exceeds MAX_TX_AMOUNT ({MAX_TX_AMOUNT})")
+        if tx_type_str == "ISSUE_TOKEN":
+            ms = payload.get("max_supply")
+            if ms is not None:
+                if not isinstance(ms, int) or isinstance(ms, bool):
+                    raise ValueError("payload max_supply must be an integer")
+                if ms < 0:
+                    raise ValueError("payload max_supply must be non-negative")
+                if ms > MAX_TX_AMOUNT:
+                    raise ValueError(
+                        f"payload max_supply exceeds MAX_TX_AMOUNT ({MAX_TX_AMOUNT})")
         return cls(
             tx_type=TxType(data["type"]),
             sender=data["from"],

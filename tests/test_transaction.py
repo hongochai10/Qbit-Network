@@ -851,3 +851,121 @@ class TestFeeParamUpperBound:
         d["maxFeePerWeight"] = 2 ** 200
         with pytest.raises(ValueError, match="maxFeePerWeight"):
             Transaction.from_dict(d)
+
+
+class TestFromDictAmountValidation:
+    """R30-004: from_dict must validate payload amount fields (defense-in-depth)."""
+
+    _MAX_TX_AMOUNT = 2 ** 63 - 1
+
+    def _base_transfer_dict(self, wallet):
+        tx = Transaction.transfer(wallet.address,
+                                  "qv1" + "a" * 64,
+                                  amount=100, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        return tx.to_dict()
+
+    def _base_mint_dict(self, wallet):
+        tx = Transaction.mint_token(wallet.address,
+                                    "qv1" + "a" * 64,
+                                    token_id="cc" * 16,
+                                    amount=100, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        return tx.to_dict()
+
+    def _base_issue_dict(self, wallet):
+        tx = Transaction.issue_token(wallet.address,
+                                     name="TestToken", symbol="TST",
+                                     decimals=8, max_supply=1000, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        return tx.to_dict()
+
+    # --- TRANSFER amount in from_dict ---
+
+    def test_transfer_valid_amount_accepted(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = self._MAX_TX_AMOUNT
+        tx = Transaction.from_dict(d)
+        assert tx.payload["amount"] == self._MAX_TX_AMOUNT
+
+    def test_transfer_amount_above_limit_rejected(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = self._MAX_TX_AMOUNT + 1
+        with pytest.raises(ValueError, match="MAX_TX_AMOUNT"):
+            Transaction.from_dict(d)
+
+    def test_transfer_huge_amount_rejected(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = 2 ** 200
+        with pytest.raises(ValueError, match="MAX_TX_AMOUNT"):
+            Transaction.from_dict(d)
+
+    def test_transfer_zero_amount_rejected(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = 0
+        with pytest.raises(ValueError, match="positive"):
+            Transaction.from_dict(d)
+
+    def test_transfer_negative_amount_rejected(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = -1
+        with pytest.raises(ValueError, match="positive"):
+            Transaction.from_dict(d)
+
+    def test_transfer_string_amount_rejected(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = "100"
+        with pytest.raises(ValueError, match="integer"):
+            Transaction.from_dict(d)
+
+    def test_transfer_float_amount_rejected(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = 100.5
+        with pytest.raises(ValueError, match="integer"):
+            Transaction.from_dict(d)
+
+    def test_transfer_bool_amount_rejected(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = True
+        with pytest.raises(ValueError, match="integer"):
+            Transaction.from_dict(d)
+
+    # --- MINT_TOKEN amount in from_dict ---
+
+    def test_mint_amount_above_limit_rejected(self, wallet):
+        d = self._base_mint_dict(wallet)
+        d["payload"]["amount"] = self._MAX_TX_AMOUNT + 1
+        with pytest.raises(ValueError, match="MAX_TX_AMOUNT"):
+            Transaction.from_dict(d)
+
+    def test_mint_string_amount_rejected(self, wallet):
+        d = self._base_mint_dict(wallet)
+        d["payload"]["amount"] = "999"
+        with pytest.raises(ValueError, match="integer"):
+            Transaction.from_dict(d)
+
+    # --- ISSUE_TOKEN max_supply in from_dict ---
+
+    def test_issue_max_supply_at_limit_accepted(self, wallet):
+        d = self._base_issue_dict(wallet)
+        d["payload"]["max_supply"] = self._MAX_TX_AMOUNT
+        tx = Transaction.from_dict(d)
+        assert tx.payload["max_supply"] == self._MAX_TX_AMOUNT
+
+    def test_issue_max_supply_above_limit_rejected(self, wallet):
+        d = self._base_issue_dict(wallet)
+        d["payload"]["max_supply"] = self._MAX_TX_AMOUNT + 1
+        with pytest.raises(ValueError, match="MAX_TX_AMOUNT"):
+            Transaction.from_dict(d)
+
+    def test_issue_max_supply_negative_rejected(self, wallet):
+        d = self._base_issue_dict(wallet)
+        d["payload"]["max_supply"] = -1
+        with pytest.raises(ValueError, match="non-negative"):
+            Transaction.from_dict(d)
+
+    def test_issue_max_supply_bool_rejected(self, wallet):
+        d = self._base_issue_dict(wallet)
+        d["payload"]["max_supply"] = True
+        with pytest.raises(ValueError, match="integer"):
+            Transaction.from_dict(d)
