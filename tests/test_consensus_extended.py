@@ -473,22 +473,24 @@ class TestForkWithValidatorTxs:
 
         assert bc.height == 2
 
-        # Build 3-block fork from genesis
-        fork_blocks = []
-        fork_parent = bc.chain[0].block_hash
+        # Build 3-block fork via a side-chain sharing the same genesis so that
+        # produce_block stamps valid state_root on each block (RS-2 requirement)
+        fork_chain = Blockchain()
+        fork_chain.consensus.add_validator(v1.address, v1.signing_pk)
+        fork_chain.consensus.add_validator(v2.address, v2.signing_pk)
+        fork_chain._append_block(bc.chain[0])
+        fork_chain.consensus.set_genesis_hash(bc.chain[0].block_hash)
         fork_nonces = {v1.address: 0, v2.address: 0}
         for i in range(1, 4):
-            expected = bc.consensus.select_validator(i)
+            expected = fork_chain.consensus.select_validator(i)
             w = wallet_map[expected]
             n = fork_nonces[w.address]
             tx = Transaction.notarize(w.address, f"ff{n:062x}", nonce=n)
             tx.sign(w.signing_sk, w.signing_pk)
-            fb = Block(index=i, prev_hash=fork_parent, transactions=[tx],
-                       validator=expected, timestamp=bc.chain[0].timestamp + i)
-            fb.sign(w.signing_sk)
-            fork_parent = fb.block_hash
-            fork_blocks.append(fb)
+            fork_chain.submit_tx(tx)
+            fork_chain.produce_block(expected, w.signing_sk)
             fork_nonces[w.address] = n + 1
+        fork_blocks = fork_chain.chain[1:]  # exclude shared genesis
 
         ok, msg = bc.try_reorg(fork_blocks)
         assert ok, f"Reorg failed: {msg}"
@@ -871,3 +873,74 @@ class TestSkipSlotBlockTimestamps:
         r3 = poa.select_validator(5, parent_hash="abc123",
                                   block_timestamp=None)
         assert r1 == r2 == r3
+
+
+# =========================================================================
+# State snapshot pruning (R33-M03)
+# =========================================================================
+
+class TestStateSnapshotPruning:
+    """R33-M03: _state_snapshots pruned beyond MAX_REORG_DEPTH."""
+
+    def test_snapshots_pruned_beyond_max_reorg_depth(self, wallet, monkeypatch):
+        """After enough blocks, old snapshots are pruned."""
+        # Use a small MAX_REORG_DEPTH to avoid timestamp drift issues
+        import qbit_network.core.blockchain as bc_mod
+        monkeypatch.setattr(bc_mod, "MAX_REORG_DEPTH", 5)
+
+        bc = Blockchain()
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk)
+
+        for i in range(15):
+            tx = Transaction.notarize(wallet.address, f"{i:064x}", nonce=i)
+            tx.sign(wallet.signing_sk, wallet.signing_pk)
+            bc.submit_tx(tx)
+            bc.produce_block(wallet.address, wallet.signing_sk)
+
+        # Snapshots should be bounded by MAX_REORG_DEPTH (5) + some margin
+        snapshot_count = len(bc._state_snapshots)
+        assert snapshot_count <= 7, (
+            f"Expected at most 7 snapshots with MAX_REORG_DEPTH=5, "
+            f"got {snapshot_count} — pruning not working"
+        )
+
+    def test_recent_snapshots_preserved_for_rollback(self, wallet, monkeypatch):
+        """Snapshots within MAX_REORG_DEPTH are kept for rollback."""
+        import qbit_network.core.blockchain as bc_mod
+        monkeypatch.setattr(bc_mod, "MAX_REORG_DEPTH", 5)
+
+        bc = Blockchain()
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk)
+
+        for i in range(10):
+            tx = Transaction.notarize(wallet.address, f"{i:064x}", nonce=i)
+            tx.sign(wallet.signing_sk, wallet.signing_pk)
+            bc.submit_tx(tx)
+            bc.produce_block(wallet.address, wallet.signing_sk)
+
+        height = bc.height
+        # Recent snapshots should exist
+        assert height in bc._state_snapshots or (height - 1) in bc._state_snapshots
+
+    def test_old_snapshots_removed(self, wallet, monkeypatch):
+        """Snapshots older than MAX_REORG_DEPTH are removed."""
+        import qbit_network.core.blockchain as bc_mod
+        monkeypatch.setattr(bc_mod, "MAX_REORG_DEPTH", 5)
+
+        bc = Blockchain()
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk)
+
+        for i in range(15):
+            tx = Transaction.notarize(wallet.address, f"{i:064x}", nonce=i)
+            tx.sign(wallet.signing_sk, wallet.signing_pk)
+            bc.submit_tx(tx)
+            bc.produce_block(wallet.address, wallet.signing_sk)
+
+        height = bc.height
+        # Block 0 snapshot should have been pruned (height > 5 + 1)
+        assert 0 not in bc._state_snapshots, (
+            "Genesis snapshot should be pruned after chain exceeds MAX_REORG_DEPTH"
+        )
