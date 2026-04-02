@@ -301,10 +301,53 @@ jobs:
           name: integration-test-results-py${{ matrix.python-version }}
           path: integration-results.xml
 
+  coverage:
+    name: Coverage Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install liboqs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc ninja-build
+          git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git /tmp/liboqs
+          cd /tmp/liboqs && mkdir build && cd build
+          cmake -GNinja -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=$HOME/_oqs ..
+          ninja && ninja install
+          echo "LD_LIBRARY_PATH=$HOME/_oqs/lib" >> $GITHUB_ENV
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock -r requirements-dev.lock
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ \
+            --cov=qbit_network \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=75 \
+            -v --tb=short
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [core-tests, financial-tests, consensus-tests, network-tests, feature-tests, adversarial-tests, integration-tests]
+    needs: [core-tests, financial-tests, consensus-tests, network-tests, feature-tests, adversarial-tests, integration-tests, coverage]
     if: always()
 
     steps:
@@ -326,5 +369,6 @@ jobs:
           echo "| Feature Tests | ${{ needs.feature-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Adversarial Tests | ${{ needs.adversarial-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Integration Tests | ${{ needs.integration-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Coverage Gate (≥75%) | ${{ needs.coverage.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "All seven test suites ran in parallel across Python 3.11 and 3.12 (14 jobs total)." >> $GITHUB_STEP_SUMMARY
+          echo "All test suites ran in parallel across Python 3.11 and 3.12 (14 jobs + coverage gate)." >> $GITHUB_STEP_SUMMARY
