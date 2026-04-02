@@ -10,6 +10,8 @@ Proof generation and verification reuse the existing ``merkle_proof`` /
 ``verify_merkle_proof`` helpers from ``qbit_network.crypto.hashing``.
 """
 
+import bisect
+
 from ..crypto.hashing import sha3_256, merkle_root, merkle_proof, verify_merkle_proof
 
 # Sentinel: the canonical root when the state is empty.
@@ -88,7 +90,7 @@ class StateTrie:
 
         sorted_keys = sorted(self._entries.keys())
         leaves = [sha3_256(k.encode() + self._entries[k]) for k in sorted_keys]
-        key_index = sorted_keys.index(key)
+        key_index = bisect.bisect_left(sorted_keys, key)
 
         proof = merkle_proof(leaves, key_index)
         return {

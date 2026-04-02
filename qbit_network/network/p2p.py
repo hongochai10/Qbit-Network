@@ -1,5 +1,6 @@
 """P2P networking layer using asyncio TCP. Supports JSON (v3) and msgpack (v4+) wire formats."""
 import asyncio
+import collections
 import hashlib
 import ipaddress
 import json
@@ -42,6 +43,7 @@ _BLOCKED_PORTS = {22, 23, 25, 53, 80, 443, 445, 3306, 5432, 6379, 8080, 8443}
 # Auth handshake rate limiting per IP
 _AUTH_RATE_MAX = 5       # max auth attempts per IP
 _AUTH_RATE_WINDOW = 60   # seconds
+_AUTH_ATTEMPTS_CAP = 10_000  # max tracked IPs (R30-005 LRU eviction)
 
 # Message types exempt from rate limiting (handshake/auth messages)
 _RATE_EXEMPT = {MSG_HELLO, MSG_HELLO_AUTH, MSG_AUTH_RESPONSE, MSG_AUTH_CONFIRM,
@@ -193,7 +195,7 @@ class P2PNode:
         self._pending_requests: dict[str, float] = {}
         self._validators: dict[str, bytes] = {}  # address -> pk for auth verification
         self._rate_limiter = RateLimiter(P2P_RATE_LIMIT, P2P_RATE_BURST)
-        self._auth_attempts: dict[str, list[float]] = {}  # IP -> timestamps of auth attempts
+        self._auth_attempts: collections.OrderedDict[str, list[float]] = collections.OrderedDict()  # IP -> timestamps
         self.reputation = PeerReputation()
         self._cleanup_task = None
 
@@ -862,6 +864,11 @@ class P2PNode:
             return False
         attempts.append(now)
         self._auth_attempts[host] = attempts
+        # Move to end for LRU ordering
+        self._auth_attempts.move_to_end(host)
+        # Evict oldest entries if cap exceeded (R30-005)
+        while len(self._auth_attempts) > _AUTH_ATTEMPTS_CAP:
+            self._auth_attempts.popitem(last=False)
         return True
 
     @staticmethod

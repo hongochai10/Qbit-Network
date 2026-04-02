@@ -13,7 +13,7 @@ from qbit_network.network.p2p import (
     MSG_STATUS, MSG_GET_PEERS, MSG_PEERS,
     _is_safe_peer, _is_safe_inbound_ip, _build_auth_message, _derive_session_key,
     _AUTH_DOMAIN, _CHALLENGE_LEN,
-    _AUTH_RATE_MAX, _AUTH_RATE_WINDOW, _RATE_EXEMPT,
+    _AUTH_RATE_MAX, _AUTH_RATE_WINDOW, _AUTH_ATTEMPTS_CAP, _RATE_EXEMPT,
 )
 from qbit_network.core.wallet import Wallet
 from qbit_network.config import MAX_PEERS
@@ -434,6 +434,29 @@ class TestCheckAuthRate:
         node._auth_attempts["9.9.9.9"] = [old_time] * _AUTH_RATE_MAX
         # Old attempts should have expired, so this attempt should be allowed
         assert node._check_auth_rate("9.9.9.9") is True
+
+    def test_auth_attempts_lru_eviction_at_cap(self):
+        """R30-005: _auth_attempts dict must not exceed _AUTH_ATTEMPTS_CAP entries."""
+        node = P2PNode()
+        import time
+        now = time.monotonic()
+        # Pre-fill to exactly the cap
+        for i in range(_AUTH_ATTEMPTS_CAP):
+            ip = f"10.{(i >> 16) & 0xFF}.{(i >> 8) & 0xFF}.{i & 0xFF}"
+            node._auth_attempts[ip] = [now]
+        assert len(node._auth_attempts) == _AUTH_ATTEMPTS_CAP
+        # One more auth attempt should evict the oldest entry
+        node._check_auth_rate("99.99.99.99")
+        assert len(node._auth_attempts) <= _AUTH_ATTEMPTS_CAP
+        assert "99.99.99.99" in node._auth_attempts
+        # The very first IP should have been evicted
+        assert "10.0.0.0" not in node._auth_attempts
+
+    def test_auth_attempts_is_ordered_dict(self):
+        """R30-005: _auth_attempts uses OrderedDict for LRU ordering."""
+        import collections
+        node = P2PNode()
+        assert isinstance(node._auth_attempts, collections.OrderedDict)
 
 
 # =========================================================================
