@@ -56,6 +56,7 @@ TOKEN_SYMBOL = "QBIT"
 TOKEN_DECIMALS = 9
 QUBIT_PER_QBIT = 10 ** TOKEN_DECIMALS  # 1_000_000_000
 MAX_SUPPLY = 21_000_000 * QUBIT_PER_QBIT  # 2.1 * 10^16
+MAX_TX_AMOUNT = 2 ** 63 - 1  # universal big-integer guard for amount fields
 
 # Block rewards
 INITIAL_BLOCK_REWARD = 5 * QUBIT_PER_QBIT  # 5_000_000_000 qubits

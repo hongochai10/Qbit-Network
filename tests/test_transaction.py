@@ -781,7 +781,7 @@ class TestAmountUpperBound:
         tx = Transaction.transfer(alice.address, bob.address, 2 ** 200, nonce=0)
         valid, msg = tx.validate_payload()
         assert not valid
-        assert "MAX_SUPPLY" in msg
+        assert "MAX_TX_AMOUNT" in msg
 
     def test_mint_token_above_max_supply_rejected(self, wallet_pair):
         alice, bob = wallet_pair

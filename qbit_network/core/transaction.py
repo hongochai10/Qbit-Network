@@ -7,7 +7,7 @@ from ..crypto import MLDSA, sha3_256
 from ..config import (MAX_TX_PAYLOAD_SIZE, CHAIN_ID, MIN_STAKE, MAX_STAKE,
                       MAX_TOKEN_NAME_LENGTH, MAX_TOKEN_SYMBOL_LENGTH,
                       MIN_TOKEN_SYMBOL_LENGTH, MAX_TOKEN_DECIMALS,
-                      MAX_SUPPLY)
+                      MAX_SUPPLY, MAX_TX_AMOUNT)
 
 # Upper bound for EIP-1559-style fee parameters (2^63)
 _MAX_FEE_PARAM = 2 ** 63
@@ -133,6 +133,18 @@ class Transaction:
             extra = set(self.payload.keys()) - allowed
             if extra:
                 return False, f"unknown payload keys: {extra}"
+
+        # Universal big-integer guard for all amount-bearing TX types (R30-001)
+        if self.tx_type in (TxType.TRANSFER, TxType.STAKE, TxType.DELEGATE,
+                            TxType.UNSTAKE, TxType.MINT_TOKEN,
+                            TxType.TRANSFER_TOKEN):
+            amount = self.payload.get("amount")
+            if isinstance(amount, int) and amount > MAX_TX_AMOUNT:
+                return False, f"amount exceeds MAX_TX_AMOUNT ({MAX_TX_AMOUNT})"
+        if self.tx_type == TxType.ISSUE_TOKEN:
+            max_supply = self.payload.get("max_supply")
+            if isinstance(max_supply, int) and max_supply > MAX_TX_AMOUNT:
+                return False, f"max_supply exceeds MAX_TX_AMOUNT ({MAX_TX_AMOUNT})"
 
         if self.tx_type == TxType.NOTARIZE:
             dh = self.payload.get("documentHash", "")
