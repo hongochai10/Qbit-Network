@@ -23,6 +23,17 @@ class RollbackMixin:
 
     def _rollback_to_inner(self, target_index: int) -> list:
         """Inner rollback logic -- caller must hold _db_lock when _store is set."""
+        # Snapshot supply invariant before rollback (R33-H02).
+        # invariant = accounted - minted; must be unchanged after rollback.
+        _unbonding_total = sum(e.get("amount", 0) for e in self._unbonding)
+        _pre_invariant = (
+            sum(self._balances.values())
+            + sum(self._total_stake.values())
+            + self._total_burned
+            + _unbonding_total
+            - self._total_minted
+        ) if self._financial_active else None
+
         # In SQLite mode, collect blocks to roll back BEFORE deleting from SQLite
         blocks_to_rollback: list = []
         if self._chain_list is None:
@@ -64,21 +75,62 @@ class RollbackMixin:
                 f"({details}). Chain re-sync required."
             )
 
+        # Supply conservation invariant (R33-H02): the relationship between
+        # accounted funds and total_minted must be unchanged by rollback.
+        # A shift indicates a rollback bug (e.g. clamping amounts).
+        if _pre_invariant is not None:
+            _unbonding_after = sum(e.get("amount", 0) for e in self._unbonding)
+            _post_invariant = (
+                sum(self._balances.values())
+                + sum(self._total_stake.values())
+                + self._total_burned
+                + _unbonding_after
+                - self._total_minted
+            )
+            if _post_invariant != _pre_invariant:
+                delta = _post_invariant - _pre_invariant
+                raise ValueError(
+                    f"Supply conservation violation after rollback: "
+                    f"invariant shifted by {delta} qubits. "
+                    f"Chain re-sync required."
+                )
+
         return displaced
 
     def _find_validator_pk_in_chain(self, address: str) -> bytes | None:
-        """Scan chain for a REGISTER_VALIDATOR tx that registered the given
-        address. Returns pubkey bytes or None."""
-        for i in range(self._height + 1):
-            block = self._get_block_by_index(i)
-            if block is None:
-                continue
-            for tx in block.transactions:
-                if tx.tx_type == TxType.REGISTER_VALIDATOR:
-                    if tx.payload.get("validator_address") == address:
-                        vpk_hex = tx.payload.get("validator_pubkey", "")
-                        if vpk_hex:
-                            return bytes.fromhex(vpk_hex)
+        """Look up a validator's signing pubkey by address.
+
+        Uses the in-memory _validator_registry (O(1)) first, then falls back
+        to the SQLite validator_registry table or an in-memory chain scan.
+        The chain scan is needed during rollback of REVOKE_KEY (validator) txs
+        because the revocation processing removes the address from
+        _validator_registry before rollback queries it.
+        """
+        # 1) In-memory registry (populated during block processing)
+        pk = self._validator_registry.get(address)
+        if pk is not None:
+            return pk
+        # 2) SQLite fallback (covers cold-start / post-reload scenarios)
+        if self._store is not None:
+            pk_hex = self._store.get_validator(address)
+            if pk_hex:
+                return bytes.fromhex(pk_hex)
+        # 3) In-memory chain scan (covers rollback of validator revocations
+        #    in non-SQLite mode: _validator_registry was cleared by the
+        #    revocation tx processing, so we must find the REGISTER_VALIDATOR
+        #    tx directly in the remaining blocks).
+        if self._chain_list is not None:
+            from .transaction import TxType as _TxType
+            for block in self._chain_list:
+                for tx in block.transactions:
+                    if (tx.tx_type == _TxType.REGISTER_VALIDATOR
+                            and tx.payload.get("validator_address") == address):
+                        pk_hex = tx.payload.get("validator_pubkey", "")
+                        if pk_hex:
+                            try:
+                                return bytes.fromhex(pk_hex)
+                            except ValueError:
+                                pass
         return None
 
     def _evaluate_fork(self, block) -> tuple[bool, str]:
@@ -313,7 +365,9 @@ class RollbackMixin:
                 tid = tx.payload.get("token_id", "")
                 amount = tx.payload.get("amount", 0)
                 if tid in self._token_registry:
-                    self._token_registry[tid]["total_minted"] -= amount
+                    self._token_registry[tid]["total_minted"] = max(
+                        0, self._token_registry[tid]["total_minted"] - amount
+                    )
                 key = (tid, tx.recipient)
                 bal = self._token_balances.get(key, 0)
                 new_bal = bal - amount

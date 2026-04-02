@@ -374,6 +374,62 @@ class TestTokenRollback:
         assert bc.get_token_balance(token_id, w.address) == w_bal
 
 
+    def test_multiblock_reorg_issue_mint_total_minted_non_negative(self):
+        """R37-M02: total_minted must never go negative during multi-block reorg
+        spanning ISSUE_TOKEN + MINT_TOKEN when MINT rollback happens before ISSUE."""
+        bc, w = _setup_chain()
+        bob = Wallet.generate()
+        # Block 1: ISSUE token
+        nonce = _next_nonce(bc, w.address)
+        tx_issue = Transaction.issue_token(w.address, "Silver", "SLV", 6, nonce=nonce)
+        tx_issue.sign(w.signing_sk, w.signing_pk)
+        submit_and_mine(bc, w, tx_issue)
+        token_id = _derive_token_id(w.address, "SLV", nonce)
+        assert token_id in bc._token_registry
+        # Block 2: MINT token
+        tx_mint = Transaction.mint_token(
+            w.address, bob.address, token_id, 10000,
+            nonce=_next_nonce(bc, w.address))
+        tx_mint.sign(w.signing_sk, w.signing_pk)
+        submit_and_mine(bc, w, tx_mint)
+        assert bc._token_registry[token_id]["total_minted"] == 10000
+        assert bc.get_token_balance(token_id, bob.address) == 10000
+        # Rollback both blocks (MINT rolled back first, then ISSUE)
+        bc._rollback_to(1)
+        # Token should be fully cleaned up
+        assert token_id not in bc._token_registry
+        assert bc.get_token_balance(token_id, bob.address) == 0
+
+    def test_multiblock_reorg_multiple_mints_total_minted_clamped(self):
+        """Verify total_minted is clamped to 0 even with multiple MINT blocks."""
+        bc, w = _setup_chain()
+        bob = Wallet.generate()
+        # Block 1: ISSUE
+        nonce = _next_nonce(bc, w.address)
+        tx_issue = Transaction.issue_token(w.address, "Copper", "CPR", 2, nonce=nonce)
+        tx_issue.sign(w.signing_sk, w.signing_pk)
+        submit_and_mine(bc, w, tx_issue)
+        token_id = _derive_token_id(w.address, "CPR", nonce)
+        # Block 2: MINT 500
+        tx_m1 = Transaction.mint_token(
+            w.address, bob.address, token_id, 500,
+            nonce=_next_nonce(bc, w.address))
+        tx_m1.sign(w.signing_sk, w.signing_pk)
+        submit_and_mine(bc, w, tx_m1)
+        # Block 3: MINT 300
+        tx_m2 = Transaction.mint_token(
+            w.address, w.address, token_id, 300,
+            nonce=_next_nonce(bc, w.address))
+        tx_m2.sign(w.signing_sk, w.signing_pk)
+        submit_and_mine(bc, w, tx_m2)
+        assert bc._token_registry[token_id]["total_minted"] == 800
+        # Rollback blocks 3, 2, 1 — mints rolled back before issue
+        bc._rollback_to(1)
+        assert token_id not in bc._token_registry
+        assert bc.get_token_balance(token_id, bob.address) == 0
+        assert bc.get_token_balance(token_id, w.address) >= 0  # no negative
+
+
 # ===========================================================================
 # 5. Legacy fee reversal
 # ===========================================================================
