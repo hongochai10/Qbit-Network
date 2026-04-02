@@ -883,10 +883,11 @@ class TestFromDictAmountValidation:
     # --- TRANSFER amount in from_dict ---
 
     def test_transfer_valid_amount_accepted(self, wallet):
+        # R30-001: TRANSFER amount is now capped at MAX_SUPPLY, not MAX_TX_AMOUNT
         d = self._base_transfer_dict(wallet)
-        d["payload"]["amount"] = self._MAX_TX_AMOUNT
+        d["payload"]["amount"] = MAX_SUPPLY
         tx = Transaction.from_dict(d)
-        assert tx.payload["amount"] == self._MAX_TX_AMOUNT
+        assert tx.payload["amount"] == MAX_SUPPLY
 
     def test_transfer_amount_above_limit_rejected(self, wallet):
         d = self._base_transfer_dict(wallet)
@@ -968,4 +969,50 @@ class TestFromDictAmountValidation:
         d = self._base_issue_dict(wallet)
         d["payload"]["max_supply"] = True
         with pytest.raises(ValueError, match="integer"):
+            Transaction.from_dict(d)
+
+
+class TestFromDictMaxSupplyCap:
+    """R30-001: from_dict rejects amounts > MAX_SUPPLY for TRANSFER/STAKE/DELEGATE/MINT_TOKEN."""
+
+    def _base_transfer_dict(self, wallet):
+        tx = Transaction.transfer(wallet.address, "qv1" + "a" * 64,
+                                  amount=100, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        return tx.to_dict()
+
+    def _base_stake_dict(self, wallet):
+        tx = Transaction.stake(wallet.address, "qv1" + "b" * 64,
+                               amount=100, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        return tx.to_dict()
+
+    def _base_mint_dict(self, wallet):
+        tx = Transaction.mint_token(wallet.address, "qv1" + "c" * 64,
+                                    token_id="dd" * 16, amount=100, nonce=0)
+        tx.sign(wallet.signing_sk, wallet.signing_pk)
+        return tx.to_dict()
+
+    def test_transfer_at_max_supply_accepted(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = MAX_SUPPLY
+        tx = Transaction.from_dict(d)
+        assert tx.payload["amount"] == MAX_SUPPLY
+
+    def test_transfer_above_max_supply_rejected(self, wallet):
+        d = self._base_transfer_dict(wallet)
+        d["payload"]["amount"] = MAX_SUPPLY + 1
+        with pytest.raises(ValueError, match="MAX_SUPPLY"):
+            Transaction.from_dict(d)
+
+    def test_stake_above_max_supply_rejected(self, wallet):
+        d = self._base_stake_dict(wallet)
+        d["payload"]["amount"] = MAX_SUPPLY + 1
+        with pytest.raises(ValueError, match="MAX_SUPPLY"):
+            Transaction.from_dict(d)
+
+    def test_mint_above_max_supply_rejected(self, wallet):
+        d = self._base_mint_dict(wallet)
+        d["payload"]["amount"] = MAX_SUPPLY + 1
+        with pytest.raises(ValueError, match="MAX_SUPPLY"):
             Transaction.from_dict(d)

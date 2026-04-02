@@ -994,3 +994,56 @@ class TestRecipientEdgeCases:
         tx.sign(wallet.signing_sk, wallet.signing_pk)
         ok, err = funded_chain.submit_tx(tx)
         assert not ok
+
+
+class TestPoolMaxSupplyCap:
+    """R30-001: Pool rejects TRANSFER/STAKE/MINT amounts > MAX_SUPPLY."""
+
+    @pytest.fixture
+    def funded_chain(self):
+        w = Wallet.generate()
+        bc = Blockchain()
+        bc.consensus.add_validator(w.address, w.signing_pk)
+        bc.init_chain(w.address, w.signing_sk, validator_pk=w.signing_pk)
+        bc.activate_financial_layer(w.address)
+        return bc, w
+
+    def test_transfer_at_max_supply_passes_cap_check(self, funded_chain):
+        """Amount == MAX_SUPPLY should pass the cap check (may fail balance)."""
+        bc, w = funded_chain
+        recipient = Wallet.generate()
+        tx = Transaction.transfer(w.address, recipient.address, MAX_SUPPLY,
+                                  nonce=0)
+        tx.sign(w.signing_sk, w.signing_pk)
+        ok, err = bc.submit_tx(tx)
+        # May fail on balance, but NOT on MAX_SUPPLY cap
+        if not ok:
+            assert "MAX_SUPPLY" not in err
+
+    def test_transfer_above_max_supply_rejected(self, funded_chain):
+        bc, w = funded_chain
+        recipient = Wallet.generate()
+        tx = Transaction.transfer(w.address, recipient.address,
+                                  MAX_SUPPLY + 1, nonce=0)
+        tx.sign(w.signing_sk, w.signing_pk)
+        ok, err = bc.submit_tx(tx)
+        assert not ok
+        assert "MAX_SUPPLY" in err
+
+    def test_stake_above_max_supply_rejected(self, funded_chain):
+        bc, w = funded_chain
+        tx = Transaction.stake(w.address, w.address,
+                               amount=MAX_SUPPLY + 1, nonce=0)
+        tx.sign(w.signing_sk, w.signing_pk)
+        ok, err = bc.submit_tx(tx)
+        assert not ok
+        assert "MAX_SUPPLY" in err
+
+    def test_delegate_above_max_supply_rejected(self, funded_chain):
+        bc, w = funded_chain
+        tx = Transaction.delegate(w.address, w.address,
+                                  amount=MAX_SUPPLY + 1, nonce=0)
+        tx.sign(w.signing_sk, w.signing_pk)
+        ok, err = bc.submit_tx(tx)
+        assert not ok
+        assert "MAX_SUPPLY" in err

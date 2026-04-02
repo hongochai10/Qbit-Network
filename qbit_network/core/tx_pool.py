@@ -54,6 +54,20 @@ class TxPoolMixin:
         if tx.tx_id in self._pool_ids:
             return False, "duplicate (already in pool)"
 
+        # R30-001: Cap amounts to MAX_SUPPLY to prevent DoS via big-integer
+        # processing in _pending_debits and balance calculations.
+        from ..config import MAX_SUPPLY as _MAX_SUPPLY
+        if tx.tx_type in (TxType.TRANSFER, TxType.STAKE, TxType.DELEGATE):
+            _amount = tx.payload.get("amount", 0)
+            if _amount > _MAX_SUPPLY:
+                return False, (f"amount {_amount} exceeds MAX_SUPPLY "
+                               f"({_MAX_SUPPLY})")
+        if tx.tx_type == TxType.MINT_TOKEN:
+            _amount = tx.payload.get("amount", 0)
+            if _amount > _MAX_SUPPLY:
+                return False, (f"mint amount {_amount} exceeds MAX_SUPPLY "
+                               f"({_MAX_SUPPLY})")
+
         if tx.tx_type == TxType.SHARE and not tx.recipient:
             return False, "SHARE tx requires recipient"
 

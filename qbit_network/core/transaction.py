@@ -145,6 +145,12 @@ class Transaction:
             max_supply = self.payload.get("max_supply")
             if isinstance(max_supply, int) and max_supply > MAX_TX_AMOUNT:
                 return False, f"max_supply exceeds MAX_TX_AMOUNT ({MAX_TX_AMOUNT})"
+        # R30-001: tighter MAX_SUPPLY cap for value-bearing native-token types
+        if self.tx_type in (TxType.TRANSFER, TxType.STAKE, TxType.DELEGATE,
+                            TxType.MINT_TOKEN):
+            amount = self.payload.get("amount")
+            if isinstance(amount, int) and amount > MAX_SUPPLY:
+                return False, f"amount {amount} exceeds MAX_SUPPLY ({MAX_SUPPLY})"
 
         if self.tx_type == TxType.NOTARIZE:
             dh = self.payload.get("documentHash", "")
@@ -425,6 +431,13 @@ class Transaction:
                 if amt > MAX_TX_AMOUNT:
                     raise ValueError(
                         f"payload amount exceeds MAX_TX_AMOUNT ({MAX_TX_AMOUNT})")
+        # R30-001: tighter MAX_SUPPLY cap for value-bearing TX types
+        _SUPPLY_CAPPED_TYPES = {"TRANSFER", "STAKE", "DELEGATE", "MINT_TOKEN"}
+        if tx_type_str in _SUPPLY_CAPPED_TYPES:
+            amt = payload.get("amount", 0)
+            if isinstance(amt, int) and amt > MAX_SUPPLY:
+                raise ValueError(
+                    f"amount {amt} exceeds MAX_SUPPLY ({MAX_SUPPLY})")
         if tx_type_str == "ISSUE_TOKEN":
             ms = payload.get("max_supply")
             if ms is not None:
