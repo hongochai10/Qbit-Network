@@ -3,9 +3,9 @@
 ## Project Overview
 Post-quantum cryptography blockchain for document notarization and encrypted sharing.
 - **Language:** Python 3.11+
-- **PQC:** ML-DSA-65 + ML-KEM-768 via liboqs
+- **PQC:** ML-DSA-65 + ML-KEM-768 via liboqs 0.15.0
 - **Framework:** asyncio + aiohttp
-- **Version:** v0.8.0 (complete) — 14 TX types, dPoS, state proofs, receipts, SDK, webhooks, multi-asset tokens, light client, binary P2P, 1781 tests, 22 audit rounds, 0 open issues
+- **Version:** v0.8.0 (complete) — 14 TX types, dPoS, state proofs, receipts, SDK, webhooks, multi-asset tokens, light client, binary P2P, 3333 tests, 34 audit rounds, 28 open issues (4 HIGH, 12 MEDIUM, 16 LOW, 3 INFO)
 
 ## Agents Team
 

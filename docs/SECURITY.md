@@ -49,7 +49,7 @@
 
 ## Audit History
 
-33 rounds of security audit, 309+ issues found:
+34 rounds of security audit, 309+ issues found:
 
 | Round | Focus | Issues |
 |-------|-------|--------|
@@ -87,8 +87,18 @@
 | 31 | CEO comprehensive audit (REST param injection, pagination, tracker reconciliation) | 7 |
 | 32 | CEO full audit (epoch reward front-run, token fee accounting, SQLite safety, state root) | 8 |
 | 33 | CEO comprehensive audit (slashing replay, TRANSFER rollback, liboqs version, stateRoot enforcement) | 17 |
+| 34 | Batch security fixes (SSRF multicast, SQLite thread leak, epoch reward reset, pool sender desync) | 4 |
 
 See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
+
+### Batch Security Fixes (Round 34)
+
+- **[MEDIUM] SSRF resolver missing `is_multicast`/`is_unspecified` checks**: Webhook URL validation now blocks multicast and unspecified addresses.
+- **[MEDIUM] SQLiteStore.close() thread leak**: All thread-local connections now tracked and closed properly.
+- **[LOW] Epoch reward accumulator not reset for validators without delegators**: `_epoch_rewards` reset for all validators after distribution.
+- **[LOW] Pool sender count desync on key revocation purge**: Batch update prevents negative sender counts.
+
+All 4 findings fixed in commit `b19661e`.
 
 ### REST API & Tracker Reconciliation (Round 31)
 
@@ -159,7 +169,7 @@ See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
 - **Integer arithmetic only**: all balance operations use Python `int`, no floating-point
 - **Rollback correctness**: epoch distribution rollback uses explicit credit/debit records for clean reversal
 
-## Remediation Roadmap (as of R33, 2026-04-02)
+## Remediation Roadmap (as of R34, 2026-04-02)
 
 ### Open HIGH Issues (4) — P0, immediate action required
 
@@ -170,7 +180,7 @@ See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
 | RS-1 | liboqs version mismatch (Dockerfile vs README) | devops-engineer | Pin all references to 0.15.0, add startup version check | TEC-1191 |
 | ~~RS-2~~ | ~~stateRoot warn-but-accept~~ — **Resolved (TEC-1207)** | senior-backend-engineer | Hard-reject blocks with empty or mismatched state_root | TEC-1207 |
 
-### Open MEDIUM Issues (9) — P1/P2
+### Open MEDIUM Issues (12) — P1/P2
 
 | ID | Issue | Owner | Task |
 |----|-------|-------|------|
@@ -183,8 +193,11 @@ See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
 | R32-F03 | No post-load state root verification | database-architect | TEC-1188 |
 | R32-F04 | Epoch reward front-running via self-transfer | security-engineer | TEC-1189 |
 | R33-M01 | `_pending_debits` double-count + O(n) scan | senior-backend-engineer | extends R32-F02 |
+| R33-M02 | `_find_validator_pk_in_chain` O(n) chain scan during rollback | senior-backend-engineer | extends R32-F06 |
+| R33-M03 | REST `_submit_evidence` kwargs splat — param injection (confirms R31-001) | security-engineer | TEC-1181 |
+| R33-M04 | SQLite connection shared across async context (confirms R32-F01) | database-architect | TEC-1188 |
 
-### Open LOW Issues (13) — P2/P3
+### Open LOW Issues (16) — P2/P3
 
 | ID | Issue | Status |
 |----|-------|--------|
@@ -200,7 +213,10 @@ See `tracker/AUDIT_LOG.md` for the complete log with all findings per round.
 | R32-F06 | `_ChainProxy.__iter__` O(n) queries | todo |
 | R32-F07 | `_drain_pool` stale nonce entries | todo |
 | R32-F08 | RPC batch sequential processing | todo |
+| R33-L01 | `_drain_pool` stale nonce entries (confirms R32-F07) | todo |
 | R33-L03 | `_last_epoch_distributions` unbounded growth | todo |
+| R33-L04 | `_events_by_type` list grows unbounded | todo |
+| R33-L05 | Receipt index rebuild O(n) on load | todo |
 
 ### Accepted Risks (no action required)
 

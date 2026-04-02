@@ -1,6 +1,6 @@
 # QBit Network — Post-Quantum Cryptography Blockchain
 
-[![CI](https://github.com/hongochai10/Qbit-Network/actions/workflows/ci.yml/badge.svg)](https://github.com/hongochai10/Qbit-Network/actions/workflows/ci.yml) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 2998](https://img.shields.io/badge/tests-2998-brightgreen) ![Version 0.8.0](https://img.shields.io/badge/version-0.8.0-blue)
+[![CI](https://github.com/hongochai10/Qbit-Network/actions/workflows/ci.yml/badge.svg)](https://github.com/hongochai10/Qbit-Network/actions/workflows/ci.yml) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue) ![License MIT](https://img.shields.io/badge/license-MIT-green) ![Tests 3333](https://img.shields.io/badge/tests-3333-brightgreen) ![Version 0.8.0](https://img.shields.io/badge/version-0.8.0-blue)
 
 QBit Network is a purpose-built blockchain for document notarization and encrypted data sharing. It replaces all quantum-vulnerable cryptography (ECDSA, ECDH, secp256k1) with NIST-standardized post-quantum alternatives, providing a quantum-resistant foundation for long-lived document proofs and confidential file exchange.
 
@@ -35,7 +35,7 @@ QBit Network is a purpose-built blockchain for document notarization and encrypt
 - **Webhook system** -- event-driven HTTP callbacks with HMAC-SHA256 signatures, retry with exponential backoff, auto-disable on persistent failure
 - **Python SDK** -- `qbit_sdk` package with zero external dependencies, sync HTTP client, WebSocket client, typed data models
 - **OpenAPI 3.0 spec** -- complete REST API specification at `docs/openapi.yaml`
-- **31 audit rounds, 17 open issues (0 critical, 0 high)**
+- **34 audit rounds, 28 open issues (0 critical, 4 high)**
 
 ## Quick Start
 
@@ -261,7 +261,7 @@ tracker/             AUDIT_LOG.md, ISSUES.md, FEATURES.md, CHANGELOG.md, DEVELOP
 
 ## Security
 
-QBit Network has completed **31 rounds of security audit** covering:
+QBit Network has completed **34 rounds of security audit** covering:
 
 - Cryptographic correctness (PQC primitive usage, key handling, side-channels)
 - Input validation (deserialization, RPC params, P2P messages)
@@ -271,7 +271,7 @@ QBit Network has completed **31 rounds of security audit** covering:
 - Persistence (atomic writes, load validation, tamper detection)
 - dPoS security (slashing, epoch manipulation, evidence replay)
 
-**17 open issues (0 critical, 0 high).** See [`tracker/AUDIT_LOG.md`](tracker/AUDIT_LOG.md) for the complete audit trail and [`docs/SECURITY.md`](docs/SECURITY.md) for the threat model.
+**28 open issues (0 critical, 4 high).** See [`tracker/AUDIT_LOG.md`](tracker/AUDIT_LOG.md) for the complete audit trail and [`docs/SECURITY.md`](docs/SECURITY.md) for the threat model.
 
 **PQC algorithms:**
 
@@ -287,6 +287,7 @@ QBit Network has completed **31 rounds of security audit** covering:
 | File | Contents |
 |------|---------|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Layer diagram, identity model, all 14 TX types, dPoS, WebSocket, REST API, security limits |
+| [`docs/DID_SPEC.md`](docs/DID_SPEC.md) | Decentralized Identity (DID) specification for QBit wallets |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Wire formats, consensus rules, P2P handshake spec, WebSocket protocol |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Threat model, audit history, all security controls |
 | [`docs/PAPER.md`](docs/PAPER.md) | Academic paper with benchmarks and formal analysis |

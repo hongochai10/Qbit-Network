@@ -55,6 +55,8 @@ Each wallet holds two independent PQC keypairs:
 
 The encryption public key is registered on-chain via `REGISTER_KEY` transactions, enabling other users to look it up for SHARE operations.
 
+For the decentralized identity (DID) specification based on this identity model, see [`docs/DID_SPEC.md`](DID_SPEC.md).
+
 ## Financial Layer
 
 The QBit Network has a built-in token economy with the following properties:
