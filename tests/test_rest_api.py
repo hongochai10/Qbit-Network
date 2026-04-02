@@ -84,7 +84,7 @@ class MockNode:
         all_validators = set(self.blockchain.consensus.validators.keys())
         all_validators.update(self.blockchain._validator_registry.keys())
         return {
-            "version": "0.2.0",
+            "version": "0.8.0",
             "chain_height": self.blockchain.height,
             "pending_txs": len(self.blockchain.tx_pool),
             "peers": 0,
@@ -3017,4 +3017,430 @@ class TestErrorPathsViaPatching(AsyncRESTTestCase):
             "/api/v1/verify",
             json={"document_hash": "h1"},
         )
+        self.assertEqual(resp.status, 400)
+
+
+# ===================================================================
+# Additional coverage tests for uncovered lines
+# ===================================================================
+
+class TestTokenFoundPaths(AsyncRESTTestCase):
+    """Tests for token endpoints when tokens actually exist."""
+
+    async def test_get_token_found(self):
+        """Cover line 1169: _get_token returns _ok(info) for existing token."""
+        node = self.app["_mock_node"]
+        bc = node.blockchain
+        bc._token_registry["tok-test"] = {
+            "id": "tok-test", "name": "Test", "symbol": "TST",
+            "decimals": 8, "max_supply": 1000, "issuer": "addr1",
+        }
+        resp = await self.client.get("/api/v1/tokens/tok-test")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertEqual(body["data"]["id"], "tok-test")
+
+    async def test_get_token_holders_valid(self):
+        """Cover lines 1181-1184: _get_token_holders with valid token and data."""
+        node = self.app["_mock_node"]
+        bc = node.blockchain
+        bc._token_registry["tok-test"] = {
+            "id": "tok-test", "name": "Test", "symbol": "TST",
+        }
+        bc._token_balances["tok-test"] = {"addr1": 100, "addr2": 200}
+        resp = await self.client.get("/api/v1/tokens/tok-test/holders")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("holders", body["data"])
+        self.assertIn("total", body["data"])
+        self.assertEqual(body["data"]["token_id"], "tok-test")
+
+    async def test_issue_token_missing_symbol(self):
+        """Cover line 1221: symbol validation."""
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "name": "Test", "symbol": "",
+                  "decimals": 8, "max_supply": 100},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("symbol", body["error"]["message"])
+
+    async def test_issue_token_negative_max_supply(self):
+        """Cover line 1229: max_supply must be >= 0."""
+        resp = await self.client.post(
+            "/api/v1/issue-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "name": "Test", "symbol": "TST",
+                  "decimals": 8, "max_supply": -1},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("max_supply", body["error"]["message"])
+
+    async def test_mint_token_missing_wallet(self):
+        """Cover line 1259: mint wallet validation."""
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "", "token_id": "tok1",
+                  "recipient": "addr1", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("wallet", body["error"]["message"])
+
+    async def test_mint_token_missing_recipient(self):
+        """Cover line 1263: mint recipient validation."""
+        resp = await self.client.post(
+            "/api/v1/mint-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "tok1",
+                  "recipient": "", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("recipient", body["error"]["message"])
+
+    async def test_transfer_token_missing_wallet(self):
+        """Cover line 1294: transfer-token wallet validation."""
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "", "token_id": "tok1",
+                  "recipient": "addr1", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("wallet", body["error"]["message"])
+
+    async def test_transfer_token_missing_recipient(self):
+        """Cover line 1298: transfer-token recipient validation."""
+        resp = await self.client.post(
+            "/api/v1/transfer-token",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet": "w1", "token_id": "tok1",
+                  "recipient": "", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("recipient", body["error"]["message"])
+
+
+class TestLightClientAdditional(AsyncRESTTestCase):
+    """Additional light client tests for uncovered paths."""
+
+    async def test_get_header_non_integer_index(self):
+        """Cover lines 1338-1339: non-integer index."""
+        resp = await self.client.get("/api/v1/headers/abc")
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("integer", body["error"]["message"])
+
+    async def test_receipt_proof_found(self):
+        """Cover line 1386: receipt proof returns _ok when proof exists."""
+        from unittest.mock import MagicMock
+        node = self.app["_mock_node"]
+        node.blockchain.get_receipt_proof = MagicMock(
+            return_value={"tx_id": "aabb", "proof": ["hash1", "hash2"]})
+        resp = await self.client.get("/api/v1/proofs/receipt/aabb")
+        self.assertEqual(resp.status, 200)
+        body = await resp.json()
+        self.assertIn("proof", body["data"])
+
+
+class TestEvidenceValidation(AsyncRESTTestCase):
+    """Tests for evidence submission validation paths."""
+
+    async def test_evidence_negative_block_index(self):
+        """Cover line 717: block_index must be non-negative."""
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": "w1", "validator_address": "v1",
+                "block_index": -1,
+                "block_a_hash": "h1", "block_b_hash": "h2",
+                "block_a_sig": "s1", "block_b_sig": "s2",
+                "block_a_header": "hdr1", "block_b_header": "hdr2",
+            },
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("block_index", body["error"]["message"])
+
+    async def test_evidence_empty_evidence_field(self):
+        """Cover line 722: empty evidence string fields."""
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": "w1", "validator_address": "v1",
+                "block_index": 0,
+                "block_a_hash": "", "block_b_hash": "h2",
+                "block_a_sig": "s1", "block_b_sig": "s2",
+                "block_a_header": "hdr1", "block_b_header": "hdr2",
+            },
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("block_a_hash", body["error"]["message"])
+
+    async def test_evidence_value_error(self):
+        """Cover line 740: evidence ValueError from node."""
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_submit_evidence = AsyncMock(
+            side_effect=ValueError("duplicate evidence"))
+        resp = await self.client.post(
+            "/api/v1/evidence",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={
+                "wallet_address": "w1", "validator_address": "v1",
+                "block_index": 0,
+                "block_a_hash": "h1", "block_b_hash": "h2",
+                "block_a_sig": "s1", "block_b_sig": "s2",
+                "block_a_header": "hdr1", "block_b_header": "hdr2",
+            },
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("duplicate", body["error"]["message"])
+
+
+class TestSubmitTxSuccess(AsyncRESTTestCase):
+    """Tests for successful tx submission path."""
+
+    async def test_submit_tx_valid_returns_201(self):
+        """Cover line 757: successful _submit_tx returns 201."""
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_send_raw_tx = AsyncMock(
+            return_value={"tx_id": "abc123"})
+        resp = await self.client.post(
+            "/api/v1/txs",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"tx_type": "TRANSFER", "sender": "addr1"},
+        )
+        self.assertEqual(resp.status, 201)
+        body = await resp.json()
+        self.assertEqual(body["data"]["tx_id"], "abc123")
+
+
+class TestProtectedEndpointValidation(AsyncRESTTestCase):
+    """Additional validation tests for protected endpoints."""
+
+    async def test_notarize_non_dict_body(self):
+        """Cover line 790: notarize with non-dict body."""
+        resp = await self.client.post(
+            "/api/v1/notarize",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json="not-a-dict",
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("JSON object", body["error"]["message"])
+
+    async def test_verify_invalid_json(self):
+        """Cover lines 819-820: verify with invalid JSON."""
+        resp = await self.client.post(
+            "/api/v1/verify",
+            data=b"not json {{",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("invalid JSON", body["error"]["message"])
+
+    async def test_verify_non_dict_body(self):
+        """Cover line 823: verify with non-dict body."""
+        resp = await self.client.post(
+            "/api/v1/verify",
+            json=[1, 2, 3],
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("JSON object", body["error"]["message"])
+
+    async def test_store_invalid_json(self):
+        """Cover lines 844-845: store with invalid JSON."""
+        resp = await self.client.post(
+            "/api/v1/store",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}",
+                     "Content-Type": "application/json"},
+            data=b"not json {{",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_store_non_dict_body(self):
+        """Cover line 848: store with non-dict body."""
+        resp = await self.client.post(
+            "/api/v1/store",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json="string-body",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_store_missing_document_hash(self):
+        """Cover line 860: store missing document_hash."""
+        resp = await self.client.post(
+            "/api/v1/store",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "document_hash": ""},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("document_hash", body["error"]["message"])
+
+    async def test_share_missing_recipient(self):
+        """Cover line 903: share missing recipient_address."""
+        resp = await self.client.post(
+            "/api/v1/share",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "recipient_address": ""},
+        )
+        self.assertEqual(resp.status, 400)
+        body = await resp.json()
+        self.assertIn("recipient_address", body["error"]["message"])
+
+    async def test_stake_non_dict_body(self):
+        """Cover line 988: stake with non-dict body."""
+        resp = await self.client.post(
+            "/api/v1/stake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json="not-a-dict",
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_delegate_missing_wallet(self):
+        """Cover line 1033: delegate missing wallet."""
+        resp = await self.client.post(
+            "/api/v1/delegate",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "", "validator_address": "v1", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_delegate_missing_validator(self):
+        """Cover line 1035: delegate missing validator."""
+        resp = await self.client.post(
+            "/api/v1/delegate",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "validator_address": "", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_unstake_missing_validator(self):
+        """Cover line 1071: unstake missing validator."""
+        resp = await self.client.post(
+            "/api/v1/unstake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "validator_address": "", "amount": 100},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_unstake_bad_amount(self):
+        """Cover line 1073: unstake non-positive amount."""
+        resp = await self.client.post(
+            "/api/v1/unstake",
+            headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
+            json={"wallet_address": "w1", "validator_address": "v1", "amount": 0},
+        )
+        self.assertEqual(resp.status, 400)
+
+    async def test_validator_stake_empty_address(self):
+        """Cover line 972: empty validator address."""
+        resp = await self.client.get("/api/v1/stakes/ ")
+        # aiohttp routing: " " matches {validator}, handled in handler
+        self.assertIn(resp.status, (200, 400))
+
+
+class TestEmptyChainEndpoints(unittest.IsolatedAsyncioTestCase):
+    """Tests with an empty chain (no genesis block)."""
+
+    async def asyncSetUp(self):
+        # Build a node with an empty blockchain (height -1)
+        self.node = MockNode.__new__(MockNode)
+        self.node.wallet = Wallet.generate()
+        self.node.blockchain = Blockchain()
+        self.node.wallets = {}
+        self.node.validator_wallet = self.node.wallet
+        self.node._wallet_locks = {}
+        self.node._shared_secrets = {}
+        self.node.p2p = _MockP2P()
+        self.node.webhook_manager = MockNode._MockWebhookManager()
+
+        rest = RESTApi(self.node, AUTH_TOKEN, cors_origins="*")
+        self.test_app = web.Application()
+        self.test_app.add_subapp("/api/v1/", rest.app)
+        self.test_app["_mock_node"] = self.node
+
+        self.server = TestServer(self.test_app)
+        self.client = TestClient(self.server)
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    async def test_latest_block_empty_chain(self):
+        """Cover line 384: latest_block returns 404 on empty chain."""
+        resp = await self.client.get("/api/v1/blocks/latest")
+        self.assertEqual(resp.status, 404)
+        body = await resp.json()
+        self.assertIn("no blocks", body["error"]["message"])
+
+
+class TestCORSHTTPException(unittest.IsolatedAsyncioTestCase):
+    """Tests for HTTPException paths in CORS middleware."""
+
+    async def asyncSetUp(self):
+        self.app = _make_app(cors_origins="*")
+        self.server = TestServer(self.app)
+        self.client = TestClient(self.server)
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+
+    async def test_cors_404_has_cors_headers(self):
+        """Cover lines 128-129: HTTPException in CORS-enabled mode gets CORS headers."""
+        # Use a public route pattern that will trigger a 404 from handler, not auth
+        resp = await self.client.get("/api/v1/blocks/99999999")
+        self.assertEqual(resp.status, 404)
+        self.assertIn("Access-Control-Allow-Origin", resp.headers)
+
+    async def test_no_cors_404(self):
+        """Cover lines 120-121: HTTPException in restrictive CORS mode."""
+        app = _make_app(cors_origins="")
+        server = TestServer(app)
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            resp = await client.get("/api/v1/blocks/99999999")
+            self.assertEqual(resp.status, 404)
+            self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+        finally:
+            await client.close()
+
+
+class TestReceiptValidation(AsyncRESTTestCase):
+    """Additional receipt endpoint validation."""
+
+    async def test_receipt_value_error(self):
+        """Cover line 595: receipt ValueError."""
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_receipt = AsyncMock(
+            side_effect=ValueError("bad txid"))
+        resp = await self.client.get("/api/v1/receipt/aabbccdd")
+        self.assertEqual(resp.status, 400)
+
+    async def test_balance_value_error(self):
+        """Cover line 561: balance ValueError path."""
+        from unittest.mock import AsyncMock
+        node = self.app["_mock_node"]
+        node._rpc_get_balance = AsyncMock(
+            side_effect=ValueError("invalid addr"))
+        resp = await self.client.get("/api/v1/balance/badaddr")
         self.assertEqual(resp.status, 400)
