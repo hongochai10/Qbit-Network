@@ -697,3 +697,206 @@ class TestNotarizationRollback:
         bc._rollback_to(2)
         count_1 = bc._notarization_count.get(w.address, 0)
         assert count_1 == count_3 - 2
+
+
+# ===========================================================================
+# 13. TRANSFER rollback balance conservation (H-02 / R33)
+# ===========================================================================
+
+class TestTransferRollbackConservation:
+    """Tests for H-02: rollback must not create or destroy QBIT."""
+
+    # Legacy transfer fee from config
+    XFER_FEE = TX_FEES.get("TRANSFER", 0)
+
+    def _total_balances(self, bc):
+        """Sum all balances including negatives."""
+        return sum(bc._balances.values())
+
+    def test_recipient_spent_funds_before_rollback(self):
+        """H-02 exploit: Alice->Bob, Bob spends, rollback should not create QBIT."""
+        bc, w = _setup_chain()
+        alice = Wallet.generate()
+        bob = Wallet.generate()
+        carol = Wallet.generate()
+        fee = self.XFER_FEE
+
+        # Fund Alice and Bob with enough for transfers + fees
+        amt = 100_000_000_000
+        bc._credit(alice.address, amt + fee)
+        bc._credit(bob.address, fee)  # Bob needs fee for his transfer
+        supply_before = self._total_balances(bc)
+
+        # Block 1: Alice sends 100 QBIT to Bob
+        tx1 = Transaction.transfer(alice.address, bob.address, amt,
+                                   nonce=_next_nonce(bc, alice.address))
+        tx1.sign(alice.signing_sk, alice.signing_pk)
+        submit_and_mine(bc, w, tx1)
+
+        # Block 2: Bob sends 100 QBIT to Carol (spends the transfer)
+        tx2 = Transaction.transfer(bob.address, carol.address, amt,
+                                   nonce=_next_nonce(bc, bob.address))
+        tx2.sign(bob.signing_sk, bob.signing_pk)
+        submit_and_mine(bc, w, tx2)
+
+        assert bc.get_balance(bob.address) == 0  # Bob spent it all
+
+        # Rollback both blocks
+        bc._rollback_to(1)
+
+        # Conservation: total supply must match what it was before the blocks
+        supply_after = self._total_balances(bc)
+        assert supply_after == supply_before, (
+            f"Supply mismatch: before={supply_before}, after={supply_after}, "
+            f"diff={supply_after - supply_before}")
+
+        # Alice should have her funds back
+        assert bc.get_balance(alice.address) == amt + fee
+        # Bob should have just his fee money back
+        assert bc.get_balance(bob.address) == fee
+        assert bc.get_balance(carol.address) == 0
+
+        # No negative balances
+        for addr, bal in bc._balances.items():
+            assert bal >= 0, f"Negative balance for {addr}: {bal}"
+
+    def test_multi_hop_transfer_rollback(self):
+        """A->B->C->D, rollback all: total supply conserved."""
+        bc, w = _setup_chain()
+        alice = Wallet.generate()
+        bob = Wallet.generate()
+        carol = Wallet.generate()
+        dave = Wallet.generate()
+        fee = self.XFER_FEE
+        amt = 100_000_000_000
+
+        # Each sender needs amount + fee
+        bc._credit(alice.address, amt + fee)
+        bc._credit(bob.address, fee)
+        bc._credit(carol.address, fee)
+        supply_before = self._total_balances(bc)
+
+        # Block 1: Alice -> Bob
+        tx1 = Transaction.transfer(alice.address, bob.address, amt,
+                                   nonce=_next_nonce(bc, alice.address))
+        tx1.sign(alice.signing_sk, alice.signing_pk)
+        submit_and_mine(bc, w, tx1)
+
+        # Block 2: Bob -> Carol
+        tx2 = Transaction.transfer(bob.address, carol.address, amt,
+                                   nonce=_next_nonce(bc, bob.address))
+        tx2.sign(bob.signing_sk, bob.signing_pk)
+        submit_and_mine(bc, w, tx2)
+
+        # Block 3: Carol -> Dave
+        tx3 = Transaction.transfer(carol.address, dave.address, amt,
+                                   nonce=_next_nonce(bc, carol.address))
+        tx3.sign(carol.signing_sk, carol.signing_pk)
+        submit_and_mine(bc, w, tx3)
+
+        assert bc.get_balance(dave.address) == amt
+
+        # Rollback all 3 blocks
+        bc._rollback_to(1)
+
+        supply_after = self._total_balances(bc)
+        assert supply_after == supply_before, (
+            f"Supply mismatch: before={supply_before}, after={supply_after}")
+
+        assert bc.get_balance(alice.address) == amt + fee
+        assert bc.get_balance(bob.address) == fee
+        assert bc.get_balance(carol.address) == fee
+        assert bc.get_balance(dave.address) == 0
+
+        for addr, bal in bc._balances.items():
+            assert bal >= 0, f"Negative balance for {addr}: {bal}"
+
+    def test_partial_spend_rollback_conservation(self):
+        """Alice->Bob 100, Bob spends 60 to Carol, rollback both."""
+        bc, w = _setup_chain()
+        alice = Wallet.generate()
+        bob = Wallet.generate()
+        carol = Wallet.generate()
+        fee = self.XFER_FEE
+        amt = 100_000_000_000
+        spend = 60_000_000_000
+
+        bc._credit(alice.address, amt + fee)
+        bc._credit(bob.address, fee)
+        supply_before = self._total_balances(bc)
+
+        # Block 1: Alice -> Bob 100
+        tx1 = Transaction.transfer(alice.address, bob.address, amt,
+                                   nonce=_next_nonce(bc, alice.address))
+        tx1.sign(alice.signing_sk, alice.signing_pk)
+        submit_and_mine(bc, w, tx1)
+
+        # Block 2: Bob -> Carol 60 (partial spend)
+        tx2 = Transaction.transfer(bob.address, carol.address, spend,
+                                   nonce=_next_nonce(bc, bob.address))
+        tx2.sign(bob.signing_sk, bob.signing_pk)
+        submit_and_mine(bc, w, tx2)
+
+        assert bc.get_balance(bob.address) == amt - spend  # 40 QBIT left
+
+        bc._rollback_to(1)
+
+        supply_after = self._total_balances(bc)
+        assert supply_after == supply_before
+        assert bc.get_balance(alice.address) == amt + fee
+        assert bc.get_balance(bob.address) == fee
+        assert bc.get_balance(carol.address) == 0
+
+    def test_diamond_spend_rollback(self):
+        """Alice sends to Bob AND Carol, both send to Dave, rollback all."""
+        bc, w = _setup_chain()
+        alice = Wallet.generate()
+        bob = Wallet.generate()
+        carol = Wallet.generate()
+        dave = Wallet.generate()
+        fee = self.XFER_FEE
+        amt = 100_000_000_000
+
+        # Alice needs 2*amt + 2*fee; Bob and Carol need fee each
+        bc._credit(alice.address, 2 * amt + 2 * fee)
+        bc._credit(bob.address, fee)
+        bc._credit(carol.address, fee)
+        supply_before = self._total_balances(bc)
+
+        # Block 1: Alice -> Bob 100
+        tx1 = Transaction.transfer(alice.address, bob.address, amt,
+                                   nonce=_next_nonce(bc, alice.address))
+        tx1.sign(alice.signing_sk, alice.signing_pk)
+        submit_and_mine(bc, w, tx1)
+
+        # Block 2: Alice -> Carol 100
+        tx2 = Transaction.transfer(alice.address, carol.address, amt,
+                                   nonce=_next_nonce(bc, alice.address))
+        tx2.sign(alice.signing_sk, alice.signing_pk)
+        submit_and_mine(bc, w, tx2)
+
+        # Block 3: Bob -> Dave 100
+        tx3 = Transaction.transfer(bob.address, dave.address, amt,
+                                   nonce=_next_nonce(bc, bob.address))
+        tx3.sign(bob.signing_sk, bob.signing_pk)
+        submit_and_mine(bc, w, tx3)
+
+        # Block 4: Carol -> Dave 100
+        tx4 = Transaction.transfer(carol.address, dave.address, amt,
+                                   nonce=_next_nonce(bc, carol.address))
+        tx4.sign(carol.signing_sk, carol.signing_pk)
+        submit_and_mine(bc, w, tx4)
+
+        assert bc.get_balance(dave.address) == 2 * amt
+
+        bc._rollback_to(1)
+
+        supply_after = self._total_balances(bc)
+        assert supply_after == supply_before
+        assert bc.get_balance(alice.address) == 2 * amt + 2 * fee
+        assert bc.get_balance(bob.address) == fee
+        assert bc.get_balance(carol.address) == fee
+        assert bc.get_balance(dave.address) == 0
+
+        for addr, bal in bc._balances.items():
+            assert bal >= 0, f"Negative balance for {addr}: {bal}"

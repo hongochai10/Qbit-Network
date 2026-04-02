@@ -48,6 +48,22 @@ class RollbackMixin:
             for block in blocks_to_rollback:
                 self._rollback_block(block, displaced)
 
+        # Post-rollback sanity: no account should have a negative balance.
+        # Temporary negatives may occur mid-rollback (H-02 fix) but must
+        # resolve once the full rollback sequence completes.
+        negative_addrs = {
+            addr: bal for addr, bal in self._balances.items() if bal < 0
+        }
+        if negative_addrs:
+            details = ", ".join(
+                f"{a[:16]}...={b}" for a, b in list(negative_addrs.items())[:5]
+            )
+            raise ValueError(
+                f"Balance conservation violation after rollback: "
+                f"{len(negative_addrs)} account(s) with negative balance "
+                f"({details}). Chain re-sync required."
+            )
+
         return displaced
 
     def _find_validator_pk_in_chain(self, address: str) -> bytes | None:
@@ -122,10 +138,7 @@ class RollbackMixin:
             # Reverse block reward
             reward = self._calc_block_reward(idx)
             if reward > 0:
-                bal = self._balances.get(block.validator, 0)
-                debit_amt = min(reward, bal)
-                if debit_amt > 0:
-                    self._debit(block.validator, debit_amt)
+                self._rollback_debit(block.validator, reward)
                 self._total_minted -= reward
                 # Reverse epoch reward accumulation
                 self._epoch_rewards[block.validator] = max(
@@ -141,11 +154,10 @@ class RollbackMixin:
                         self._credit(tx.sender, amount)
                 elif tx.tx_type == TxType.TRANSFER:
                     amount = tx.payload["amount"]
-                    # Reverse: debit recipient, credit sender
-                    bal = self._balances.get(tx.recipient, 0)
-                    debit_amt = min(amount, bal)
-                    if debit_amt > 0:
-                        self._debit(tx.recipient, debit_amt)
+                    # Reverse: debit full amount from recipient, credit sender.
+                    # Use _rollback_debit to allow temporary negative balances
+                    # during multi-block rollback (H-02 fix).
+                    self._rollback_debit(tx.recipient, amount)
                     self._credit(tx.sender, amount)
 
                 # Reverse fee
@@ -156,10 +168,7 @@ class RollbackMixin:
                         fee = compute_tx_fee(block.base_fee,
                                              tx.max_fee_per_weight,
                                              tx.max_priority_fee, w)
-                        bal = self._balances.get(block.validator, 0)
-                        debit_amt = min(fee, bal)
-                        if debit_amt > 0:
-                            self._debit(block.validator, debit_amt)
+                        self._rollback_debit(block.validator, fee)
                         self._credit(tx.sender, fee)
                 else:
                     fee = TX_FEES.get(tx.tx_type.value, 0)
@@ -167,10 +176,7 @@ class RollbackMixin:
                         validator_share = fee // 2
                         burn = fee - validator_share
                         # Reverse validator fee credit
-                        bal = self._balances.get(block.validator, 0)
-                        debit_amt = min(validator_share, bal)
-                        if debit_amt > 0:
-                            self._debit(block.validator, debit_amt)
+                        self._rollback_debit(block.validator, validator_share)
                         # Reverse burn
                         self._total_burned -= burn
                         # Reverse sender fee debit
@@ -372,10 +378,7 @@ class RollbackMixin:
                 dist_record = self._last_epoch_distributions.pop(dist_epoch, {})
                 # Reverse delegator credits
                 for delegator_addr, amount in dist_record.get("credits", []):
-                    bal = self._balances.get(delegator_addr, 0)
-                    debit_amt = min(amount, bal)
-                    if debit_amt > 0:
-                        self._debit(delegator_addr, debit_amt)
+                    self._rollback_debit(delegator_addr, amount)
                 # Reverse validator debits (re-credit validators)
                 for validator_addr, amount in dist_record.get("debits", []):
                     self._credit(validator_addr, amount)

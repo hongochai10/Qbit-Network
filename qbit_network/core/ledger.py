@@ -39,6 +39,23 @@ class BalanceLedgerMixin:
         else:
             self._balances[address] = new_balance
 
+    def _rollback_debit(self, address: str, amount: int):
+        """Debit during rollback — allows temporary negative balances.
+
+        During multi-block rollback, an account may have spent received funds
+        in a later block that has already been rolled back.  Using min(amount, bal)
+        would silently create QBIT from nothing (H-02).  Instead we debit the
+        full amount; the balance may go temporarily negative but will resolve
+        once the originating block is also rolled back.
+        """
+        if amount <= 0:
+            return
+        new_balance = self._balances.get(address, 0) - amount
+        if new_balance == 0:
+            self._balances.pop(address, None)
+        else:
+            self._balances[address] = new_balance
+
     def get_balance(self, address: str) -> int:
         """Return balance in qubits for an address."""
         return self._balances.get(address, 0)
