@@ -17,6 +17,7 @@ from qbit_network.network.p2p import (
 )
 from qbit_network.core.wallet import Wallet
 from qbit_network.config import MAX_PEERS
+from qbit_network.crypto.mlkem import MLKEM
 
 
 # =========================================================================
@@ -1430,7 +1431,6 @@ class TestEncryptedChannel:
     @pytest.mark.asyncio
     async def test_handle_session_key_valid(self):
         """Responder successfully handles session_key message."""
-        from qbit_network.crypto.mlkem import MLKEM
         w = Wallet.generate()
         node = P2PNode(signing_sk=w.signing_sk, signing_pk=w.signing_pk,
                        validator_address=w.address,
@@ -1850,7 +1850,6 @@ class TestMutualAuthWithEncryption:
         import json as _json
         from qbit_network.config import CHAIN_ID
         from qbit_network.crypto.mldsa import MLDSA
-        from qbit_network.crypto.mlkem import MLKEM
 
         wa = Wallet.generate()
         wb = Wallet.generate()
@@ -2628,7 +2627,6 @@ class TestP2PInitiateEncryptedChannel:
         peer = Peer("1.2.3.4", 9000)
         peer.encryption_pk = b'\x00' * 10  # invalid key
         # Patch to raise
-        from qbit_network.crypto.mlkem import MLKEM
         with patch.object(MLKEM, 'encapsulate', side_effect=ValueError("bad key")):
             await node._initiate_encrypted_channel(peer)
         assert not peer.encrypted
