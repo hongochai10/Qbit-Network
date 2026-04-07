@@ -7,6 +7,27 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff check
+        run: ruff check qbit_network/ sdk/ tests/ --output-format=github
+
+      - name: Run ruff format check
+        run: ruff format --check qbit_network/ sdk/ tests/
+
   core-tests:
     name: Core Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -404,7 +425,7 @@ jobs:
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [core-tests, financial-tests, consensus-tests, network-tests, feature-tests, adversarial-tests, integration-tests, coverage, security-scan]
+    needs: [lint, core-tests, financial-tests, consensus-tests, network-tests, feature-tests, adversarial-tests, integration-tests, coverage, security-scan]
     if: always()
 
     steps:
@@ -419,6 +440,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint (ruff) | ${{ needs.lint.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Core Tests | ${{ needs.core-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Financial Tests | ${{ needs.financial-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Consensus Tests | ${{ needs.consensus-tests.result }} |" >> $GITHUB_STEP_SUMMARY

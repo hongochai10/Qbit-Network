@@ -1,0 +1,18 @@
+# Ruff linter configuration for QBit Network
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "E741",   # ambiguous variable name (common in crypto code: l, O, I)
+    "F401",   # unused import — may be re-exports
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["F811"]  # redefined-unused-name (pytest fixtures)
+
+[format]
+quote-style = "double"
+indent-style = "space"
