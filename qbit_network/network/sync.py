@@ -97,6 +97,7 @@ class SyncManager:
         self._running = False
         self._sync_task: asyncio.Task | None = None
         self._pending_responses: dict[str, asyncio.Future] = {}
+        self._pending_timestamps: dict[str, float] = {}  # request_id -> monotonic time
         self._sig_executor: ProcessPoolExecutor | None = None
         self._fork_headers: list[dict] | None = None  # competing chain headers
         self._fork_source_addr: str = ""  # peer providing fork chain
@@ -141,6 +142,7 @@ class SyncManager:
             if not fut.done():
                 fut.cancel()
         self._pending_responses.clear()
+        self._pending_timestamps.clear()
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
             try:
@@ -177,9 +179,24 @@ class SyncManager:
     # Main sync loop
     # ================================================================
 
+    def _cleanup_stale_pending(self):
+        """Remove pending responses older than 3x SYNC_TIMEOUT (safety net)."""
+        stale_cutoff = time.monotonic() - SYNC_TIMEOUT * 3
+        stale_ids = [
+            rid for rid, ts in self._pending_timestamps.items()
+            if ts < stale_cutoff
+        ]
+        for rid in stale_ids:
+            fut = self._pending_responses.pop(rid, None)
+            self._pending_timestamps.pop(rid, None)
+            if fut and not fut.done():
+                fut.cancel()
+            logger.debug("Cleaned up stale pending response: %s", rid)
+
     async def _main_loop(self):
         while self._running:
             try:
+                self._cleanup_stale_pending()
                 if self._state == SyncState.IDLE:
                     await self._check_peers()
                 elif self._state == SyncState.HEADER_SYNC:
@@ -412,18 +429,20 @@ class SyncManager:
         """Send get_headers request and wait for response."""
         fut = asyncio.get_event_loop().create_future()
         self._pending_responses[request_id] = fut
-
-        await peer.send(MSG_GET_HEADERS, {
-            "from_height": from_height,
-            "count": count,
-            "request_id": request_id,
-        })
+        self._pending_timestamps[request_id] = time.monotonic()
 
         try:
+            await peer.send(MSG_GET_HEADERS, {
+                "from_height": from_height,
+                "count": count,
+                "request_id": request_id,
+            })
+
             result = await asyncio.wait_for(fut, timeout=SYNC_TIMEOUT)
             return result.get("headers", [])
         finally:
             self._pending_responses.pop(request_id, None)
+            self._pending_timestamps.pop(request_id, None)
 
     # ================================================================
     # BLOCK_SYNC: download full blocks in parallel
@@ -668,13 +687,14 @@ class SyncManager:
         """Download a chunk of blocks from a peer."""
         fut = asyncio.get_event_loop().create_future()
         self._pending_responses[request_id] = fut
-
-        await peer.send(MSG_GET_BLOCK_BODIES, {
-            "heights": heights,
-            "request_id": request_id,
-        })
+        self._pending_timestamps[request_id] = time.monotonic()
 
         try:
+            await peer.send(MSG_GET_BLOCK_BODIES, {
+                "heights": heights,
+                "request_id": request_id,
+            })
+
             result = await asyncio.wait_for(fut, timeout=SYNC_TIMEOUT)
             return result.get("blocks", [])
         except asyncio.TimeoutError:
@@ -682,6 +702,7 @@ class SyncManager:
             return None
         finally:
             self._pending_responses.pop(request_id, None)
+            self._pending_timestamps.pop(request_id, None)
 
     def _get_sync_peers(self) -> list:
         """Get connected peers sorted by height and reputation."""

@@ -1627,3 +1627,110 @@ class TestRequestAndDownload:
         await sm._block_sync()
         assert sm._fork_headers is None
         assert sm._fork_source_addr == ""
+
+
+# ================================================================
+# Tests for _pending_responses memory leak fix (R38-M02)
+# ================================================================
+
+class TestPendingResponsesCleanup:
+    @pytest.mark.asyncio
+    async def test_request_headers_cleans_up_on_send_failure(self):
+        """If peer.send() raises, _pending_responses must still be cleaned up."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+        peer.send = AsyncMock(side_effect=ConnectionError("peer disconnected"))
+
+        with pytest.raises(ConnectionError):
+            await sm._request_headers(peer, 1, 10, "req_send_fail")
+
+        assert "req_send_fail" not in sm._pending_responses
+        assert "req_send_fail" not in sm._pending_timestamps
+
+    @pytest.mark.asyncio
+    async def test_download_chunk_cleans_up_on_send_failure(self):
+        """If peer.send() raises, _pending_responses must still be cleaned up."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+        peer.send = AsyncMock(side_effect=OSError("connection reset"))
+
+        result = None
+        try:
+            result = await sm._download_chunk(peer, [1, 2], "chunk_send_fail")
+        except OSError:
+            pass
+
+        assert "chunk_send_fail" not in sm._pending_responses
+        assert "chunk_send_fail" not in sm._pending_timestamps
+
+    @pytest.mark.asyncio
+    async def test_request_headers_timeout_cleans_timestamps(self):
+        """Timeout should clean up both _pending_responses and _pending_timestamps."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+
+        with patch('qbit_network.network.sync.SYNC_TIMEOUT', 0.01):
+            with pytest.raises(asyncio.TimeoutError):
+                await sm._request_headers(peer, 1, 10, "req_ts_timeout")
+
+        assert "req_ts_timeout" not in sm._pending_responses
+        assert "req_ts_timeout" not in sm._pending_timestamps
+
+    @pytest.mark.asyncio
+    async def test_download_chunk_timeout_cleans_timestamps(self):
+        """Timeout should clean up both _pending_responses and _pending_timestamps."""
+        p2p = _make_mock_p2p([])
+        sm = SyncManager(_make_mock_blockchain(), p2p)
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+
+        with patch('qbit_network.network.sync.SYNC_TIMEOUT', 0.01):
+            result = await sm._download_chunk(peer, [1], "chunk_ts_timeout")
+
+        assert result is None
+        assert "chunk_ts_timeout" not in sm._pending_responses
+        assert "chunk_ts_timeout" not in sm._pending_timestamps
+
+    def test_cleanup_stale_pending_removes_old_entries(self):
+        """_cleanup_stale_pending should remove entries older than 3x SYNC_TIMEOUT."""
+        import time
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+
+        # Add a stale entry (far in the past)
+        fut_stale = asyncio.get_event_loop().create_future()
+        sm._pending_responses["stale_req"] = fut_stale
+        sm._pending_timestamps["stale_req"] = time.monotonic() - SYNC_TIMEOUT * 4
+
+        # Add a fresh entry
+        fut_fresh = asyncio.get_event_loop().create_future()
+        sm._pending_responses["fresh_req"] = fut_fresh
+        sm._pending_timestamps["fresh_req"] = time.monotonic()
+
+        sm._cleanup_stale_pending()
+
+        assert "stale_req" not in sm._pending_responses
+        assert "stale_req" not in sm._pending_timestamps
+        assert fut_stale.cancelled()
+        assert "fresh_req" in sm._pending_responses
+        assert "fresh_req" in sm._pending_timestamps
+        assert not fut_fresh.cancelled()
+
+    def test_cleanup_stale_pending_no_entries(self):
+        """_cleanup_stale_pending should be safe with empty dicts."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        sm._cleanup_stale_pending()  # should not raise
+        assert len(sm._pending_responses) == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_clears_timestamps(self):
+        """stop() should clear _pending_timestamps along with _pending_responses."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        import time
+
+        fut = asyncio.get_event_loop().create_future()
+        sm._pending_responses["stop_test"] = fut
+        sm._pending_timestamps["stop_test"] = time.monotonic()
+
+        await sm.stop()
+
+        assert len(sm._pending_responses) == 0
+        assert len(sm._pending_timestamps) == 0
