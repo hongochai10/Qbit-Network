@@ -49,6 +49,37 @@ def _verify_block_signature(block_dict: dict, validator_pk_hex: str) -> bool:
         return False
 
 
+def _verify_header_signature(header_dict: dict, validator_pk_hex: str) -> bool:
+    """Verify a header's PQC signature without requiring full block (for ProcessPoolExecutor).
+
+    Reconstructs the canonical header bytes from the header dict and verifies
+    the ML-DSA-65 signature against the validator's public key.
+    """
+    import json as _json
+    from ..crypto.mldsa import MLDSA
+    try:
+        obj = {
+            "baseFee": header_dict.get("baseFee", 0),
+            "index": header_dict["index"],
+            "merkleRoot": header_dict.get("merkleRoot", ""),
+            "prevHash": header_dict["prevHash"],
+            "timestamp": header_dict["timestamp"],
+            "txCount": header_dict.get("txCount", 0),
+            "validator": header_dict.get("validator", ""),
+        }
+        if header_dict.get("receiptsRoot"):
+            obj["receiptsRoot"] = header_dict["receiptsRoot"]
+        if header_dict.get("stateRoot"):
+            obj["stateRoot"] = header_dict["stateRoot"]
+        header_bytes = _json.dumps(
+            obj, sort_keys=True, separators=(',', ':')).encode()
+        sig = bytes.fromhex(header_dict["signature"])
+        pk = bytes.fromhex(validator_pk_hex)
+        return MLDSA.verify(pk, header_bytes, sig)
+    except Exception:
+        return False
+
+
 class SyncManager:
     """Manages chain synchronization with peer nodes.
 
@@ -274,6 +305,18 @@ class SyncManager:
             )
             if not ok:
                 logger.warning("Invalid header chain from %s: %s", peer.addr, err)
+                self._p2p.reputation.record(peer.addr, "invalid_block")
+                self._stats["banned_peers"] += 1
+                self._transition(SyncState.IDLE)
+                return
+
+            # Verify PQC signatures on headers before accepting them
+            sig_ok, sig_err = await self._verify_header_signatures_async(headers)
+            if not sig_ok:
+                logger.warning(
+                    "Header PQC signature verification failed from %s: %s",
+                    peer.addr, sig_err,
+                )
                 self._p2p.reputation.record(peer.addr, "invalid_block")
                 self._stats["banned_peers"] += 1
                 self._transition(SyncState.IDLE)
@@ -571,6 +614,54 @@ class SyncManager:
         except Exception as e:
             logger.warning("Signature verification error for block #%d: %s", block.index, e)
             return False
+
+    async def _verify_header_signatures_async(
+        self, headers: list[dict]
+    ) -> tuple[bool, str]:
+        """Batch-verify PQC signatures on header dicts using ProcessPoolExecutor.
+
+        Returns (True, "") on success, or (False, error_message) on first failure.
+        Skips genesis headers (index 0) which have no validator signature.
+        """
+        if not self._sig_executor:
+            return True, ""
+
+        loop = asyncio.get_event_loop()
+        registry = self._blockchain._validator_registry
+
+        # Build verification futures for non-genesis headers
+        futures = []
+        for hdr in headers:
+            idx = hdr.get("index", 0)
+            if idx == 0:
+                continue  # genesis block has no validator signature
+            validator = hdr.get("validator", "")
+            if not validator:
+                return False, f"header #{idx} missing validator field"
+            pk = registry.get(validator)
+            if pk is None:
+                return False, f"no public key for validator '{validator}' at header #{idx}"
+            pk_hex = pk.hex() if isinstance(pk, bytes) else pk
+            if not hdr.get("signature"):
+                return False, f"header #{idx} missing signature"
+            fut = loop.run_in_executor(
+                self._sig_executor,
+                _verify_header_signature,
+                hdr,
+                pk_hex,
+            )
+            futures.append((idx, fut))
+
+        # Await all in parallel
+        for idx, fut in futures:
+            try:
+                valid = await fut
+            except Exception as e:
+                return False, f"signature verification error at header #{idx}: {e}"
+            if not valid:
+                return False, f"invalid PQC signature at header #{idx}"
+
+        return True, ""
 
     async def _download_chunk(self, peer, heights: list[int],
                               request_id: str) -> list[dict] | None:

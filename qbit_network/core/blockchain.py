@@ -418,6 +418,91 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         )
         return block
 
+    # ---- Sync helpers ----
+
+    def get_block_headers_for_sync(self, start: int, count: int) -> list[dict]:
+        """Return block headers for sync (supports up to 500 per request)."""
+        from ..config import SYNC_BATCH_SIZE
+        count = min(count, SYNC_BATCH_SIZE)
+        headers = []
+        end = min(start + count, self._height + 1)
+        for i in range(max(0, start), end):
+            block = self._get_block_by_index(i)
+            if block is not None:
+                headers.append(block.to_header_dict())
+        return headers
+
+    def get_blocks_for_sync(self, heights: list[int]) -> list[dict]:
+        """Return full block dicts for requested heights (up to 100)."""
+        from ..config import SYNC_BLOCK_BATCH
+        blocks = []
+        for h in heights[:SYNC_BLOCK_BATCH]:
+            if not isinstance(h, int) or h < 0:
+                continue
+            block = self._get_block_by_index(h)
+            if block is not None:
+                blocks.append(block.to_dict())
+        return blocks
+
+    def validate_header_chain(self, headers: list[dict],
+                              start_prev_hash: str = "") -> tuple[bool, str]:
+        """Validate structural integrity of a header chain.
+
+        Checks:
+        - Consecutive indices
+        - prev_hash linkage
+        - Monotonic timestamps
+        - Validator is in the expected epoch validator set
+
+        Does NOT verify PQC signatures (handled by SyncManager._verify_header_signatures_async).
+        """
+        if not headers:
+            return True, ""
+
+        for i, hdr in enumerate(headers):
+            # Basic field validation
+            for field in ("index", "timestamp", "prevHash", "hash", "validator"):
+                if field not in hdr:
+                    return False, f"header at position {i} missing field '{field}'"
+
+            if not isinstance(hdr["index"], int) or hdr["index"] < 0:
+                return False, f"invalid index at position {i}"
+
+            # Check consecutive indices
+            if i == 0:
+                if start_prev_hash and hdr["prevHash"] != start_prev_hash:
+                    return False, (
+                        f"header chain doesn't connect: expected prevHash "
+                        f"{start_prev_hash[:16]}..., got {hdr['prevHash'][:16]}..."
+                    )
+            else:
+                prev = headers[i - 1]
+                if hdr["prevHash"] != prev["hash"]:
+                    return False, (
+                        f"broken prev_hash linkage at index {hdr['index']}: "
+                        f"expected {prev['hash'][:16]}..., got {hdr['prevHash'][:16]}..."
+                    )
+                if hdr["index"] != prev["index"] + 1:
+                    return False, (
+                        f"non-consecutive indices: {prev['index']} -> {hdr['index']}"
+                    )
+                # Monotonic timestamps
+                if hdr["timestamp"] < prev["timestamp"]:
+                    return False, (
+                        f"non-monotonic timestamp at index {hdr['index']}: "
+                        f"{hdr['timestamp']} < {prev['timestamp']}"
+                    )
+
+            # Validate that the validator is registered
+            validator = hdr.get("validator", "")
+            if validator and hdr["index"] > 0:
+                if validator not in self._validator_registry:
+                    return False, (
+                        f"unknown validator '{validator}' at index {hdr['index']}"
+                    )
+
+        return True, ""
+
     # ---- Receive block from network ----
 
     def add_block(self, block: Block) -> tuple[bool, str]:
@@ -653,6 +738,7 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
 
         # Receipt accumulator: tx_idx -> (fee_paid, events)
         _receipt_data: list[tuple[int, str, int, list[dict]]] = []
+        _failed_tx_ids: set[str] = set()  # R36-M02: track failed EVIDENCE TXs
 
         for tx_idx, tx in enumerate(block.transactions):
             self._tx_by_id[tx.tx_id] = (idx, tx_idx)
@@ -848,7 +934,8 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                         f"(block #{block.index})")
 
             elif tx.tx_type == TxType.EVIDENCE:
-                self._process_evidence_tx(tx, idx)
+                if not self._process_evidence_tx(tx, idx):
+                    _failed_tx_ids.add(tx.tx_id)  # R36-M02
 
             elif tx.tx_type == TxType.ISSUE_TOKEN:
                 if idx >= TOKEN_ACTIVATION_HEIGHT:
@@ -947,13 +1034,15 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         # --- Generate receipts for all TXs in block ---
         block_receipts: list[TransactionReceipt] = []
         for tx_idx_r, tx_id_r, fee_r, events_r in _receipt_data:
+            # R36-M02: EVIDENCE TX with failed verification gets "failure" status
+            tx_status = "failure" if tx_id_r in _failed_tx_ids else "success"
             receipt = TransactionReceipt(
                 tx_id=tx_id_r,
-                status="success",
+                status=tx_status,
                 fee_paid=fee_r,
                 block_index=idx,
                 tx_index=tx_idx_r,
-                events=events_r,
+                events=events_r if tx_status == "success" else [],
             )
             block_receipts.append(receipt)
             self._receipts[tx_id_r] = receipt
@@ -1039,6 +1128,26 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                 # Remove pruned receipts from in-memory cache
                 for tid in pruned_set:
                     self._receipts.pop(tid, None)
+
+        # Prune _txs_by_sender/_txs_by_recipient for blocks beyond reorg window (TEC-1280)
+        if self._store is not None and prune_before >= 0:
+            old_block = self._get_block_by_index(prune_before)
+            if old_block is not None:
+                pruned_tx_ids = set()
+                for tx in old_block.transactions:
+                    pruned_tx_ids.add(tx.tx_id)
+                for tx in old_block.transactions:
+                    sender_list = self._txs_by_sender.get(tx.sender, [])
+                    if tx.tx_id in sender_list:
+                        sender_list.remove(tx.tx_id)
+                    if not sender_list:
+                        self._txs_by_sender.pop(tx.sender, None)
+                    if tx.recipient:
+                        recip_list = self._txs_by_recipient.get(tx.recipient, [])
+                        if tx.tx_id in recip_list:
+                            recip_list.remove(tx.tx_id)
+                        if not recip_list:
+                            self._txs_by_recipient.pop(tx.recipient, None)
 
         # Prune _last_epoch_distributions beyond MAX_REORG_DEPTH (R33-L03)
         if prune_before >= 0 and self._last_epoch_distributions:

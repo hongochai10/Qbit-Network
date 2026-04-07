@@ -1018,6 +1018,586 @@ class TestAdversarialSync:
         bc.try_reorg.assert_not_called()
         assert sm._stats.get("forks_rejected", 0) == 1
 
+
+# ================================================================
+# _check_peers tests
+# ================================================================
+
+class TestCheckPeers:
+    @pytest.mark.asyncio
+    async def test_check_peers_transitions_to_header_sync(self):
+        """When a peer is far ahead, should transition to HEADER_SYNC."""
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+        p2p = _make_mock_p2p([peer])
+        bc = _make_mock_blockchain(height=0)
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+
+        with patch('qbit_network.network.sync.asyncio.sleep', new_callable=AsyncMock):
+            await sm._check_peers()
+
+        assert sm.state == SyncState.HEADER_SYNC
+        assert sm._sync_source_addr == "1.1.1.1:9000"
+        assert sm._target_height == 100
+
+    @pytest.mark.asyncio
+    async def test_check_peers_already_synced(self):
+        """When local height matches peers, should go directly to SYNCED."""
+        peer = _make_mock_peer("1.1.1.1:9000", height=50)
+        p2p = _make_mock_p2p([peer])
+        bc = _make_mock_blockchain(height=50)
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+
+        with patch('qbit_network.network.sync.asyncio.sleep', new_callable=AsyncMock):
+            await sm._check_peers()
+
+        assert sm.state == SyncState.SYNCED
+
+    @pytest.mark.asyncio
+    async def test_check_peers_no_peers_stays_idle(self):
+        """With no peers, should stay in IDLE."""
+        p2p = _make_mock_p2p([])
+        bc = _make_mock_blockchain(height=0)
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+
+        with patch('qbit_network.network.sync.asyncio.sleep', new_callable=AsyncMock):
+            await sm._check_peers()
+
+        assert sm.state == SyncState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_check_peers_ahead_but_no_connected_peer(self):
+        """Best height is ahead but no connected peer for sync source."""
+        peer = _make_mock_peer("1.1.1.1:9000", height=100, connected=False)
+        p2p = _make_mock_p2p([peer])
+        # best_peer_height returns 100 even though peer is disconnected
+        p2p.best_peer_height = MagicMock(return_value=100)
+        bc = _make_mock_blockchain(height=0)
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+
+        with patch('qbit_network.network.sync.asyncio.sleep', new_callable=AsyncMock):
+            await sm._check_peers()
+
+        # No connected peer → stays IDLE (falls through to sleep)
+        assert sm.state == SyncState.IDLE
+
+
+# ================================================================
+# _follow_tip tests
+# ================================================================
+
+class TestFollowTip:
+    @pytest.mark.asyncio
+    async def test_follow_tip_re_enters_sync(self):
+        """If peers get ahead again, should re-enter HEADER_SYNC."""
+        peer = _make_mock_peer("1.1.1.1:9000", height=200)
+        p2p = _make_mock_p2p([peer])
+        bc = _make_mock_blockchain(height=100)
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+        sm._transition(SyncState.HEADER_SYNC)
+        sm._transition(SyncState.BLOCK_SYNC)
+        sm._transition(SyncState.SYNCED)
+
+        with patch('qbit_network.network.sync.asyncio.sleep', new_callable=AsyncMock):
+            await sm._follow_tip()
+
+        assert sm.state == SyncState.HEADER_SYNC
+        assert sm._sync_source_addr == "1.1.1.1:9000"
+        assert sm._target_height == 200
+
+    @pytest.mark.asyncio
+    async def test_follow_tip_stays_synced(self):
+        """If still caught up, should stay SYNCED."""
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+        p2p = _make_mock_p2p([peer])
+        bc = _make_mock_blockchain(height=100)
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+        sm._transition(SyncState.HEADER_SYNC)
+        sm._transition(SyncState.BLOCK_SYNC)
+        sm._transition(SyncState.SYNCED)
+
+        with patch('qbit_network.network.sync.asyncio.sleep', new_callable=AsyncMock):
+            await sm._follow_tip()
+
+        assert sm.state == SyncState.SYNCED
+
+    @pytest.mark.asyncio
+    async def test_follow_tip_no_peers_goes_idle(self):
+        """If all peers disconnect, should go to IDLE."""
+        p2p = _make_mock_p2p([])
+        bc = _make_mock_blockchain(height=100)
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+        sm._transition(SyncState.HEADER_SYNC)
+        sm._transition(SyncState.BLOCK_SYNC)
+        sm._transition(SyncState.SYNCED)
+
+        with patch('qbit_network.network.sync.asyncio.sleep', new_callable=AsyncMock):
+            await sm._follow_tip()
+
+        assert sm.state == SyncState.IDLE
+
+
+# ================================================================
+# on_chain_info_response tests
+# ================================================================
+
+class TestChainInfoResponse:
+    def test_on_chain_info_response_resolves_future(self):
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        loop = asyncio.new_event_loop()
+        fut = loop.create_future()
+        request_id = "chain_info_123"
+        sm._pending_responses[request_id] = fut
+
+        data = {"height": 100, "best_hash": "a" * 64, "request_id": request_id}
+        sm.on_chain_info_response(data)
+
+        assert fut.done()
+        assert fut.result() == data
+        loop.close()
+
+    def test_on_chain_info_response_unknown_id_ignored(self):
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        sm.on_chain_info_response({"height": 50, "request_id": "nonexistent"})
+        # Should not raise
+
+    def test_on_chain_info_response_already_done_future(self):
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        loop = asyncio.new_event_loop()
+        fut = loop.create_future()
+        fut.set_result({"already": "set"})
+        sm._pending_responses["done_id"] = fut
+
+        # Should not raise even though future is already done
+        sm.on_chain_info_response({"request_id": "done_id", "height": 10})
+        loop.close()
+
+
+# ================================================================
+# _main_loop tests
+# ================================================================
+
+class TestMainLoop:
+    @pytest.mark.asyncio
+    async def test_main_loop_dispatches_idle(self):
+        """Main loop in IDLE state should call _check_peers."""
+        bc = _make_mock_blockchain(height=0)
+        p2p = _make_mock_p2p([])
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+
+        call_count = 0
+
+        async def mock_check_peers():
+            nonlocal call_count
+            call_count += 1
+            sm._running = False  # stop after one iteration
+
+        sm._check_peers = mock_check_peers
+        await sm._main_loop()
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_main_loop_dispatches_header_sync(self):
+        """Main loop in HEADER_SYNC state should call _header_sync."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        sm._running = True
+        sm._transition(SyncState.HEADER_SYNC)
+
+        called = False
+
+        async def mock_header_sync():
+            nonlocal called
+            called = True
+            sm._running = False
+
+        sm._header_sync = mock_header_sync
+        await sm._main_loop()
+        assert called is True
+
+    @pytest.mark.asyncio
+    async def test_main_loop_dispatches_block_sync(self):
+        """Main loop in BLOCK_SYNC state should call _block_sync."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        sm._running = True
+        sm._transition(SyncState.HEADER_SYNC)
+        sm._transition(SyncState.BLOCK_SYNC)
+
+        called = False
+
+        async def mock_block_sync():
+            nonlocal called
+            called = True
+            sm._running = False
+
+        sm._block_sync = mock_block_sync
+        await sm._main_loop()
+        assert called is True
+
+    @pytest.mark.asyncio
+    async def test_main_loop_dispatches_follow_tip(self):
+        """Main loop in SYNCED state should call _follow_tip."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        sm._running = True
+        sm._transition(SyncState.HEADER_SYNC)
+        sm._transition(SyncState.BLOCK_SYNC)
+        sm._transition(SyncState.SYNCED)
+
+        called = False
+
+        async def mock_follow_tip():
+            nonlocal called
+            called = True
+            sm._running = False
+
+        sm._follow_tip = mock_follow_tip
+        await sm._main_loop()
+        assert called is True
+
+    @pytest.mark.asyncio
+    async def test_main_loop_handles_exception_gracefully(self):
+        """Main loop should catch exceptions and continue."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        sm._running = True
+
+        call_count = 0
+
+        async def mock_check_peers():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("test error")
+            sm._running = False
+
+        sm._check_peers = mock_check_peers
+
+        with patch('qbit_network.network.sync.asyncio.sleep', new_callable=AsyncMock):
+            await sm._main_loop()
+
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_main_loop_stops_on_cancel(self):
+        """CancelledError should exit the main loop cleanly."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        sm._running = True
+
+        async def mock_check_peers():
+            raise asyncio.CancelledError()
+
+        sm._check_peers = mock_check_peers
+        await sm._main_loop()  # should not raise
+
+
+# ================================================================
+# _verify_block_signature standalone function tests
+# ================================================================
+
+class TestVerifyBlockSignatureStandalone:
+    def test_verify_block_signature_invalid_data(self):
+        """Invalid block data should return False."""
+        from qbit_network.network.sync import _verify_block_signature
+        result = _verify_block_signature({}, "00" * 976)
+        assert result is False
+
+    def test_verify_block_signature_bad_pk_hex(self):
+        """Bad public key hex should return False."""
+        from qbit_network.network.sync import _verify_block_signature
+        result = _verify_block_signature({"index": 1}, "not_hex")
+        assert result is False
+
+
+# ================================================================
+# Header PQC signature verification tests
+# ================================================================
+
+class TestHeaderSignatureVerification:
+    def test_verify_header_signature_invalid_data(self):
+        """Invalid header data should return False."""
+        from qbit_network.network.sync import _verify_header_signature
+        result = _verify_header_signature({}, "00" * 976)
+        assert result is False
+
+    def test_verify_header_signature_bad_pk_hex(self):
+        """Bad public key hex should return False."""
+        from qbit_network.network.sync import _verify_header_signature
+        hdr = _make_header(1)
+        result = _verify_header_signature(hdr, "not_hex")
+        assert result is False
+
+    def test_verify_header_signature_missing_signature(self):
+        """Header without signature field should return False."""
+        from qbit_network.network.sync import _verify_header_signature
+        hdr = _make_header(1)
+        del hdr["signature"]
+        result = _verify_header_signature(hdr, "00" * 976)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_verify_header_signatures_no_executor(self):
+        """Without sig_executor, batch verification should pass (skip)."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        sm._sig_executor = None
+        headers = _make_header_chain(1, 5)
+        ok, err = await sm._verify_header_signatures_async(headers)
+        assert ok is True
+        assert err == ""
+
+    @pytest.mark.asyncio
+    async def test_verify_header_signatures_skips_genesis(self):
+        """Genesis header (index 0) should be skipped during signature verification."""
+        bc = _make_mock_blockchain()
+        bc._validator_registry = {"qv1validator": b'\x00' * 1952}
+        sm = SyncManager(bc, _make_mock_p2p())
+        mock_executor = MagicMock()
+        sm._sig_executor = mock_executor
+
+        genesis = _make_header(0)
+        loop = asyncio.get_event_loop()
+        with patch.object(loop, 'run_in_executor', new_callable=AsyncMock, return_value=True):
+            ok, err = await sm._verify_header_signatures_async([genesis])
+        assert ok is True
+        assert err == ""
+
+    @pytest.mark.asyncio
+    async def test_verify_header_signatures_unknown_validator(self):
+        """Headers with unknown validator should fail immediately."""
+        bc = _make_mock_blockchain()
+        bc._validator_registry = {}  # empty registry
+        sm = SyncManager(bc, _make_mock_p2p())
+        sm._sig_executor = MagicMock()
+
+        headers = [_make_header(1, validator="qv1unknown")]
+        ok, err = await sm._verify_header_signatures_async(headers)
+        assert ok is False
+        assert "no public key" in err
+        assert "qv1unknown" in err
+
+    @pytest.mark.asyncio
+    async def test_verify_header_signatures_missing_signature_field(self):
+        """Header missing signature field should fail."""
+        bc = _make_mock_blockchain()
+        bc._validator_registry = {"qv1validator": b'\x00' * 1952}
+        sm = SyncManager(bc, _make_mock_p2p())
+        sm._sig_executor = MagicMock()
+
+        hdr = _make_header(1)
+        del hdr["signature"]
+        ok, err = await sm._verify_header_signatures_async([hdr])
+        assert ok is False
+        assert "missing signature" in err
+
+    @pytest.mark.asyncio
+    async def test_verify_header_signatures_missing_validator_field(self):
+        """Header with empty validator should fail."""
+        bc = _make_mock_blockchain()
+        sm = SyncManager(bc, _make_mock_p2p())
+        sm._sig_executor = MagicMock()
+
+        hdr = _make_header(1, validator="")
+        ok, err = await sm._verify_header_signatures_async([hdr])
+        assert ok is False
+        assert "missing validator" in err
+
+    @pytest.mark.asyncio
+    async def test_verify_header_signatures_invalid_sig_rejects(self):
+        """Invalid PQC signature should reject the header batch."""
+        bc = _make_mock_blockchain()
+        bc._validator_registry = {"qv1validator": b'\x00' * 1952}
+        sm = SyncManager(bc, _make_mock_p2p())
+        mock_executor = MagicMock()
+        sm._sig_executor = mock_executor
+
+        headers = _make_header_chain(1, 3)
+        loop = asyncio.get_event_loop()
+        # Simulate signature verification returning False (invalid sig)
+        with patch.object(loop, 'run_in_executor', new_callable=AsyncMock, return_value=False):
+            ok, err = await sm._verify_header_signatures_async(headers)
+        assert ok is False
+        assert "invalid PQC signature" in err
+
+    @pytest.mark.asyncio
+    async def test_verify_header_signatures_valid_batch(self):
+        """Valid batch of headers should pass verification."""
+        bc = _make_mock_blockchain()
+        bc._validator_registry = {"qv1validator": b'\x00' * 1952}
+        sm = SyncManager(bc, _make_mock_p2p())
+        mock_executor = MagicMock()
+        sm._sig_executor = mock_executor
+
+        headers = _make_header_chain(1, 5)
+        loop = asyncio.get_event_loop()
+        with patch.object(loop, 'run_in_executor', new_callable=AsyncMock, return_value=True):
+            ok, err = await sm._verify_header_signatures_async(headers)
+        assert ok is True
+        assert err == ""
+
+    @pytest.mark.asyncio
+    async def test_verify_header_signatures_executor_exception(self):
+        """Executor exception should reject the header."""
+        bc = _make_mock_blockchain()
+        bc._validator_registry = {"qv1validator": b'\x00' * 1952}
+        sm = SyncManager(bc, _make_mock_p2p())
+        mock_executor = MagicMock()
+        sm._sig_executor = mock_executor
+
+        headers = [_make_header(1)]
+        loop = asyncio.get_event_loop()
+        with patch.object(loop, 'run_in_executor', new_callable=AsyncMock,
+                          side_effect=RuntimeError("executor crashed")):
+            ok, err = await sm._verify_header_signatures_async(headers)
+        assert ok is False
+        assert "verification error" in err
+
+
+class TestHeaderSyncWithSignatureVerification:
+    """Integration tests: _header_sync rejects forged headers with invalid PQC signatures."""
+
+    @pytest.mark.asyncio
+    async def test_header_sync_rejects_forged_signatures(self):
+        """Headers with invalid PQC signatures should be rejected before block download."""
+        headers = _make_header_chain(1, 5)
+        peer = _make_mock_peer("1.1.1.1:9000", height=5)
+        p2p = _make_mock_p2p([peer])
+        bc = _make_mock_blockchain(height=0)
+        bc.latest_block = MagicMock()
+        bc.latest_block.block_hash = "0" * 64
+        bc._validator_registry = {"qv1validator": b'\x00' * 1952}
+
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+        sm._sync_source_addr = "1.1.1.1:9000"
+        sm._target_height = 5
+        sm._transition(SyncState.HEADER_SYNC)
+        sm._sig_executor = MagicMock()  # enable sig verification
+
+        async def mock_request_headers(peer, from_height, count, request_id):
+            return [h for h in headers if from_height <= h["index"] < from_height + count]
+        sm._request_headers = mock_request_headers
+
+        # Signature verification fails — forged headers
+        loop = asyncio.get_event_loop()
+        with patch.object(loop, 'run_in_executor', new_callable=AsyncMock, return_value=False):
+            await sm._header_sync()
+
+        # Should reject and go back to IDLE, not proceed to BLOCK_SYNC
+        assert sm.state == SyncState.IDLE
+        p2p.reputation.record.assert_called_with("1.1.1.1:9000", "invalid_block")
+        assert sm._stats["banned_peers"] == 1
+        assert len(sm._header_queue) == 0  # no forged headers accepted
+
+    @pytest.mark.asyncio
+    async def test_header_sync_accepts_valid_signatures(self):
+        """Headers with valid PQC signatures should be accepted and sync continues."""
+        headers = _make_header_chain(1, 5)
+        peer = _make_mock_peer("1.1.1.1:9000", height=5)
+        p2p = _make_mock_p2p([peer])
+        bc = _make_mock_blockchain(height=0)
+        bc.latest_block = MagicMock()
+        bc.latest_block.block_hash = "0" * 64
+        bc._validator_registry = {"qv1validator": b'\x00' * 1952}
+
+        sm = SyncManager(bc, p2p)
+        sm._running = True
+        sm._sync_source_addr = "1.1.1.1:9000"
+        sm._target_height = 5
+        sm._transition(SyncState.HEADER_SYNC)
+        sm._sig_executor = MagicMock()
+
+        async def mock_request_headers(peer, from_height, count, request_id):
+            return [h for h in headers if from_height <= h["index"] < from_height + count]
+        sm._request_headers = mock_request_headers
+        sm._cross_verify_headers = AsyncMock(return_value=False)
+
+        # Signature verification passes
+        loop = asyncio.get_event_loop()
+        with patch.object(loop, 'run_in_executor', new_callable=AsyncMock, return_value=True):
+            await sm._header_sync()
+
+        assert sm.state == SyncState.BLOCK_SYNC
+        assert len(sm._header_queue) == 5
+        assert sm._stats["headers_downloaded"] == 5
+
+
+# ================================================================
+# _request_headers and _download_chunk tests
+# ================================================================
+
+class TestRequestAndDownload:
+    @pytest.mark.asyncio
+    async def test_request_headers_sends_message(self):
+        """_request_headers should send MSG_GET_HEADERS to peer and return headers."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+
+        headers = [_make_header(1)]
+
+        async def simulate_response():
+            await asyncio.sleep(0.01)
+            # Find the pending response and resolve it
+            for rid, fut in list(sm._pending_responses.items()):
+                if not fut.done():
+                    fut.set_result({"headers": headers})
+
+        task = asyncio.create_task(simulate_response())
+        result = await sm._request_headers(peer, 1, 10, "req1")
+        await task
+        assert result == headers
+        peer.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_request_headers_timeout(self):
+        """_request_headers should raise TimeoutError on timeout."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+
+        with patch('qbit_network.network.sync.SYNC_TIMEOUT', 0.01):
+            with pytest.raises(asyncio.TimeoutError):
+                await sm._request_headers(peer, 1, 10, "req_timeout")
+
+        # Future should be cleaned up
+        assert "req_timeout" not in sm._pending_responses
+
+    @pytest.mark.asyncio
+    async def test_download_chunk_sends_message(self):
+        """_download_chunk should send MSG_GET_BLOCK_BODIES and return blocks."""
+        sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+
+        blocks = [{"index": 1, "hash": "a" * 64}]
+
+        async def simulate_response():
+            await asyncio.sleep(0.01)
+            for rid, fut in list(sm._pending_responses.items()):
+                if not fut.done():
+                    fut.set_result({"blocks": blocks})
+
+        task = asyncio.create_task(simulate_response())
+        result = await sm._download_chunk(peer, [1], "chunk1")
+        await task
+        assert result == blocks
+
+    @pytest.mark.asyncio
+    async def test_download_chunk_timeout_returns_none(self):
+        """_download_chunk should return None on timeout and record reputation."""
+        p2p = _make_mock_p2p([])
+        sm = SyncManager(_make_mock_blockchain(), p2p)
+        peer = _make_mock_peer("1.1.1.1:9000", height=100)
+        sm._sync_source_addr = "stub"  # not used in _download_chunk directly
+
+        with patch('qbit_network.network.sync.SYNC_TIMEOUT', 0.01):
+            result = await sm._download_chunk(peer, [1, 2, 3], "chunk_timeout")
+
+        assert result is None
+        p2p.reputation.record.assert_called_with("1.1.1.1:9000", "timeout")
+        assert "chunk_timeout" not in sm._pending_responses
+
     def test_fork_state_tracking(self):
         """SyncManager should properly track fork-related state."""
         sm = SyncManager(_make_mock_blockchain(), _make_mock_p2p())
