@@ -15,12 +15,17 @@ from .network.p2p import (
     P2PNode, MSG_NEW_BLOCK, MSG_NEW_TX,
     MSG_GET_BLOCKS, MSG_BLOCKS, MSG_GET_PEERS, MSG_PEERS,
     MSG_STATUS, _is_safe_peer,
+    MSG_GET_CHAIN_INFO, MSG_CHAIN_INFO,
+    MSG_GET_HEADERS, MSG_HEADERS,
+    MSG_GET_BLOCK_BODIES, MSG_BLOCK_BODIES,
 )
+from .network.sync import SyncManager
 from .network.rpc import RPCServer
 from .network.rest_api import RESTApi
 from .network.websocket import WebSocketManager
 from .network.webhooks import WebhookManager
 from .network.metrics import MetricsRegistry
+from .logging_config import configure_logging
 from .config import DEFAULT_P2P_PORT, DEFAULT_RPC_PORT, BLOCK_INTERVAL, VERSION, EXPECTED_LIBOQS_VERSION
 
 logger = logging.getLogger("qbit_network.node")
@@ -39,6 +44,10 @@ class FullNode:
                  tls_hostname: str = "localhost",
                  wallet_password: str = "",
                  cors_origins: str = ""):
+        # Structured JSON logging — opt-out via QBIT_LOG_JSON=0
+        json_logging = os.environ.get("QBIT_LOG_JSON", "1") != "0"
+        configure_logging(json_output=json_logging)
+
         self.data_dir = data_dir
         self._wallet_password = wallet_password
         self._cors_origins = cors_origins
@@ -54,6 +63,7 @@ class FullNode:
         self.ws_manager = WebSocketManager()
         self.webhook_manager = WebhookManager()
         self.metrics = MetricsRegistry()
+        self.sync_manager = SyncManager(self.blockchain, self.p2p)
         self.bootstrap = bootstrap or []
         self._running = False
         self._block_task = None
@@ -127,6 +137,13 @@ class FullNode:
         self.p2p.on(MSG_GET_PEERS, self._p2p_get_peers)
         self.p2p.on(MSG_PEERS, self._p2p_peers)
         self.p2p.on(MSG_STATUS, self._p2p_status)
+        # Sync protocol handlers
+        self.p2p.on(MSG_GET_CHAIN_INFO, self._p2p_get_chain_info)
+        self.p2p.on(MSG_CHAIN_INFO, self._p2p_chain_info)
+        self.p2p.on(MSG_GET_HEADERS, self._p2p_get_headers)
+        self.p2p.on(MSG_HEADERS, self._p2p_headers)
+        self.p2p.on(MSG_GET_BLOCK_BODIES, self._p2p_get_block_bodies)
+        self.p2p.on(MSG_BLOCK_BODIES, self._p2p_block_bodies)
 
     async def _p2p_new_block(self, peer, data):
         self.metrics.p2p_messages_total.inc(type="new_block")
@@ -136,8 +153,10 @@ class FullNode:
             if ok:
                 self.p2p.reputation.record(peer.addr, "valid_block")
                 self._lock_genesis_if_needed()
-                await self.p2p.broadcast(
-                    MSG_NEW_BLOCK, {"block": block.to_dict()}, exclude=peer.addr)
+                # Suppress broadcast while syncing to avoid amplification
+                if not self.sync_manager.is_syncing():
+                    await self.p2p.broadcast(
+                        MSG_NEW_BLOCK, {"block": block.to_dict()}, exclude=peer.addr)
                 await self._ws_notify_block(block)
             else:
                 # RS-2: heavier penalty for Byzantine state root forgery
@@ -243,6 +262,61 @@ class FullNode:
         h = data.get("height", -1)
         if isinstance(h, int) and -1 <= h <= 10_000_000:
             peer.height = h
+            self.sync_manager.on_peer_status(peer.addr, h)
+
+    # ---- Sync protocol handlers ----
+
+    async def _p2p_get_chain_info(self, peer, data):
+        """Respond with our chain height and head hash."""
+        tip = self.blockchain.latest_block
+        resp = {
+            "height": self.blockchain.height,
+            "head_hash": tip.block_hash if tip else "0" * 64,
+            "finalized_height": max(0, self.blockchain.height - 6),
+            "epoch": getattr(self.blockchain, '_current_epoch', 0),
+        }
+        req_id = data.get("request_id")
+        if req_id:
+            resp["request_id"] = req_id
+        await peer.send(MSG_CHAIN_INFO, resp)
+
+    async def _p2p_chain_info(self, peer, data):
+        """Handle chain_info response from a peer."""
+        self.sync_manager.on_chain_info_response(data)
+
+    async def _p2p_get_headers(self, peer, data):
+        """Respond with block headers for the requested range."""
+        try:
+            from_height = int(data.get("from_height", 0))
+            count = int(data.get("count", 100))
+        except (TypeError, ValueError):
+            return
+        headers = self.blockchain.get_block_headers_for_sync(from_height, count)
+        resp = {"headers": headers}
+        req_id = data.get("request_id")
+        if req_id:
+            resp["request_id"] = req_id
+        await peer.send(MSG_HEADERS, resp)
+
+    async def _p2p_headers(self, peer, data):
+        """Handle headers response — forward to SyncManager."""
+        self.sync_manager.on_headers_response(data)
+
+    async def _p2p_get_block_bodies(self, peer, data):
+        """Respond with full blocks for the requested heights."""
+        heights = data.get("heights", [])
+        if not isinstance(heights, list):
+            return
+        blocks = self.blockchain.get_blocks_for_sync(heights)
+        resp = {"blocks": blocks}
+        req_id = data.get("request_id")
+        if req_id:
+            resp["request_id"] = req_id
+        await peer.send(MSG_BLOCK_BODIES, resp)
+
+    async def _p2p_block_bodies(self, peer, data):
+        """Handle block_bodies response — forward to SyncManager."""
+        self.sync_manager.on_block_bodies_response(data)
 
     # ================================================================
     # Chain sync
@@ -348,6 +422,8 @@ class FullNode:
         m("qv_getBlockHeaders", self._rpc_get_block_headers)
         m("qv_getStateProofAt", self._rpc_get_state_proof_at)
         m("qv_getReceiptProof", self._rpc_get_receipt_proof)
+        # Sync status (public)
+        m("qv_getSyncStatus", self._rpc_get_sync_status)
 
     @staticmethod
     def _validate_fee_param(value, name):
@@ -467,6 +543,9 @@ class FullNode:
             "registered_validators": sorted(self.blockchain._validator_registry.keys()),
             "wallets": len(self.wallets),
         }
+
+    async def _rpc_get_sync_status(self):
+        return self.sync_manager.progress
 
     async def _rpc_validators(self):
         # Include both config-based and on-chain registered validators
@@ -1449,6 +1528,7 @@ class FullNode:
         if self.validator_wallet:
             self._block_task = asyncio.create_task(self._block_loop())
         self._sync_task = asyncio.create_task(self._sync_loop())
+        await self.sync_manager.start()
 
         vaddr = self.validator_wallet.address if self.validator_wallet else "none"
         logger.info(f"Validator: {vaddr}")
@@ -1463,6 +1543,7 @@ class FullNode:
         for task in (self._block_task, self._sync_task):
             if task and not task.done():
                 task.cancel()
+        await self.sync_manager.stop()
         await self.webhook_manager.stop()
         await self.ws_manager.stop()
         await self.p2p.stop()
@@ -1480,6 +1561,9 @@ class FullNode:
             await asyncio.sleep(BLOCK_INTERVAL)
             if not self._running:
                 break
+            # Skip block production while syncing
+            if self.sync_manager.is_syncing():
+                continue
             try:
                 w = self.validator_wallet
                 block = self.blockchain.produce_block(w.address, w.signing_sk)
