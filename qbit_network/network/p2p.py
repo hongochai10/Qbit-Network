@@ -569,7 +569,7 @@ class P2PNode:
         self._check_validator_status(peer)
 
         # Connection dedup check
-        if self._dedup_connection(peer):
+        if await self._dedup_connection(peer):
             return False  # this connection was closed as duplicate
 
         # Initiator initiates encrypted channel if both sides have encryption keys
@@ -646,7 +646,7 @@ class P2PNode:
         self._check_validator_status(peer)
 
         # Connection dedup check
-        if self._dedup_connection(peer):
+        if await self._dedup_connection(peer):
             return False  # this connection was closed as duplicate
 
         return True
@@ -691,7 +691,7 @@ class P2PNode:
     # Connection deduplication
     # ================================================================
 
-    def _dedup_connection(self, peer: Peer) -> bool:
+    async def _dedup_connection(self, peer: Peer) -> bool:
         """Check for duplicate connections to the same remote address.
 
         After successful authentication, if another connection to the same
@@ -726,7 +726,7 @@ class P2PNode:
                                 f"(keeping our outbound)")
                     other_peer.connected = False
                     self.peers.pop(other_key, None)
-                    asyncio.ensure_future(other_peer.close())
+                    await other_peer.close()
                     return False
                 else:
                     # Close this one (they initiated), keep the other
@@ -750,7 +750,7 @@ class P2PNode:
                                 f"(peer has smaller address, keeping their outbound)")
                     other_peer.connected = False
                     self.peers.pop(other_key, None)
-                    asyncio.ensure_future(other_peer.close())
+                    await other_peer.close()
                     return False
 
         return False

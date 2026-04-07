@@ -1630,24 +1630,27 @@ class TestConnectionDedup:
         assert p.is_initiator is False
         assert p.remote_address == ""
 
-    def test_no_dedup_when_no_remote_address(self):
+    @pytest.mark.asyncio
+    async def test_no_dedup_when_no_remote_address(self):
         """Dedup is skipped when remote_address is not set."""
         w = Wallet.generate()
         node = P2PNode(validator_address=w.address)
         peer = Peer("1.2.3.4", 9000)
         peer.remote_address = ""
-        result = node._dedup_connection(peer)
+        result = await node._dedup_connection(peer)
         assert result is False
 
-    def test_no_dedup_when_no_validator_address(self):
+    @pytest.mark.asyncio
+    async def test_no_dedup_when_no_validator_address(self):
         """Dedup is skipped when our validator_address is not set."""
         node = P2PNode()
         peer = Peer("1.2.3.4", 9000)
         peer.remote_address = "qv1someaddress"
-        result = node._dedup_connection(peer)
+        result = await node._dedup_connection(peer)
         assert result is False
 
-    def test_no_dedup_when_no_duplicate(self):
+    @pytest.mark.asyncio
+    async def test_no_dedup_when_no_duplicate(self):
         """Dedup returns False when there is no duplicate connection."""
         wa = Wallet.generate()
         wb = Wallet.generate()
@@ -1659,10 +1662,11 @@ class TestConnectionDedup:
         peer.is_initiator = True
         node.peers["1.2.3.4:9000"] = peer
 
-        result = node._dedup_connection(peer)
+        result = await node._dedup_connection(peer)
         assert result is False
 
-    def test_dedup_we_are_smaller_keep_our_outbound(self):
+    @pytest.mark.asyncio
+    async def test_dedup_we_are_smaller_keep_our_outbound(self):
         """When we have smaller address, keep the connection we initiated."""
         # Create wallets and ensure ordering
         wa = Wallet.generate()
@@ -1691,12 +1695,13 @@ class TestConnectionDedup:
         new_peer.is_initiator = True
         node.peers["1.2.3.4:9001"] = new_peer
 
-        result = node._dedup_connection(new_peer)
+        result = await node._dedup_connection(new_peer)
         # We are smaller, we keep our outbound (new_peer), close existing
         assert result is False
         assert "1.2.3.4:9000" not in node.peers
 
-    def test_dedup_we_are_smaller_close_their_outbound(self):
+    @pytest.mark.asyncio
+    async def test_dedup_we_are_smaller_close_their_outbound(self):
         """When we have smaller address, close the connection they initiated."""
         wa = Wallet.generate()
         wb = Wallet.generate()
@@ -1723,11 +1728,12 @@ class TestConnectionDedup:
         new_peer.is_initiator = False
         node.peers["1.2.3.4:9001"] = new_peer
 
-        result = node._dedup_connection(new_peer)
+        result = await node._dedup_connection(new_peer)
         # We are smaller, close the inbound (new_peer), keep our outbound
         assert result is True
 
-    def test_dedup_they_are_smaller_close_our_outbound(self):
+    @pytest.mark.asyncio
+    async def test_dedup_they_are_smaller_close_our_outbound(self):
         """When they have smaller address, close the connection we initiated."""
         wa = Wallet.generate()
         wb = Wallet.generate()
@@ -1754,11 +1760,12 @@ class TestConnectionDedup:
         new_peer.is_initiator = True
         node.peers["1.2.3.4:9001"] = new_peer
 
-        result = node._dedup_connection(new_peer)
+        result = await node._dedup_connection(new_peer)
         # They are smaller, close our outbound (new_peer), keep their inbound
         assert result is True
 
-    def test_dedup_they_are_smaller_keep_their_outbound(self):
+    @pytest.mark.asyncio
+    async def test_dedup_they_are_smaller_keep_their_outbound(self):
         """When they have smaller address, keep the connection they initiated."""
         wa = Wallet.generate()
         wb = Wallet.generate()
@@ -1784,12 +1791,13 @@ class TestConnectionDedup:
         new_peer.is_initiator = False
         node.peers["1.2.3.4:9001"] = new_peer
 
-        result = node._dedup_connection(new_peer)
+        result = await node._dedup_connection(new_peer)
         # They are smaller, keep their outbound (new_peer), close our outbound
         assert result is False
         assert "1.2.3.4:9000" not in node.peers
 
-    def test_dedup_skips_unauthenticated_peers(self):
+    @pytest.mark.asyncio
+    async def test_dedup_skips_unauthenticated_peers(self):
         """Dedup does not consider unauthenticated peers as duplicates."""
         wa = Wallet.generate()
         wb = Wallet.generate()
@@ -1810,11 +1818,12 @@ class TestConnectionDedup:
         new_peer.is_initiator = True
         node.peers["1.2.3.4:9001"] = new_peer
 
-        result = node._dedup_connection(new_peer)
+        result = await node._dedup_connection(new_peer)
         # Unauthenticated peer is not a duplicate
         assert result is False
 
-    def test_dedup_different_remote_addresses(self):
+    @pytest.mark.asyncio
+    async def test_dedup_different_remote_addresses(self):
         """Peers with different remote_addresses are not duplicates."""
         wa = Wallet.generate()
         wb = Wallet.generate()
@@ -1833,7 +1842,7 @@ class TestConnectionDedup:
         p2.is_initiator = True
         node.peers["1.2.3.4:9001"] = p2
 
-        result = node._dedup_connection(p2)
+        result = await node._dedup_connection(p2)
         assert result is False
 
 
