@@ -1,0 +1,113 @@
+# QBit Network 5-validator testnet
+# Usage:
+#   docker compose -f docker-compose.testnet.yml up -d
+#   ./scripts/testnet_smoke.sh http://localhost:8545 1000
+#
+# RPC endpoints: node1=:8545, node2=:8546, node3=:8547, node4=:8548, node5=:8549
+
+services:
+  node1:
+    build: .
+    container_name: qbit-testnet-1
+    command: >
+      --data-dir /data
+      --p2p-port 9000 --rpc-port 8545
+      --peers node2:9000 node3:9000 node4:9000 node5:9000
+      --rpc-token testnet-token-1
+    ports:
+      - "8545:8545"
+      - "9000:9000"
+    volumes:
+      - tn1-data:/data
+    environment:
+      - QBIT_ALLOW_PRIVATE_PEERS=1
+      - QBIT_LOG_JSON=1
+    networks:
+      - qbit-testnet
+
+  node2:
+    build: .
+    container_name: qbit-testnet-2
+    command: >
+      --data-dir /data
+      --p2p-port 9000 --rpc-port 8545
+      --peers node1:9000 node3:9000 node4:9000 node5:9000
+      --rpc-token testnet-token-2
+    ports:
+      - "8546:8545"
+      - "9001:9000"
+    volumes:
+      - tn2-data:/data
+    environment:
+      - QBIT_ALLOW_PRIVATE_PEERS=1
+      - QBIT_LOG_JSON=1
+    networks:
+      - qbit-testnet
+
+  node3:
+    build: .
+    container_name: qbit-testnet-3
+    command: >
+      --data-dir /data
+      --p2p-port 9000 --rpc-port 8545
+      --peers node1:9000 node2:9000 node4:9000 node5:9000
+      --rpc-token testnet-token-3
+    ports:
+      - "8547:8545"
+      - "9002:9000"
+    volumes:
+      - tn3-data:/data
+    environment:
+      - QBIT_ALLOW_PRIVATE_PEERS=1
+      - QBIT_LOG_JSON=1
+    networks:
+      - qbit-testnet
+
+  node4:
+    build: .
+    container_name: qbit-testnet-4
+    command: >
+      --data-dir /data
+      --p2p-port 9000 --rpc-port 8545
+      --peers node1:9000 node2:9000 node3:9000 node5:9000
+      --rpc-token testnet-token-4
+    ports:
+      - "8548:8545"
+      - "9003:9000"
+    volumes:
+      - tn4-data:/data
+    environment:
+      - QBIT_ALLOW_PRIVATE_PEERS=1
+      - QBIT_LOG_JSON=1
+    networks:
+      - qbit-testnet
+
+  node5:
+    build: .
+    container_name: qbit-testnet-5
+    command: >
+      --data-dir /data
+      --p2p-port 9000 --rpc-port 8545
+      --peers node1:9000 node2:9000 node3:9000 node4:9000
+      --rpc-token testnet-token-5
+    ports:
+      - "8549:8545"
+      - "9004:9000"
+    volumes:
+      - tn5-data:/data
+    environment:
+      - QBIT_ALLOW_PRIVATE_PEERS=1
+      - QBIT_LOG_JSON=1
+    networks:
+      - qbit-testnet
+
+volumes:
+  tn1-data:
+  tn2-data:
+  tn3-data:
+  tn4-data:
+  tn5-data:
+
+networks:
+  qbit-testnet:
+    driver: bridge
