@@ -2240,6 +2240,18 @@ class TestP2PReadMessage:
         result = await P2PNode._read_message(reader, peer)
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_read_message_json_slow_peer_timeout(self):
+        """_read_message() raises TimeoutError when JSON peer is too slow."""
+        reader = AsyncMock()
+        # Simulate a peer that never sends data (readline hangs)
+        reader.readline = AsyncMock(side_effect=asyncio.TimeoutError)
+        peer = MagicMock()
+        peer.wire_format = "json"
+
+        with pytest.raises(asyncio.TimeoutError):
+            await P2PNode._read_message(reader, peer)
+
 
 class TestP2PAuthRateLimit:
     """Tests for auth rate limiting and rate cleanup loop."""

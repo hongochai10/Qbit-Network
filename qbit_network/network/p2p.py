@@ -32,6 +32,14 @@ MSG_GET_PEERS = "get_peers"
 MSG_PEERS = "peers"
 MSG_STATUS = "status"
 
+# Sync protocol messages (v0.10.0)
+MSG_GET_CHAIN_INFO = "get_chain_info"
+MSG_CHAIN_INFO = "chain_info"
+MSG_GET_HEADERS = "get_headers"
+MSG_HEADERS = "headers"
+MSG_GET_BLOCK_BODIES = "get_block_bodies"
+MSG_BLOCK_BODIES = "block_bodies"
+
 _AUTH_DOMAIN = b"QBIT_AUTH_v2:"
 _AUTH_TIMEOUT = 10.0   # seconds to complete authentication handshake
 _CHALLENGE_LEN = 32    # bytes
@@ -52,6 +60,9 @@ _RATE_EXEMPT = {MSG_HELLO, MSG_HELLO_AUTH, MSG_AUTH_RESPONSE, MSG_AUTH_CONFIRM,
 # Message types that require authentication (for protocol_version >= 2)
 _AUTH_REQUIRED_MSGS = frozenset({
     MSG_NEW_BLOCK, MSG_NEW_TX, MSG_GET_BLOCKS, MSG_BLOCKS,
+    MSG_GET_CHAIN_INFO, MSG_CHAIN_INFO,
+    MSG_GET_HEADERS, MSG_HEADERS,
+    MSG_GET_BLOCK_BODIES, MSG_BLOCK_BODIES,
 })
 
 
@@ -1006,7 +1017,7 @@ class P2PNode:
             while True:
                 try:
                     msg = await self._read_message(reader, peer)
-                except (asyncio.IncompleteReadError, ConnectionResetError):
+                except (asyncio.IncompleteReadError, ConnectionResetError, asyncio.TimeoutError):
                     break
                 if not msg:
                     break
@@ -1077,7 +1088,7 @@ class P2PNode:
             while True:
                 try:
                     msg = await self._read_message(peer.reader, peer)
-                except (asyncio.IncompleteReadError, ConnectionResetError):
+                except (asyncio.IncompleteReadError, ConnectionResetError, asyncio.TimeoutError):
                     break
                 if not msg:
                     break
@@ -1172,7 +1183,7 @@ class P2PNode:
             codec = MessageCodec("msgpack")
             return codec.decode(payload)
         else:
-            line = await reader.readline()
+            line = await asyncio.wait_for(reader.readline(), timeout=30)
             if not line:
                 return None
             try:
