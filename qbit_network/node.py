@@ -472,6 +472,10 @@ class FullNode:
         return self.blockchain.height
 
     async def _rpc_get_block(self, index=None, block_hash=None):
+        if index is not None and block_hash is not None:
+            raise ValueError(
+                "ambiguous: provide either index or block_hash, not both"
+            )
         if index is not None:
             if not isinstance(index, int):
                 raise ValueError("index must be integer")
@@ -678,6 +682,10 @@ class FullNode:
         if not isinstance(amount, int) or amount < 1:
             raise ValueError("amount must be positive integer")
         w = self._get_wallet(wallet_address)
+        if w.address == validator_address:
+            raise ValueError(
+                "self-delegation is not allowed; use qv_stake for self-staking"
+            )
         mf, mp = self._compute_fee_defaults(max_fee_per_weight, max_priority_fee)
         async with self._lock_for(w.address):
             tx = Transaction.delegate(

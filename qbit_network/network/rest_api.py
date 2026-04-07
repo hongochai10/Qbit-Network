@@ -503,16 +503,10 @@ class RESTApi:
         return _ok({"validators": result, "total": len(result)})
 
     async def _pool_summary(self, request: web.Request) -> web.Response:
-        pool = self._node.blockchain.tx_pool
-        # Summary without full tx data
-        by_type: dict[str, int] = {}
-        for tx in pool:
-            t = tx.tx_type.value
-            by_type[t] = by_type.get(t, 0) + 1
-
+        bc = self._node.blockchain
         return _ok({
-            "count": len(pool),
-            "by_type": by_type,
+            "count": len(bc.tx_pool),
+            "by_type": dict(bc._pool_type_counts),
         })
 
     async def _pool_count(self, request: web.Request) -> web.Response:

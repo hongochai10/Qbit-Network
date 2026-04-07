@@ -1388,14 +1388,36 @@ class TestRPCDelegateUnstake:
 
     @pytest.mark.asyncio
     async def test_delegate_success(self, node_with_wallet, wallet):
-        """Delegate stake to validator."""
+        """Delegate stake to a different registered validator."""
         node = node_with_wallet
+        # Create and register a second validator
+        w2 = await node._rpc_new_wallet()
+        w2_addr = w2["address"]
+        await node._rpc_transfer(
+            wallet_address=wallet.address,
+            to_address=w2_addr,
+            amount=10_000_000_000,
+        )
+        node.blockchain.produce_block(wallet.address, wallet.signing_sk)
+        await node._rpc_register_validator(wallet_address=w2_addr)
+        node.blockchain.produce_block(wallet.address, wallet.signing_sk)
         result = await node._rpc_delegate(
             wallet_address=wallet.address,
-            validator_address=wallet.address,
+            validator_address=w2_addr,
             amount=10,
         )
         assert "tx_id" in result
+
+    @pytest.mark.asyncio
+    async def test_delegate_self_rejected(self, node_with_wallet, wallet):
+        """Self-delegation must be rejected (R38-L03)."""
+        node = node_with_wallet
+        with pytest.raises(ValueError, match="self-delegation"):
+            await node._rpc_delegate(
+                wallet_address=wallet.address,
+                validator_address=wallet.address,
+                amount=10,
+            )
 
     @pytest.mark.asyncio
     async def test_delegate_bad_validator(self, node_with_wallet, wallet):
@@ -1794,7 +1816,10 @@ class TestRPCRegisterP2P:
         node.p2p._handlers = {}
         node._register_p2p()
         expected = {MSG_NEW_BLOCK, MSG_NEW_TX, MSG_GET_BLOCKS,
-                    MSG_BLOCKS, "get_peers", "peers", "status"}
+                    MSG_BLOCKS, "get_peers", "peers", "status",
+                    "get_chain_info", "chain_info",
+                    "get_headers", "headers",
+                    "get_block_bodies", "block_bodies"}
         assert set(node.p2p._handlers.keys()) == expected
 
     def test_register_rpc(self, node_with_wallet):

@@ -2362,6 +2362,10 @@ class TestPoolSummaryWithPendingTxs(AsyncRESTTestCase):
             nonce=node.blockchain.get_nonce(node.wallet.address))
         tx.sign(node.wallet.signing_sk, node.wallet.signing_pk)
         node.blockchain.tx_pool.append(tx)
+        # Keep _pool_type_counts in sync (R38-L04)
+        t_val = tx.tx_type.value
+        node.blockchain._pool_type_counts[t_val] = (
+            node.blockchain._pool_type_counts.get(t_val, 0) + 1)
 
         resp = await self.client.get("/api/v1/pool")
         self.assertEqual(resp.status, 200)

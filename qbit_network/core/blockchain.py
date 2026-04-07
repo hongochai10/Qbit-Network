@@ -3,6 +3,7 @@
 Sprint 2: SQLite-primary storage. In-memory chain list removed for SQLite-backed
 blockchains. In-memory mode (no data_dir) retains a list for tests/ephemeral use.
 """
+import copy
 import os
 import threading
 import time
@@ -98,6 +99,7 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         self._pool_ids: set[str] = set()
         self._pool_sender_count: dict[str, int] = {}  # sender -> pending tx count (O(1) nonce calc)
         self._pending_debits_cache: dict[str, int] = {}  # sender -> total pending debit (O(1) balance check)
+        self._pool_type_counts: dict[str, int] = {}  # tx_type.value -> count (O(1) pool summary)
 
         # Indices (always in-memory for fast validation)
         self._block_by_hash: dict[str, int] = {}
@@ -570,7 +572,80 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
         # Rollback to common ancestor, then validate + apply fork
         # Save current blocks for rollback-on-failure
         saved_chain = self._get_blocks_range(fork_start, chain_len)
+
+        # R38-M03: Save a deep copy of critical state before rollback so we
+        # can fully restore if rollback corrupts state.
+        _saved_balances = copy.deepcopy(self._balances)
+        _saved_nonces = copy.deepcopy(self._sender_nonce)
+        _saved_total_minted = self._total_minted
+        _saved_total_burned = self._total_burned
+        _saved_stakes = copy.deepcopy(self._stakes)
+        _saved_total_stake = copy.deepcopy(self._total_stake)
+        _saved_unbonding = copy.deepcopy(self._unbonding)
+        _saved_trie_snap = self._state_trie.snapshot()
+        _saved_height = self._height
+        _saved_latest_block = self._latest_block
+        _saved_state_snapshots = copy.copy(self._state_snapshots)
+        _saved_token_registry = copy.deepcopy(self._token_registry)
+        _saved_token_balances = copy.deepcopy(self._token_balances)
+        _saved_token_by_symbol = copy.deepcopy(self._token_by_symbol)
+        _saved_holders_by_token = copy.deepcopy(self._holders_by_token)
+        _saved_tokens_by_address = copy.deepcopy(self._tokens_by_address)
+
         displaced_txs = self._rollback_to(fork_start)
+
+        # R38-M03: Verify state root matches common ancestor after rollback.
+        # If rollback has bugs, state diverges permanently without this check.
+        # Use the saved state snapshot (from _append_block_inner) rather than
+        # block.state_root, because financial-layer activation can modify
+        # balances after genesis state_root was stamped.
+        ancestor_idx = fork_start - 1
+        _ancestor_snap = self._state_snapshots.get(ancestor_idx)
+        if _ancestor_snap is not None:
+            _expected_trie = StateTrie()
+            _expected_trie.restore(_ancestor_snap)
+            expected_root = _expected_trie.root().hex()
+            rolled_back_root = self._state_trie.root().hex()
+            if rolled_back_root != expected_root:
+                logger.error(
+                    "State root mismatch after rollback to block #%d: "
+                    "expected %s, got %s — aborting reorg",
+                    common_ancestor.index,
+                    expected_root[:16],
+                    rolled_back_root[:16],
+                )
+                # Restore all state from pre-rollback snapshot
+                self._balances = _saved_balances
+                self._sender_nonce = _saved_nonces
+                self._total_minted = _saved_total_minted
+                self._total_burned = _saved_total_burned
+                self._stakes = _saved_stakes
+                self._total_stake = _saved_total_stake
+                self._unbonding = _saved_unbonding
+                self._state_trie.restore(_saved_trie_snap)
+                self._height = _saved_height
+                self._latest_block = _saved_latest_block
+                self._state_snapshots = _saved_state_snapshots
+                self._token_registry = _saved_token_registry
+                self._token_balances = _saved_token_balances
+                self._token_by_symbol = _saved_token_by_symbol
+                self._holders_by_token = _saved_holders_by_token
+                self._tokens_by_address = _saved_tokens_by_address
+                # Re-insert saved blocks into chain list / store
+                if self._chain_list is not None:
+                    while len(self._chain_list) > fork_start:
+                        self._chain_list.pop()
+                    for blk in saved_chain:
+                        self._chain_list.append(blk)
+                elif self._store is not None:
+                    self._store.delete_blocks_from(fork_start)
+                    for blk in saved_chain:
+                        self._store.put_block(blk)
+                return False, (
+                    f"state root mismatch after rollback: "
+                    f"expected {expected_root[:16]}..., "
+                    f"got {rolled_back_root[:16]}..."
+                )
 
         # Validate and append fork blocks against the rolled-back state
         parent = self._latest_block
@@ -651,6 +726,11 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                 self._pool_sender_count.pop(sender, None)
             else:
                 self._pool_sender_count[sender] = remaining
+        # Rebuild pool type counts after eviction
+        self._pool_type_counts = {}
+        for tx in self.tx_pool:
+            t_val = tx.tx_type.value
+            self._pool_type_counts[t_val] = self._pool_type_counts.get(t_val, 0) + 1
         # Rebuild pending debits cache: height may have changed (fee model switch)
         self._rebuild_pending_debits_cache()
 
@@ -862,6 +942,12 @@ class Blockchain(BalanceLedgerMixin, StakingMixin, QueryMixin, ReceiptMixin,
                     for t in to_remove:
                         self.tx_pool.remove(t)
                         self._pool_ids.discard(t.tx_id)
+                        t_val = t.tx_type.value
+                        cnt = self._pool_type_counts.get(t_val, 1) - 1
+                        if cnt <= 0:
+                            self._pool_type_counts.pop(t_val, None)
+                        else:
+                            self._pool_type_counts[t_val] = cnt
                     # R34-L02: Batch update sender count instead of per-item decrement
                     if to_remove:
                         count = self._pool_sender_count.get(revoked_addr, 0)
