@@ -355,7 +355,7 @@ jobs:
             --cov=qbit_network \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
-            --cov-fail-under=75 \
+            --cov-fail-under=90 \
             -v --tb=short
 
       - name: Upload coverage report
@@ -448,7 +448,7 @@ jobs:
           echo "| Feature Tests | ${{ needs.feature-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Adversarial Tests | ${{ needs.adversarial-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Integration Tests | ${{ needs.integration-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Coverage Gate (≥75%) | ${{ needs.coverage.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Coverage Gate (≥90%) | ${{ needs.coverage.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "All test suites ran in parallel across Python 3.11 and 3.12 (14 jobs + coverage gate + security scan)." >> $GITHUB_STEP_SUMMARY
