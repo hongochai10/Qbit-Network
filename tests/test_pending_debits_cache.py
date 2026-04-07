@@ -315,3 +315,124 @@ class TestPendingDebitsCacheFeeTransition:
         assert debit_dyn == expected_dyn
         # Verify that the two models produce different results
         assert debit_dyn != debit_static
+
+    def test_pool_txs_survive_activation_boundary(self, wallet, monkeypatch):
+        """R37-H01 regression: TXs submitted before activation that remain in
+        pool after the chain crosses the activation boundary must have their
+        pending debits recalculated using the dynamic fee model."""
+        ACTIVATION = 3
+        monkeypatch.setattr("qbit_network.config.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+        monkeypatch.setattr("qbit_network.core.blockchain.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+        monkeypatch.setattr("qbit_network.core.consensus.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+        # Limit to 1 TX per block so w3's TX survives across the boundary
+        monkeypatch.setattr("qbit_network.core.blockchain.MAX_TX_PER_BLOCK", 1)
+
+        bc = Blockchain()
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk,
+                      validator_pk=wallet.signing_pk)
+        bc.activate_financial_layer(wallet.address)
+        assert bc._height == 0
+
+        # Fund w2 and w3 in separate blocks (1 TX per block limit)
+        w2 = Wallet.generate()
+        w3 = Wallet.generate()
+        fund1 = Transaction.transfer(wallet.address, w2.address,
+                                     2_000_000_000, nonce=0)
+        fund1.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, _ = bc.submit_tx(fund1)
+        assert ok
+        blk1 = bc.produce_block(wallet.address, wallet.signing_sk)
+        assert blk1 is not None
+        assert bc._height == 1
+
+        fund2 = Transaction.transfer(wallet.address, w3.address,
+                                     2_000_000_000, nonce=1)
+        fund2.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, _ = bc.submit_tx(fund2)
+        assert ok
+
+        # Submit TX from w2 — will be in pool alongside fund2
+        tx_a = Transaction.notarize(w2.address, "aa" * 32, nonce=0,
+                                    max_fee_per_weight=500)
+        tx_a.sign(w2.signing_sk, w2.signing_pk)
+        ok, _ = bc.submit_tx(tx_a)
+        assert ok
+
+        # Cache uses static fees (next=2 < ACTIVATION=3)
+        from qbit_network.config import TX_FEES
+        static_fee = TX_FEES.get("NOTARIZE", 0)
+        assert bc._pending_debits(w2.address) == static_fee
+        _assert_cache_consistent(bc)
+
+        # Produce block 2: only fund2 is mined (1 TX limit), tx_a stays in pool
+        blk2 = bc.produce_block(wallet.address, wallet.signing_sk)
+        assert blk2 is not None
+        assert bc._height == 2
+
+        # Now next_block=3 = ACTIVATION.  tx_a remains in pool.
+        # Cache MUST use dynamic fees for the surviving TX.
+        assert len(bc.tx_pool) > 0, "tx_a should remain in pool"
+        _assert_cache_consistent(bc)
+        w = tx_weight(tx_a.tx_type.value)
+        expected_dynamic = tx_a.max_fee_per_weight * w
+        assert bc._pending_debits(w2.address) == expected_dynamic
+
+    def test_drain_at_exact_activation_height(self, wallet, monkeypatch):
+        """R37-H01 regression: when block at exactly ACTIVATION height is
+        produced, _drain_pool must rebuild cache with dynamic fees for
+        any remaining pool TXs."""
+        ACTIVATION = 2
+        monkeypatch.setattr("qbit_network.config.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+        monkeypatch.setattr("qbit_network.core.blockchain.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+        monkeypatch.setattr("qbit_network.core.consensus.DYNAMIC_FEE_ACTIVATION_HEIGHT",
+                            ACTIVATION)
+
+        bc = Blockchain()
+        bc.consensus.add_validator(wallet.address, wallet.signing_pk)
+        bc.init_chain(wallet.address, wallet.signing_sk,
+                      validator_pk=wallet.signing_pk)
+        bc.activate_financial_layer(wallet.address)
+        assert bc._height == 0
+
+        # Fund w2
+        w2 = Wallet.generate()
+        fund = Transaction.transfer(wallet.address, w2.address,
+                                    2_000_000_000, nonce=0)
+        fund.sign(wallet.signing_sk, wallet.signing_pk)
+        ok, _ = bc.submit_tx(fund)
+        assert ok
+        blk1 = bc.produce_block(wallet.address, wallet.signing_sk)
+        assert blk1 is not None
+        assert bc._height == 1
+
+        # Submit two TXs at height 1 (next=2=ACTIVATION)
+        tx1 = Transaction.notarize(w2.address, "c1" * 32, nonce=0,
+                                   max_fee_per_weight=300)
+        tx1.sign(w2.signing_sk, w2.signing_pk)
+        tx2 = Transaction.notarize(w2.address, "c2" * 32, nonce=1,
+                                   max_fee_per_weight=400)
+        tx2.sign(w2.signing_sk, w2.signing_pk)
+        ok1, _ = bc.submit_tx(tx1)
+        ok2, _ = bc.submit_tx(tx2)
+        assert ok1 and ok2
+
+        # Both use dynamic fees since next_block=2=ACTIVATION
+        _assert_cache_consistent(bc)
+        w = tx_weight("NOTARIZE")
+        expected_both = tx1.max_fee_per_weight * w + tx2.max_fee_per_weight * w
+        assert bc._pending_debits(w2.address) == expected_both
+
+        # Produce activation block (height 2) — mines both TXs
+        blk2 = bc.produce_block(wallet.address, wallet.signing_sk)
+        assert blk2 is not None
+        assert bc._height == 2
+
+        # Pool drained, cache should be empty
+        assert bc._pending_debits(w2.address) == 0
+        _assert_cache_consistent(bc)
